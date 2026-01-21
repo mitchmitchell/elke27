@@ -39,6 +39,7 @@ classifiers = [
 # ---- Main dependencies ----
 
 dependencies = [
+    "cryptography>=42.0.0",
 ]
 
 
@@ -48,11 +49,13 @@ dependencies = [
 dev = [
     "pytest>=9.0.2",
     "pytest-sugar>=1.1.1",
+    "pytest-asyncio>=0.24.0",
     "ruff>=0.14.11",
     "codespell>=2.4.1",
     "rich>=14.2.0",
     "basedpyright>=1.37.1",
     "funlog>=0.2.1",
+    "pyyaml>=6.0.1",
 ]
 
 [project.scripts]
@@ -82,7 +85,7 @@ bump = true
 
 [tool.hatch.build.targets.wheel]
 # The source location for the package.
-packages = ["src/elke27_lib"]
+packages = ["elke27_lib"]
 
 
 # ---- Settings ----
@@ -134,7 +137,7 @@ ignore = [
 # than mypy and with a good extension for VSCode/Cursor.
 # https://marketplace.visualstudio.com/items?itemName=detachhead.basedpyright
 # https://docs.basedpyright.com/latest/configuration/config-files/#sample-pyprojecttoml-file
-include = ["src", "tests", "devtools"]
+include = ["elke27_lib", "test", "devtools"]
 # By default BasedPyright is very strict, so you almost certainly want to disable
 # some of the rules.
 # First, these turn off warnings about (yes) how you ignore warnings:
@@ -166,8 +169,13 @@ python_files = ["*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 testpaths = [
-    "src",
-    "tests",
+    "test",
 ]
 norecursedirs = []
 filterwarnings = []
+asyncio_mode = "auto"
+markers = [
+    "integration: integration tests requiring real services or hardware",
+    "live_e27: live Elk E27 panel tests",
+]
+pythonpath = ["src"]
