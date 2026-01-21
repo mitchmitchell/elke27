@@ -1,0 +1,9 @@
+# Changes here will be overwritten by Copier. Do not edit manually.
+_commit: v0.2.21
+_src_path: gh:jlevy/simple-modern-uv
+package_author_email: mitchmitchell1616@msn.com
+package_author_name: mitchmitchell
+package_description: Library for interfacing with the Elk Products E27 Alarm Engine
+package_github_org: mitchmitchell
+package_module: elke27_lib
+package_name: elke27
