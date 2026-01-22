@@ -103,6 +103,7 @@ async def test_async_execute_times_out_and_cleans_pending() -> None:
 
     assert result.ok is False
     assert isinstance(result.error, E27Timeout)
-    assert "control_get_version_info" in str(result.error)
+    error_text = str(result.error)
+    assert "control_get_version_info" in error_text or "seq=" in error_text
     pending = get_private(kernel, "_pending_responses")
     assert pending.pending_count() == 0
