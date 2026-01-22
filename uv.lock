@@ -169,6 +169,7 @@ name = "elke27"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
+    { name = "typing-extensions" },
 ]
 
 [package.dev-dependencies]
@@ -185,7 +186,10 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "cryptography", specifier = ">=42.0.0" }]
+requires-dist = [
+    { name = "cryptography", specifier = ">=42.0.0" },
+    { name = "typing-extensions", specifier = ">=4.9.0" },
+]
 
 [package.metadata.requires-dev]
 dev = [
