@@ -12,7 +12,10 @@ from test.helpers.internal import get_kernel, get_private
 
 
 class _FakeSession:
+    cfg: object
+
     def __init__(self) -> None:
+        self.cfg = type("_Cfg", (), {"host": "test-host", "port": 1})()
         self.sent: list[dict[str, Any]] = []
 
     def send_json(
