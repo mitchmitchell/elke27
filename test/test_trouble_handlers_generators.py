@@ -1,5 +1,4 @@
 from __future__ import annotations
-from test.helpers.dispatch import make_ctx
 
 from elke27_lib.dispatcher import DispatchContext
 from elke27_lib.events import Event
@@ -10,6 +9,7 @@ from elke27_lib.handlers.bus_ios import make_bus_ios_get_trouble_handler
 from elke27_lib.handlers.control import make_control_get_trouble_handler
 from elke27_lib.handlers.log import make_log_get_trouble_handler
 from elke27_lib.states import PanelState
+from test.helpers.dispatch import make_ctx
 
 
 class _EmitSpy:
@@ -21,7 +21,6 @@ class _EmitSpy:
 
 
 _Ctx = make_ctx
-
 
 
 def test_generator_control_get_trouble() -> None:

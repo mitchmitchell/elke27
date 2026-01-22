@@ -8,16 +8,18 @@ import logging
 import socket
 import time
 from collections.abc import Callable
-from typing import TYPE_CHECKING
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 _LOGGER = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from typing_extensions import override
 else:
+
     def override(func):  # type: ignore[no-redef]
         return func
+
 
 @dataclass
 class E27System:
@@ -172,11 +174,7 @@ class AIOELKDiscovery:
     ) -> list[E27System]:
         """Discover ELK devices."""
         if sock is None:
-            sock = (
-                socket_factory()
-                if socket_factory is not None
-                else create_udp_socket()
-            )
+            sock = socket_factory() if socket_factory is not None else create_udp_socket()
         destination = self._destination_from_address(address)
         found_all_future: asyncio.Future[bool] = asyncio.Future()
         response_list: dict[tuple[str, int], E27System] = {}

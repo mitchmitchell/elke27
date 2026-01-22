@@ -32,7 +32,9 @@ def generator_area_get_attribs(*, area_id: int) -> tuple[dict[str, object], Resp
     return {"area_id": area_id}, ("area", "get_attribs")
 
 
-def generator_area_set_status(*, area_id: int, chime: bool) -> tuple[dict[str, object], ResponseKey]:
+def generator_area_set_status(
+    *, area_id: int, chime: bool
+) -> tuple[dict[str, object], ResponseKey]:
     if area_id < 1:
         raise ValueError(f"area_id must be an int >= 1 (got {area_id!r})")
     return {"area_id": area_id, "Chime": chime}, ("area", "set_status")

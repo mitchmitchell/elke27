@@ -1,11 +1,11 @@
 from __future__ import annotations
-from test.helpers.dispatch import make_ctx
 
 from elke27_lib.const import E27ErrorCode
 from elke27_lib.dispatcher import DispatchContext
 from elke27_lib.events import ApiError, AreaStatusUpdated, Event
 from elke27_lib.handlers.area import make_area_get_status_handler
 from elke27_lib.states import PanelState
+from test.helpers.dispatch import make_ctx
 
 
 class _EmitSpy:
@@ -17,7 +17,6 @@ class _EmitSpy:
 
 
 _Ctx = make_ctx
-
 
 
 def test_area_get_status_updates_state_and_emits_event() -> None:

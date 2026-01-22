@@ -1,7 +1,6 @@
 from __future__ import annotations
-from test.helpers.dispatch import make_ctx
 
-from typing import Callable
+from collections.abc import Callable, Mapping
 
 import elke27_lib.client as client_mod
 from elke27_lib.const import E27ErrorCode
@@ -12,6 +11,8 @@ from elke27_lib.handlers.keypad import (
     make_keypad_get_configured_handler,
 )
 from elke27_lib.states import PanelState
+from test.helpers.dispatch import make_ctx
+from test.helpers.internal import get_private
 
 
 class _EmitSpy:
@@ -25,13 +26,12 @@ class _EmitSpy:
 _Ctx = make_ctx
 
 
-
 def test_keypad_get_configured_merges_blocks() -> None:
     blocks = [
         PagedBlock(1, {"keypads": [1, 2]}),
         PagedBlock(2, {"keypads": [3]}),
     ]
-    merge_fn: Callable[[list[PagedBlock], int], dict[str, object]] = getattr(
+    merge_fn: Callable[[list[PagedBlock], int], Mapping[str, object]] = get_private(
         client_mod, "_merge_configured_keypads"
     )
     merged = merge_fn(blocks, 2)

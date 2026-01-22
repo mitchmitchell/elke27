@@ -12,7 +12,6 @@ from typing import Any, cast
 
 from elke27_lib.dispatcher import DispatchContext
 from elke27_lib.events import (
-    Event,
     UNSET_AT,
     UNSET_CLASSIFICATION,
     UNSET_ROUTE,
@@ -21,6 +20,7 @@ from elke27_lib.events import (
     ApiError,
     AuthorizationRequiredEvent,
     CsmSnapshotUpdated,
+    Event,
     TableCsmChanged,
 )
 from elke27_lib.states import PanelState, update_csm_snapshot

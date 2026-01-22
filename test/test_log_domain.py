@@ -1,5 +1,5 @@
 from __future__ import annotations
-from test.helpers.dispatch import make_ctx
+
 from typing import cast
 
 import pytest
@@ -29,6 +29,7 @@ from elke27_lib.handlers.log import (
     make_log_set_attribs_handler,
 )
 from elke27_lib.states import PanelState
+from test.helpers.dispatch import make_ctx
 
 
 class _EmitSpy:
@@ -40,7 +41,6 @@ class _EmitSpy:
 
 
 _Ctx = make_ctx
-
 
 
 def test_log_generators() -> None:

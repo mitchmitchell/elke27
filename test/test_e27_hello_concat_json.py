@@ -4,7 +4,8 @@ import json
 import os
 import socket
 import threading
-from typing import Callable, cast
+from collections.abc import Callable
+from typing import cast
 
 from elke27_lib import presentation as presentation_mod
 from elke27_lib.const import E27ErrorCode
@@ -12,8 +13,11 @@ from elke27_lib.hello import perform_hello
 from elke27_lib.linking import E27Identity
 from elke27_lib.presentation import API_LINK_IV
 from elke27_lib.util import swap_endianness
+from test.helpers.internal import get_private
 
-_AES128_CBC_ENCRYPT = cast(Callable[..., bytes], getattr(presentation_mod, "_aes128_cbc_encrypt"))
+_AES128_CBC_ENCRYPT = cast(
+    Callable[..., bytes], get_private(presentation_mod, "_aes128_cbc_encrypt")
+)
 
 
 def _encrypt_key_field(*, linkkey_hex: str, plaintext: bytes) -> str:

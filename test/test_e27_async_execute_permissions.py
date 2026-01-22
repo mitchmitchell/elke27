@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from _pytest.monkeypatch import MonkeyPatch
@@ -11,6 +11,7 @@ from elke27_lib.client import Elke27Client
 from elke27_lib.errors import NotAuthenticatedError
 from elke27_lib.generators.registry import COMMANDS, CommandSpec
 from elke27_lib.permissions import PermissionLevel
+from test.helpers.internal import get_kernel, get_private
 
 
 class _FakeSession:
@@ -31,12 +32,16 @@ class _FakeSession:
             on_sent(0.0)
 
 
+def _set_session(kernel: object, session: _FakeSession) -> None:
+    cast(Any, kernel)._session = session
+
+
 @pytest.mark.asyncio
 async def test_async_execute_requires_session_for_area_set_status() -> None:
     client = Elke27Client()
-    kernel = getattr(client, "_kernel")
+    kernel = get_kernel(client)
     fake_session = _FakeSession()
-    setattr(kernel, "_session", fake_session)
+    _set_session(kernel, fake_session)
 
     result = await client.async_execute("area_set_status", area_id=1, chime=True)
 
@@ -48,9 +53,9 @@ async def test_async_execute_requires_session_for_area_set_status() -> None:
 @pytest.mark.asyncio
 async def test_async_execute_does_not_block_master_command(monkeypatch: MonkeyPatch) -> None:
     client = Elke27Client()
-    kernel = getattr(client, "_kernel")
+    kernel = get_kernel(client)
     fake_session = _FakeSession()
-    setattr(kernel, "_session", fake_session)
+    _set_session(kernel, fake_session)
     kernel.state.panel.session_id = 1
     area = kernel.state.get_or_create_area(1)
     area.arm_state = "disarmed"
@@ -80,9 +85,8 @@ async def test_async_execute_does_not_block_master_command(monkeypatch: MonkeyPa
 
     sent = fake_session.sent[0]
     seq = sent["seq"]
-    getattr(kernel, "_on_message")(
-        {"seq": seq, "flag": {"set_attribs": {"error_code": 0}}}
-    )
+    on_message = get_private(kernel, "_on_message")
+    on_message({"seq": seq, "flag": {"set_attribs": {"error_code": 0}}})
 
     result = await task
     assert result.ok is True

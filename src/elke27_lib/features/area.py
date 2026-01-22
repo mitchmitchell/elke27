@@ -145,9 +145,7 @@ def build_area_get_attribs_payload(*, area_id: int, **_kwargs: Any) -> Mapping[s
     return {"area_id": area_id}
 
 
-def build_area_get_configured_payload(
-    *, block_id: int = 1, **_kwargs: Any
-) -> Mapping[str, Any]:
+def build_area_get_configured_payload(*, block_id: int = 1, **_kwargs: Any) -> Mapping[str, Any]:
     if block_id < 1:
         raise ValueError(
             f"build_area_get_configured_payload: block_id must be int >= 1 (got {block_id!r})"

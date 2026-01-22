@@ -10,6 +10,7 @@ import pytest
 from elke27_lib.client import Elke27Client
 from elke27_lib.kernel import E27Kernel
 from elke27_lib.pending import PendingResponseManager
+from test.helpers.internal import get_private
 
 
 class _FakeSession:
@@ -157,6 +158,6 @@ async def test_timeout_starts_on_send() -> None:
     kernel = _FakeKernel(delay_s=0.05)
     client = Elke27Client(kernel=cast(E27Kernel, cast(object, kernel)))
 
-    authenticate = getattr(client, "_async_authenticate")
+    authenticate = get_private(client, "_async_authenticate")
     result = await authenticate(pin=1234, timeout_s=0.01)
     assert result.ok is True

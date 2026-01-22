@@ -1,12 +1,14 @@
 from elke27_lib.events import ApiError, AuthorizationRequiredEvent, DispatchRoutingError
 from elke27_lib.kernel import E27Kernel
+from test.helpers.internal import get_private
 
 
 def test_root_error_envelope_emits_authorization_event() -> None:
     kernel = E27Kernel()
 
     msg = {"seq": 0, "error_code": 11008, "error_message": "no authorization"}
-    getattr(kernel, "_on_message")(msg)
+    on_message = get_private(kernel, "_on_message")
+    on_message(msg)
 
     events = kernel.drain_events()
     kinds = [evt.kind for evt in events]

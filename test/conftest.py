@@ -13,6 +13,7 @@ import pytest
 
 from elke27_lib.client import Elke27Client
 from elke27_lib.linking import E27Identity
+from test.helpers.internal import get_kernel, set_private
 from test.helpers.reporter import Reporter
 
 
@@ -54,12 +55,12 @@ async def live_e27_client(request: pytest.FixtureRequest) -> AsyncIterator[Elke2
 
     skip_bootstrap = any("test_live_e27_keepalive.py" in arg for arg in request.config.args)
     if skip_bootstrap:
-        kernel = getattr(client, "_kernel")
+        kernel = get_kernel(client)
 
         def _noop_bootstrap_requests() -> None:
             return None
 
-        setattr(kernel, "_bootstrap_requests", _noop_bootstrap_requests)
+        set_private(kernel, "_bootstrap_requests", _noop_bootstrap_requests)
 
     try:
         link_keys = await client.async_link(
@@ -93,23 +94,25 @@ def _get_or_create_run_id(cfg: pytest.Config) -> str:
     generated in more than one place (e.g., hooks + fixtures), you'll end up with
     multiple output files for what you think is "one run".
     """
-    run_id = getattr(cfg, "_e27_run_id", None)
+    cfg_any = cast(Any, cfg)
+    run_id = getattr(cfg_any, "_e27_run_id", None)
     if not run_id:
         run_id = uuid.uuid4().hex
-        setattr(cfg, "_e27_run_id", run_id)
+        cfg_any._e27_run_id = run_id
     return run_id
 
 
 def _get_or_create_report_path(cfg: pytest.Config) -> pathlib.Path:
     """Return the jsonl path for this pytest invocation (stable)."""
-    p = getattr(cfg, "_e27_report_path", None)
+    cfg_any = cast(Any, cfg)
+    p = getattr(cfg_any, "_e27_report_path", None)
     if p is None:
         base_dir = pathlib.Path(cfg.getoption("--e27-artifacts-dir"))
         #        artifacts_dir = base_dir / "test_runs"
         artifacts_dir = base_dir
         artifacts_dir.mkdir(parents=True, exist_ok=True)
         p = artifacts_dir / f"{_get_or_create_run_id(cfg)}.jsonl"
-        setattr(cfg, "_e27_report_path", p)
+        cfg_any._e27_report_path = p
     return p
 
 
@@ -192,6 +195,7 @@ def reporter(request: pytest.FixtureRequest, e27_run_id: str) -> Generator[Repor
     enable = report_mode != "none"
 
     node = cast(pytest.Item, request.node)
+    node_any = cast(Any, node)
     r = Reporter(
         run_id=e27_run_id,
         test_id=node.nodeid,
@@ -203,7 +207,7 @@ def reporter(request: pytest.FixtureRequest, e27_run_id: str) -> Generator[Repor
     r.test_start()
 
     # Make it accessible to hooks
-    setattr(node, "_e27_reporter", r)
+    node_any._e27_reporter = r
 
     yield r
 
@@ -274,13 +278,15 @@ def pytest_runtest_setup(item: pytest.Item) -> None:
     if report_mode == "none":
         return
 
-    if hasattr(item, "_e27_reporter"):
+    item_any = cast(Any, item)
+    if hasattr(item_any, "_e27_reporter"):
         return
 
-    run_id = getattr(cfg, "_e27_run_id", None)
+    cfg_any = cast(Any, cfg)
+    run_id = getattr(cfg_any, "_e27_run_id", None)
     if run_id is None:
         run_id = uuid.uuid4().hex
-        setattr(cfg, "_e27_run_id", run_id)
+        cfg_any._e27_run_id = run_id
 
     artifacts_dir = pathlib.Path(str(cfg.getoption("--e27-artifacts-dir")))
     emit_jsonl = report_mode in ("jsonl", "both")
@@ -295,7 +301,7 @@ def pytest_runtest_setup(item: pytest.Item) -> None:
         enable=True,
     )
     r.test_start()
-    setattr(item, "_e27_reporter", r)
+    item_any._e27_reporter = r
 
 
 @pytest.fixture()

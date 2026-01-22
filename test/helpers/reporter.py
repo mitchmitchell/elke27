@@ -196,7 +196,5 @@ class Reporter:
                 pass
             with self._yaml_path.open("w", encoding="utf-8") as f:
                 # Fallback: write JSON with .yaml extension (still readable, avoids hard dependency)
-                f.write(
-                    json.dumps(summary, indent=2, default=_safe_json_default, sort_keys=False)
-                )
+                f.write(json.dumps(summary, indent=2, default=_safe_json_default, sort_keys=False))
                 f.write("\n")

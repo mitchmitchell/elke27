@@ -37,9 +37,7 @@ async def test_live_zone_names_from_configured(live_e27_client: Elke27Client) ->
         pytest.skip("No configured zones reported.")
     configured_ids_list = cast(list[object], configured_ids)
     configured_ids = sorted(
-        zone_id
-        for zone_id in configured_ids_list
-        if isinstance(zone_id, int) and zone_id >= 1
+        zone_id for zone_id in configured_ids_list if isinstance(zone_id, int) and zone_id >= 1
     )
     if not configured_ids:
         pytest.skip("No configured zones reported.")

@@ -12,7 +12,6 @@ from typing import Any, cast
 
 from elke27_lib.dispatcher import DispatchContext
 from elke27_lib.events import (
-    Event,
     UNSET_AT,
     UNSET_CLASSIFICATION,
     UNSET_ROUTE,
@@ -20,6 +19,7 @@ from elke27_lib.events import (
     UNSET_SESSION_ID,
     ApiError,
     AuthorizationRequiredEvent,
+    Event,
 )
 from elke27_lib.states import PanelState
 

@@ -1,17 +1,17 @@
 from __future__ import annotations
-from test.helpers.dispatch import make_ctx
 
 from elke27_lib.dispatcher import DispatchContext
 from elke27_lib.events import (
-    Event,
     CsmSnapshotUpdated,
     DomainCsmChanged,
+    Event,
     TableCsmChanged,
     ZoneTableInfoUpdated,
 )
 from elke27_lib.handlers.control import make_control_authenticate_handler
 from elke27_lib.handlers.zone import make_zone_get_table_info_handler
 from elke27_lib.states import PanelState
+from test.helpers.dispatch import make_ctx
 
 
 class _EmitSpy:
@@ -23,7 +23,6 @@ class _EmitSpy:
 
 
 _Ctx = make_ctx
-
 
 
 def test_authenticate_updates_domain_csm_and_snapshot() -> None:

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import os
-from typing import Callable, cast
+from collections.abc import Callable
+from typing import cast
 
 import pytest
 
@@ -21,8 +22,11 @@ from elke27_lib.presentation import (
     protocol_padding_len,
 )
 from elke27_lib.util import calculate_block_padding, swap_endianness
+from test.helpers.internal import get_private
 
-_AES128_CBC_ENCRYPT = cast(Callable[..., bytes], getattr(presentation_mod, "_aes128_cbc_encrypt"))
+_AES128_CBC_ENCRYPT = cast(
+    Callable[..., bytes], get_private(presentation_mod, "_aes128_cbc_encrypt")
+)
 
 
 def test_e27_presentation():

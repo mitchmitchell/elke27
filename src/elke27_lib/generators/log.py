@@ -30,7 +30,9 @@ def generator_log_set_attribs(
     raise ValueError("log_set_attribs is disabled to protect panel logs")
 
 
-def generator_log_get_list(*, start: int, date: int, cnt: int) -> tuple[dict[str, object], ResponseKey]:
+def generator_log_get_list(
+    *, start: int, date: int, cnt: int
+) -> tuple[dict[str, object], ResponseKey]:
     return {"start": start, "date": date, "cnt": cnt}, ("log", "get_list")
 
 

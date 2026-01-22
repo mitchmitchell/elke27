@@ -4,9 +4,7 @@ from typing import cast
 import pytest
 
 from elke27_lib.client import Elke27Client
-from elke27_lib.kernel import E27Kernel
 from elke27_lib.events import (
-    Event,
     UNSET_AT,
     UNSET_CLASSIFICATION,
     UNSET_ROUTE,
@@ -14,12 +12,15 @@ from elke27_lib.events import (
     UNSET_SESSION_ID,
     AreaConfiguredInventoryReady,
     AreaStatusUpdated,
+    Event,
     OutputConfiguredInventoryReady,
     OutputStatusUpdated,
     ZoneConfiguredInventoryReady,
     ZoneStatusUpdated,
 )
+from elke27_lib.kernel import E27Kernel
 from elke27_lib.states import PanelState
+from test.helpers.internal import get_private
 
 
 class _FakeKernel:
@@ -44,7 +45,9 @@ class _FakeKernel:
     def request(self, route: tuple[str, str], **kwargs: object) -> None:
         self.requests.append((route, dict(kwargs)))
 
-    def subscribe(self, _callback: Callable[[Event], None], _kinds: Iterable[str] | None = None) -> int:
+    def subscribe(
+        self, _callback: Callable[[Event], None], _kinds: Iterable[str] | None = None
+    ) -> int:
         return 1
 
     def drain_events(self) -> list[Event]:
@@ -55,7 +58,8 @@ class _FakeKernel:
 
 
 def _inventory_ready_event(evt_cls: type[Event]) -> Event:
-    kind = cast(str, getattr(evt_cls, "KIND"))
+    kind_attr = "KIND"
+    kind = cast(str, getattr(evt_cls, kind_attr))
     return evt_cls(
         kind=kind,
         at=UNSET_AT,
@@ -77,7 +81,7 @@ async def test_wait_ready_requires_inventory_and_status():
     kernel.state.inventory.configured_zones = {1}
     kernel.state.inventory.configured_outputs = {1}
 
-    handle_event = getattr(client, "_handle_kernel_event")
+    handle_event = get_private(client, "_handle_kernel_event")
     handle_event(_inventory_ready_event(AreaConfiguredInventoryReady))
     handle_event(_inventory_ready_event(ZoneConfiguredInventoryReady))
     handle_event(_inventory_ready_event(OutputConfiguredInventoryReady))
@@ -137,7 +141,7 @@ def test_bootstrap_populates_snapshot_maps():
     kernel.state.inventory.configured_zones = {1}
     kernel.state.inventory.configured_outputs = {1}
 
-    handle_event = getattr(client, "_handle_kernel_event")
+    handle_event = get_private(client, "_handle_kernel_event")
     handle_event(_inventory_ready_event(AreaConfiguredInventoryReady))
     handle_event(_inventory_ready_event(ZoneConfiguredInventoryReady))
     handle_event(_inventory_ready_event(OutputConfiguredInventoryReady))

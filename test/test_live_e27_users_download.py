@@ -18,6 +18,7 @@ import pytest
 from elke27_lib.client import Elke27Client
 from elke27_lib.const import E27ErrorCode
 from test.helpers.error_codes import describe_error, extract_error_code
+from test.helpers.internal import get_kernel, get_private, set_private
 from test.helpers.payload_validation import assert_payload_shape
 
 _LIVE_TIMEOUT_S = 15.0
@@ -44,9 +45,9 @@ async def test_live_users_download(live_e27_client: Elke27Client) -> None:
     logging.getLogger("elke27_lib.session").setLevel(logging.DEBUG)
 
     pin = _get_pin()
-    kernel = getattr(live_e27_client, "_kernel")
+    kernel = get_kernel(live_e27_client)
     original_on_message = cast(
-        Callable[[dict[str, object]], object], getattr(kernel, "_on_message")
+        Callable[[dict[str, object]], object], get_private(kernel, "_on_message")
     )
     enable_raw_log = log_level == "DEBUG"
     if enable_raw_log:
@@ -55,7 +56,7 @@ async def test_live_users_download(live_e27_client: Elke27Client) -> None:
             LOG.debug("raw inbound msg=%r", msg)
             return original_on_message(msg)
 
-        setattr(kernel, "_on_message", _log_on_message)
+        set_private(kernel, "_on_message", _log_on_message)
     try:
         auth_result = await live_e27_client.async_execute("control_authenticate", pin=pin)
         LOG.debug(
@@ -130,4 +131,4 @@ async def test_live_users_download(live_e27_client: Elke27Client) -> None:
         pytest.skip("User attribs unavailable; auth may be required.")
     finally:
         if enable_raw_log:
-            setattr(kernel, "_on_message", original_on_message)
+            set_private(kernel, "_on_message", original_on_message)

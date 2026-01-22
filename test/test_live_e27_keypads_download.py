@@ -57,9 +57,7 @@ async def test_live_keypads_download(live_e27_client: Elke27Client) -> None:
 
     keypad_ids_list = cast(list[object], keypad_ids)
     keypad_ids = [
-        keypad_id
-        for keypad_id in keypad_ids_list
-        if isinstance(keypad_id, int) and keypad_id >= 1
+        keypad_id for keypad_id in keypad_ids_list if isinstance(keypad_id, int) and keypad_id >= 1
     ]
     if not keypad_ids:
         pytest.skip("No configured keypads reported.")

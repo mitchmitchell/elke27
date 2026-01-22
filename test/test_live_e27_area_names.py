@@ -33,9 +33,7 @@ async def test_live_area_names_from_attribs(live_e27_client: Elke27Client) -> No
         pytest.skip("No configured areas reported.")
     configured_ids_list = cast(list[object], configured_ids)
     configured_ids = sorted(
-        area_id
-        for area_id in configured_ids_list
-        if isinstance(area_id, int) and area_id >= 1
+        area_id for area_id in configured_ids_list if isinstance(area_id, int) and area_id >= 1
     )
     if not configured_ids:
         pytest.skip("No configured areas reported.")

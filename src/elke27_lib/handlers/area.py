@@ -28,7 +28,6 @@ from elke27_lib.dispatcher import (  # adjust import to your dispatcher module l
     PagedBlock,
 )
 from elke27_lib.events import (
-    Event,
     UNSET_AT,
     UNSET_CLASSIFICATION,
     UNSET_ROUTE,
@@ -45,6 +44,7 @@ from elke27_lib.events import (
     BootstrapCountsReady,
     CsmSnapshotUpdated,
     DispatchRoutingError,
+    Event,
     TableCsmChanged,
     UnknownMessage,
 )
@@ -103,6 +103,7 @@ _EXPECTED_TYPES: dict[str, type | tuple[type, ...]] = {
 
 def _coerce_int(value: object) -> int | None:
     return value if isinstance(value, int) else None
+
 
 _FIELD_MAP: dict[str, str] = {
     "arm_state": "arm_state",
@@ -1012,9 +1013,10 @@ def _apply_configured_block_offset(
 
 def _extract_configured_area_ids(payload: Mapping[str, Any], warnings: list[str]) -> list[int]:
     candidates: list[Any] = []
-    has_blocks = _coerce_intish(payload.get("block_id")) is not None or _coerce_intish(
-        payload.get("block_count")
-    ) is not None
+    has_blocks = (
+        _coerce_intish(payload.get("block_id")) is not None
+        or _coerce_intish(payload.get("block_count")) is not None
+    )
 
     for key in ("configured_area_ids", "configured_areas", "area_ids", "areas", "configured"):
         if key in payload:

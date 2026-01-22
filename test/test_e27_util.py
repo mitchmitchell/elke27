@@ -16,6 +16,7 @@ from elke27_lib.util import (
 
 pytestmark = pytest.mark.usefixtures("reporter")
 
+
 def test_e27_util_parse_url_elk_defaults() -> None:
     scheme, host, port, _ctx = parse_url("elk://example.local")
 

@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from test.helpers.dispatch import make_ctx
 
 from elke27_lib.client import Elke27Client
 from elke27_lib.const import E27ErrorCode
 from elke27_lib.dispatcher import DispatchContext
 from elke27_lib.events import (
-    Event,
     UNSET_AT,
     UNSET_CLASSIFICATION,
     UNSET_ROUTE,
@@ -17,6 +15,7 @@ from elke27_lib.events import (
     UNSET_SESSION_ID,
     AreaConfiguredInventoryReady,
     AuthorizationRequiredEvent,
+    Event,
     KeypadConfiguredInventoryReady,
     OutputConfiguredInventoryReady,
     UserConfiguredInventoryReady,
@@ -35,6 +34,8 @@ from elke27_lib.handlers.zone import (
     make_zone_get_configured_handler,
 )
 from elke27_lib.states import PanelState
+from test.helpers.dispatch import make_ctx
+from test.helpers.internal import get_kernel, get_private
 
 
 class _EmitSpy:
@@ -46,7 +47,6 @@ class _EmitSpy:
 
 
 _Ctx = make_ctx
-
 
 
 def test_zone_configured_paging_and_completion() -> None:
@@ -110,7 +110,7 @@ def test_zone_configured_auth_required_emits_event() -> None:
 
 def test_client_filters_to_configured_inventory() -> None:
     client = Elke27Client()
-    kernel = getattr(client, "_kernel")
+    kernel = get_kernel(client)
     kernel.state.inventory.configured_areas = {1}
     kernel.state.inventory.configured_zones = {2}
     kernel.state.get_or_create_area(1)
@@ -152,14 +152,14 @@ def test_zone_get_attribs_name_normalization() -> None:
 
 def test_attribs_request_queue_respects_limit() -> None:
     client = Elke27Client()
-    kernel = getattr(client, "_kernel")
+    kernel = get_kernel(client)
     sent: list[tuple[tuple[str, str], dict[str, object]]] = []
 
     def _request(route: tuple[str, str], **kwargs: object):
         sent.append((route, dict(kwargs)))
         return 1
 
-    setattr(kernel, "request", _request)
+    kernel.request = _request
 
     inv = kernel.state.inventory
     inv.configured_areas = {1, 2, 3}
@@ -168,7 +168,7 @@ def test_attribs_request_queue_respects_limit() -> None:
     inv.configured_users = {1}
     inv.configured_keypads = {1}
 
-    queue_bootstrap = getattr(client, "_queue_bootstrap_attribs")
+    queue_bootstrap = get_private(client, "_queue_bootstrap_attribs")
     queue_bootstrap("area")
     queue_bootstrap("zone")
     queue_bootstrap("output")
@@ -190,7 +190,7 @@ def test_attribs_request_queue_respects_limit() -> None:
 
 def test_client_queues_output_attribs_on_inventory_ready() -> None:
     client = Elke27Client()
-    kernel = getattr(client, "_kernel")
+    kernel = get_kernel(client)
     inv = kernel.state.inventory
     inv.configured_outputs = {1, 2}
 
@@ -200,9 +200,9 @@ def test_client_queues_output_attribs_on_inventory_ready() -> None:
         sent.append((route, dict(kwargs)))
         return 1
 
-    setattr(kernel, "request", _request)
+    kernel.request = _request
 
-    handle_event = getattr(client, "_handle_kernel_event")
+    handle_event = get_private(client, "_handle_kernel_event")
     handle_event(
         OutputConfiguredInventoryReady(
             kind=OutputConfiguredInventoryReady.KIND,
@@ -223,7 +223,7 @@ def test_client_queues_output_attribs_on_inventory_ready() -> None:
 
 def test_client_queues_user_keypad_attribs_on_inventory_ready() -> None:
     client = Elke27Client()
-    kernel = getattr(client, "_kernel")
+    kernel = get_kernel(client)
     inv = kernel.state.inventory
     inv.configured_users = {1}
     inv.configured_keypads = {2}
@@ -234,9 +234,9 @@ def test_client_queues_user_keypad_attribs_on_inventory_ready() -> None:
         sent.append((route, dict(kwargs)))
         return 1
 
-    setattr(kernel, "request", _request)
+    kernel.request = _request
 
-    handle_event = getattr(client, "_handle_kernel_event")
+    handle_event = get_private(client, "_handle_kernel_event")
     handle_event(
         UserConfiguredInventoryReady(
             kind=UserConfiguredInventoryReady.KIND,
@@ -291,7 +291,7 @@ def test_zone_configured_ignores_bitmask_when_paged() -> None:
         "zone_mask": 0xFFFFFFFF,
     }
     warnings: list[str] = []
-    extract_zone_ids: Callable[[Mapping[str, object], list[str]], list[int]] = getattr(
+    extract_zone_ids: Callable[[Mapping[str, object], list[str]], list[int]] = get_private(
         zone_handler, "_extract_configured_zone_ids"
     )
     ids = extract_zone_ids(payload, warnings)
@@ -307,7 +307,7 @@ def test_area_configured_ignores_bitmask_when_paged() -> None:
         "area_mask": 0xFFFFFFFF,
     }
     warnings: list[str] = []
-    extract_area_ids: Callable[[Mapping[str, object], list[str]], list[int]] = getattr(
+    extract_area_ids: Callable[[Mapping[str, object], list[str]], list[int]] = get_private(
         area_handler, "_extract_configured_area_ids"
     )
     ids = extract_area_ids(payload, warnings)

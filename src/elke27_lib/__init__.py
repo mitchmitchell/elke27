@@ -36,10 +36,11 @@ from .types import (
     ZoneState,
 )
 
+
 def __getattr__(name: str) -> Any:
     if name == "Elke27Client":
         module = importlib.import_module(".client", __name__)
-        return getattr(module, "Elke27Client")
+        return module.Elke27Client
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

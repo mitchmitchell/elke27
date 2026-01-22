@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from elke27_lib.client import Elke27Client
+from test.helpers.internal import get_kernel, get_private
 
 
 class _FakeSession:
@@ -27,19 +28,24 @@ class _FakeSession:
             on_sent(0.0)
 
 
+def _set_session(kernel: object, session: _FakeSession) -> None:
+    cast(Any, kernel)._session = session
+
+
 @pytest.mark.asyncio
 async def test_area_set_status_payload_chime_true_false() -> None:
     client = Elke27Client()
-    kernel = getattr(client, "_kernel")
+    kernel = get_kernel(client)
     fake_session = _FakeSession()
-    setattr(kernel, "_session", fake_session)
+    _set_session(kernel, fake_session)
     kernel.state.panel.session_id = 1
 
     task_true = asyncio.create_task(client.async_execute("area_set_status", area_id=1, chime=True))
     await asyncio.sleep(0)
     sent_true = fake_session.sent[0]["area"]["set_status"]
     assert sent_true == {"area_id": 1, "Chime": True}
-    getattr(kernel, "_on_message")(
+    on_message = get_private(kernel, "_on_message")
+    on_message(
         {
             "seq": fake_session.sent[0]["seq"],
             "area": {"set_status": {"area_id": 1, "Chime": True}},
@@ -53,7 +59,8 @@ async def test_area_set_status_payload_chime_true_false() -> None:
     await asyncio.sleep(0)
     sent_false = fake_session.sent[1]["area"]["set_status"]
     assert sent_false == {"area_id": 2, "Chime": False}
-    getattr(kernel, "_on_message")(
+    on_message = get_private(kernel, "_on_message")
+    on_message(
         {
             "seq": fake_session.sent[1]["seq"],
             "area": {"set_status": {"area_id": 2, "Chime": False}},
@@ -65,9 +72,9 @@ async def test_area_set_status_payload_chime_true_false() -> None:
 @pytest.mark.asyncio
 async def test_area_set_status_ack_vs_broadcast() -> None:
     client = Elke27Client()
-    kernel = getattr(client, "_kernel")
+    kernel = get_kernel(client)
     fake_session = _FakeSession()
-    setattr(kernel, "_session", fake_session)
+    _set_session(kernel, fake_session)
     kernel.state.panel.session_id = 1
 
     task = asyncio.create_task(client.async_execute("area_set_status", area_id=1, chime=True))
@@ -75,16 +82,14 @@ async def test_area_set_status_ack_vs_broadcast() -> None:
     sent = fake_session.sent[0]
     seq = sent["seq"]
 
-    getattr(kernel, "_on_message")(
-        {"seq": 0, "area": {"set_status": {"area_id": 1, "Chime": True}}}
-    )
+    on_message = get_private(kernel, "_on_message")
+    on_message({"seq": 0, "area": {"set_status": {"area_id": 1, "Chime": True}}})
     await asyncio.sleep(0)
     assert not task.done()
 
-    getattr(kernel, "_on_message")(
-        {"seq": seq, "area": {"set_status": {"area_id": 1, "Chime": True}}}
-    )
+    on_message = get_private(kernel, "_on_message")
+    on_message({"seq": seq, "area": {"set_status": {"area_id": 1, "Chime": True}}})
     result = await task
     assert result.ok is True
-    pending = getattr(kernel, "_pending_responses")
+    pending = get_private(kernel, "_pending_responses")
     assert pending.pending_count() == 0

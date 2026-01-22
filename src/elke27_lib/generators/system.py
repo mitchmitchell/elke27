@@ -37,7 +37,9 @@ def generator_system_set_cutoffs(**kwargs: object) -> tuple[dict[str, object], R
     return dict(kwargs), ("system", "set_cutoffs")
 
 
-def generator_system_get_sounders(*, sounder_id: int | None = None) -> tuple[dict[str, object], ResponseKey]:
+def generator_system_get_sounders(
+    *, sounder_id: int | None = None
+) -> tuple[dict[str, object], ResponseKey]:
     payload: dict[str, object] = {}
     if sounder_id is not None:
         if sounder_id < 0:
@@ -138,7 +140,9 @@ def generator_system_set_run(*, app: str) -> tuple[dict[str, object], ResponseKe
     return {"app": app}, ("system", "set_run")
 
 
-def generator_system_start_updt(*, device_id: str, ft: int) -> tuple[dict[str, object], ResponseKey]:
+def generator_system_start_updt(
+    *, device_id: str, ft: int
+) -> tuple[dict[str, object], ResponseKey]:
     if not device_id.strip():
         raise ValueError("device_id must be a non-empty string")
     if ft < 0:

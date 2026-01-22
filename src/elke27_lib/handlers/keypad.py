@@ -12,7 +12,6 @@ from typing import Any, cast
 
 from elke27_lib.dispatcher import DispatchContext
 from elke27_lib.events import (
-    Event,
     UNSET_AT,
     UNSET_CLASSIFICATION,
     UNSET_ROUTE,
@@ -21,6 +20,7 @@ from elke27_lib.events import (
     ApiError,
     AuthorizationRequiredEvent,
     CsmSnapshotUpdated,
+    Event,
     KeypadConfiguredInventoryReady,
     TableCsmChanged,
 )
@@ -270,9 +270,7 @@ def _extract_configured_ids(payload: Mapping[str, Any]) -> set[int]:
         value = payload.get(key)
         if isinstance(value, list):
             return {
-                item
-                for item in cast(list[object], value)
-                if isinstance(item, int) and item >= 1
+                item for item in cast(list[object], value) if isinstance(item, int) and item >= 1
             }
     return set()
 

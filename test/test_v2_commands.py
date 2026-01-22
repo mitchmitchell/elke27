@@ -3,9 +3,8 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from typing import TypeVar
 
-from _pytest.monkeypatch import MonkeyPatch
-
 import pytest
+from _pytest.monkeypatch import MonkeyPatch
 
 from elke27_lib import ArmMode, ClientConfig, Elke27Client
 from elke27_lib.client import Result
@@ -72,7 +71,7 @@ async def test_async_set_output_calls_kernel_and_no_snapshot_mutation():
         kernel.sent.append((command_key, dict(params)))
         return _ok({})
 
-    setattr(client, "async_execute", _ok_execute)
+    client.async_execute = _ok_execute
 
     await client.async_set_output(3, on=True)
 

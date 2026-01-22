@@ -2,6 +2,7 @@ import asyncio
 
 import pytest
 
+from elke27_lib import linking
 from elke27_lib.client import Elke27Client
 from elke27_lib.events import (
     UNSET_AT,
@@ -13,8 +14,8 @@ from elke27_lib.events import (
     OutputConfiguredInventoryReady,
     ZoneConfiguredInventoryReady,
 )
-from elke27_lib import linking
 from elke27_lib.session import Session, SessionConfig, SessionState
+from test.helpers.internal import get_kernel, get_private, set_private
 
 
 @pytest.mark.asyncio
@@ -40,8 +41,8 @@ async def test_wait_ready_returns_true_after_ready_signal() -> None:
         link_key_hex="00",
     )
     session.state = SessionState.ACTIVE
-    kernel = getattr(client, "_kernel")
-    setattr(kernel, "_session", session)
+    kernel = get_kernel(client)
+    set_private(kernel, "_session", session)
     client.state.panel.session_id = 1
     client.state.table_info_by_domain = {
         "area": {"table_elements": 1},
@@ -50,7 +51,7 @@ async def test_wait_ready_returns_true_after_ready_signal() -> None:
         "tstat": {"table_elements": 1},
     }
 
-    handle_event = getattr(client, "_handle_kernel_event")
+    handle_event = get_private(client, "_handle_kernel_event")
     handle_event(
         AreaConfiguredInventoryReady(
             kind=AreaConfiguredInventoryReady.KIND,

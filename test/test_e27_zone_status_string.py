@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from typing import Callable, cast
+from collections.abc import Callable
+from typing import Any, cast
 
 from elke27_lib.handlers import zone as zone_handlers
 from elke27_lib.states import PanelState
+from test.helpers.internal import get_private
 
 _RECONCILE_BULK_ZONE_STATUS = cast(
-    Callable[..., object], getattr(zone_handlers, "_reconcile_bulk_zone_status")
+    Callable[..., object], get_private(zone_handlers, "_reconcile_bulk_zone_status")
 )
 
 
@@ -19,7 +21,7 @@ def test_zone_status_string_updates_zone_state() -> None:
 
     outcome = _RECONCILE_BULK_ZONE_STATUS(state, payload, now=1.0)
 
-    updated_ids = getattr(outcome, "updated_ids")
+    updated_ids = cast(Any, outcome).updated_ids
     assert updated_ids == (1, 2, 3)
 
     z1 = state.zones[1]

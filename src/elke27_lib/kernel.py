@@ -319,9 +319,7 @@ class E27Kernel:
         self._last_link_keys = None
         self._last_client_identity = None
         self._last_session_config = None
-        self._feature_modules = (
-            features if features is not None else self.DEFAULT_FEATURES
-        )
+        self._feature_modules = features if features is not None else self.DEFAULT_FEATURES
         self._features_loaded = False
         self._features_lock = threading.Lock()
         self._next_transfer_id = 1
@@ -387,7 +385,9 @@ class E27Kernel:
         """
         try:
             scanner = discovery.AIOELKDiscovery()
-            panels_any = cast(object | None, await scanner.async_scan(timeout=timeout, address=address))
+            panels_any = cast(
+                object | None, await scanner.async_scan(timeout=timeout, address=address)
+            )
         except Exception as e:
             LOG.warning("Discovery failed: %s", e, exc_info=True)
             raise KernelError(f"Discovery failed: {e}") from e

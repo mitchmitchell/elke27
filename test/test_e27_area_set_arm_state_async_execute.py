@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from _pytest.monkeypatch import MonkeyPatch
@@ -16,6 +16,7 @@ from elke27_lib.errors import (
 )
 from elke27_lib.generators.registry import COMMANDS, CommandSpec
 from elke27_lib.permissions import PermissionLevel
+from test.helpers.internal import get_kernel, get_private
 
 
 class _FakeSession:
@@ -36,13 +37,17 @@ class _FakeSession:
             on_sent(0.0)
 
 
+def _set_session(kernel: object, session: _FakeSession) -> None:
+    cast(Any, kernel)._session = session
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("arm_state", ["DISARMED", "ARMED_AWAY", "ARMED_STAY"])
 async def test_area_set_arm_state_payload(arm_state: str) -> None:
     client = Elke27Client()
-    kernel = getattr(client, "_kernel")
+    kernel = get_kernel(client)
     fake_session = _FakeSession()
-    setattr(kernel, "_session", fake_session)
+    _set_session(kernel, fake_session)
     kernel.state.panel.session_id = 1
 
     task = asyncio.create_task(
@@ -53,7 +58,8 @@ async def test_area_set_arm_state_payload(arm_state: str) -> None:
     sent = fake_session.sent[0]
     assert sent["area"]["set_arm_state"] == {"area_id": 1, "arm_state": arm_state, "pin": 1234}
 
-    getattr(kernel, "_on_message")(
+    on_message = get_private(kernel, "_on_message")
+    on_message(
         {"seq": sent["seq"], "area": {"set_arm_state": {"error_code": E27ErrorCode.ELKERR_NONE}}}
     )
     result = await task
@@ -63,9 +69,9 @@ async def test_area_set_arm_state_payload(arm_state: str) -> None:
 @pytest.mark.asyncio
 async def test_command_requires_pin_before_send() -> None:
     client = Elke27Client()
-    kernel = getattr(client, "_kernel")
+    kernel = get_kernel(client)
     fake_session = _FakeSession()
-    setattr(kernel, "_session", fake_session)
+    _set_session(kernel, fake_session)
     kernel.state.panel.session_id = 1
     area = kernel.state.get_or_create_area(1)
     area.arm_state = "disarmed"
@@ -79,9 +85,9 @@ async def test_command_requires_pin_before_send() -> None:
 @pytest.mark.asyncio
 async def test_command_requires_disarmed_before_send(monkeypatch: MonkeyPatch) -> None:
     client = Elke27Client()
-    kernel = getattr(client, "_kernel")
+    kernel = get_kernel(client)
     fake_session = _FakeSession()
-    setattr(kernel, "_session", fake_session)
+    _set_session(kernel, fake_session)
     kernel.state.panel.session_id = 1
     area = kernel.state.get_or_create_area(1)
     area.arm_state = "armed_away"
@@ -114,9 +120,9 @@ async def test_command_requires_disarmed_before_send(monkeypatch: MonkeyPatch) -
 @pytest.mark.asyncio
 async def test_missing_permission_metadata_fails_closed(monkeypatch: MonkeyPatch) -> None:
     client = Elke27Client()
-    kernel = getattr(client, "_kernel")
+    kernel = get_kernel(client)
     fake_session = _FakeSession()
-    setattr(kernel, "_session", fake_session)
+    _set_session(kernel, fake_session)
     kernel.state.panel.session_id = 1
 
     def _gen_missing_perm(**kwargs: object) -> tuple[dict[str, object], tuple[str, str]]:
@@ -146,9 +152,9 @@ async def test_missing_permission_metadata_fails_closed(monkeypatch: MonkeyPatch
 @pytest.mark.asyncio
 async def test_area_set_arm_state_ack_vs_broadcast() -> None:
     client = Elke27Client()
-    kernel = getattr(client, "_kernel")
+    kernel = get_kernel(client)
     fake_session = _FakeSession()
-    setattr(kernel, "_session", fake_session)
+    _set_session(kernel, fake_session)
     kernel.state.panel.session_id = 1
 
     task = asyncio.create_task(
@@ -159,14 +165,12 @@ async def test_area_set_arm_state_ack_vs_broadcast() -> None:
     sent = fake_session.sent[0]
     seq = sent["seq"]
 
-    getattr(kernel, "_on_message")(
-        {"seq": 0, "area": {"get_status": {"area_id": 1, "arm_state": "arming"}}}
-    )
+    on_message = get_private(kernel, "_on_message")
+    on_message({"seq": 0, "area": {"get_status": {"area_id": 1, "arm_state": "arming"}}})
     await asyncio.sleep(0)
     assert not task.done()
 
-    getattr(kernel, "_on_message")(
-        {"seq": seq, "area": {"set_arm_state": {"error_code": E27ErrorCode.ELKERR_NONE}}}
-    )
+    on_message = get_private(kernel, "_on_message")
+    on_message({"seq": seq, "area": {"set_arm_state": {"error_code": E27ErrorCode.ELKERR_NONE}}})
     result = await task
     assert result.ok is True

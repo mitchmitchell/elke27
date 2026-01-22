@@ -33,9 +33,9 @@ from collections.abc import (
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import (
+    TYPE_CHECKING,
     Any,
     Generic,
-    TYPE_CHECKING,
     TypeVar,
     cast,
 )
@@ -43,8 +43,10 @@ from typing import (
 if TYPE_CHECKING:
     from typing_extensions import override
 else:
+
     def override(func):  # type: ignore[no-redef]
         return func
+
 
 from . import discovery as discovery_mod
 from . import linking as linking_mod
@@ -442,7 +444,9 @@ class Elke27Client:
             mn="222", sn="000000001", fwver="0.1", hwver="0.1", osver="0.1"
         )
 
-    def _coerce_identity(self, identity: object | linking_mod.E27Identity | None) -> linking_mod.E27Identity:
+    def _coerce_identity(
+        self, identity: object | linking_mod.E27Identity | None
+    ) -> linking_mod.E27Identity:
         if identity is None:
             return self._default_identity()
         if isinstance(identity, linking_mod.E27Identity):
@@ -1017,7 +1021,7 @@ class Elke27Client:
             result = await E27Kernel.discover(timeout=timeout, address=address)
         except BaseException as exc:  # noqa: BLE001
             self._raise_v2_error(exc, phase="discover")
-            raise AssertionError("unreachable")
+            raise AssertionError("unreachable") from exc
         panels: list[DiscoveredPanel] = []
         for panel in result.panels:
             panels.append(
@@ -1069,7 +1073,7 @@ class Elke27Client:
             link_keys = await self._kernel.link(panel, identity, creds, timeout_s=timeout_value)
         except BaseException as exc:  # noqa: BLE001
             self._raise_v2_error(exc, phase="link")
-            raise AssertionError("unreachable")
+            raise AssertionError("unreachable") from exc
         return LinkKeys(
             tempkey_hex=link_keys.tempkey_hex,
             linkkey_hex=link_keys.linkkey_hex,
@@ -1424,9 +1428,7 @@ class Elke27Client:
             return _err(permission_error)
 
         if requires_disarmed(permission_level) and not self._all_areas_disarmed():
-            return _err(
-                Elke27PermissionError("This action requires all areas to be disarmed.")
-            )
+            return _err(Elke27PermissionError("This action requires all areas to be disarmed."))
 
         if requires_pin(permission_level):
             pin_value = params.get("pin")
@@ -1584,28 +1586,20 @@ class Elke27Client:
                     return _err(
                         AuthorizationRequired("Authorization is required for this operation.")
                     )
-                return _err(
-                    E27Error(f"{command_key} failed with error_code={error_code}")
-                )
+                return _err(E27Error(f"{command_key} failed with error_code={error_code}"))
 
             response_payload = self._extract_response_payload(msg, expected_route)
             return _ok(response_payload)
 
         if spec.response_mode != "paged_blocks":
-            return _err(
-                ProtocolError(f"Command {command_key!r} has unsupported response_mode.")
-            )
+            return _err(ProtocolError(f"Command {command_key!r} has unsupported response_mode."))
 
         if spec.block_field is None or spec.block_count_field is None:
-            return _err(
-                ProtocolError(f"Command {command_key!r} is missing paging metadata.")
-            )
+            return _err(ProtocolError(f"Command {command_key!r} is missing paging metadata."))
 
         merge_fn = self._resolve_merge_strategy(spec.merge_strategy)
         if merge_fn is None:
-            return _err(
-                ProtocolError(f"Command {command_key!r} is missing merge_strategy.")
-            )
+            return _err(ProtocolError(f"Command {command_key!r} is missing merge_strategy."))
 
         timeout_value = (
             timeout_s if timeout_s is not None else getattr(self._kernel, "_request_timeout_s", 5.0)
@@ -1687,9 +1681,7 @@ class Elke27Client:
                     return _err(
                         AuthorizationRequired("Authorization is required for this operation.")
                     )
-                return _err(
-                    E27Error(f"{command_key} failed with error_code={error_code}")
-                )
+                return _err(E27Error(f"{command_key} failed with error_code={error_code}"))
 
             response_payload = self._extract_response_payload(msg, expected_route)
             response_block_count = self._coerce_block_count(
@@ -1698,13 +1690,9 @@ class Elke27Client:
             if block_count is None:
                 block_count = response_block_count
                 if block_count is None:
-                    return _err(
-                        ProtocolError(f"{command_key} missing block_count in response.")
-                    )
+                    return _err(ProtocolError(f"{command_key} missing block_count in response."))
             elif response_block_count is not None and response_block_count != block_count:
-                return _err(
-                    ProtocolError(f"{command_key} block_count mismatch in response.")
-                )
+                return _err(ProtocolError(f"{command_key} block_count mismatch in response."))
 
             blocks.append(PagedBlock(block_id=block_id, payload=response_payload))
 
@@ -1713,9 +1701,7 @@ class Elke27Client:
             block_id += 1
 
         try:
-            merged_payload = cast(
-                Mapping[str, Any], merge_fn(blocks, block_count or len(blocks))
-            )
+            merged_payload = cast(Mapping[str, Any], merge_fn(blocks, block_count or len(blocks)))
         except Exception as exc:
             return _err(ProtocolError(f"{command_key} merge failed: {exc}"))
 
@@ -1823,12 +1809,8 @@ class Elke27Client:
         error_code = self._extract_error_code(msg, expected_route)
         if error_code is not None:
             if error_code == 11008:
-                return _err(
-                    AuthorizationRequired("Authorization is required for this operation.")
-                )
-            return _err(
-                E27Error(f"control_authenticate failed with error_code={error_code}")
-            )
+                return _err(AuthorizationRequired("Authorization is required for this operation."))
+            return _err(E27Error(f"control_authenticate failed with error_code={error_code}"))
 
         response_payload = self._extract_response_payload(msg, expected_route)
         return _ok(response_payload)

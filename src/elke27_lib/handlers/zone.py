@@ -13,7 +13,6 @@ from typing import Any, cast
 
 from elke27_lib.dispatcher import DispatchContext, PagedBlock
 from elke27_lib.events import (
-    Event,
     UNSET_AT,
     UNSET_CLASSIFICATION,
     UNSET_ROUTE,
@@ -24,6 +23,7 @@ from elke27_lib.events import (
     BootstrapCountsReady,
     CsmSnapshotUpdated,
     DispatchRoutingError,
+    Event,
     TableCsmChanged,
     ZoneAttribsUpdated,
     ZoneConfiguredInventoryReady,
@@ -907,9 +907,10 @@ def _reconcile_configured_zones(
 
 def _extract_configured_zone_ids(payload: Mapping[str, Any], warnings: list[str]) -> list[int]:
     candidates: list[Any] = []
-    has_blocks = _coerce_intish(payload.get("block_id")) is not None or _coerce_intish(
-        payload.get("block_count")
-    ) is not None
+    has_blocks = (
+        _coerce_intish(payload.get("block_id")) is not None
+        or _coerce_intish(payload.get("block_count")) is not None
+    )
 
     for key in ("configured_zone_ids", "configured_zones", "zone_ids", "zones", "configured"):
         if key in payload:

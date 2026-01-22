@@ -102,6 +102,7 @@ class Session:
         s.send_json({...})   # application sends requests (including authenticate if desired)
         obj = s.recv_json()  # or call s.pump_once() to dispatch via callback
     """
+
     cfg: SessionConfig
     client_identity: linking.E27Identity
     link_key_hex: str

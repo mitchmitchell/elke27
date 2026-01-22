@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import os
-from typing import Any
 from getpass import getpass
+from typing import Any
 
 import pytest
 

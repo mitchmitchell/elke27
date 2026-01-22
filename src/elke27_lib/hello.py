@@ -23,8 +23,8 @@ import logging
 import socket
 import time
 from collections.abc import Mapping
-from typing import cast
 from dataclasses import dataclass
+from typing import cast
 
 from .errors import (
     E27ErrorContext,

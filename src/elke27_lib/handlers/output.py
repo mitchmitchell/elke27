@@ -12,7 +12,6 @@ from typing import Any, cast
 
 from elke27_lib.dispatcher import DispatchContext, PagedBlock
 from elke27_lib.events import (
-    Event,
     UNSET_AT,
     UNSET_CLASSIFICATION,
     UNSET_ROUTE,
@@ -23,6 +22,7 @@ from elke27_lib.events import (
     BootstrapCountsReady,
     CsmSnapshotUpdated,
     DispatchRoutingError,
+    Event,
     OutputConfiguredInventoryReady,
     OutputConfiguredUpdated,
     OutputsStatusBulkUpdated,
@@ -519,9 +519,7 @@ def _extract_configured_output_ids(payload: Mapping[str, Any]) -> list[int]:
         value = payload.get(key)
         if isinstance(value, list):
             ids = [
-                item
-                for item in cast(list[object], value)
-                if isinstance(item, int) and item >= 1
+                item for item in cast(list[object], value) if isinstance(item, int) and item >= 1
             ]
             return sorted(set(ids))
     return []

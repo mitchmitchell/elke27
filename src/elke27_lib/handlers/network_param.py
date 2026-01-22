@@ -11,7 +11,6 @@ from typing import Any, cast
 
 from elke27_lib.dispatcher import DispatchContext
 from elke27_lib.events import (
-    Event,
     UNSET_AT,
     UNSET_CLASSIFICATION,
     UNSET_ROUTE,
@@ -19,6 +18,7 @@ from elke27_lib.events import (
     UNSET_SESSION_ID,
     ApiError,
     AuthorizationRequiredEvent,
+    Event,
     NetworkRssiUpdated,
     NetworkSsidResultsUpdated,
 )
@@ -92,10 +92,7 @@ def make_network_param_get_ssid_handler(state: PanelState, emit: EmitFn, now: No
         state.panel.last_message_at = state.network.last_update_at
 
         ssids: tuple[str, ...] = tuple(
-            ssid
-            for entry in results
-            for ssid in [entry.get("ssid")]
-            if isinstance(ssid, str)
+            ssid for entry in results for ssid in [entry.get("ssid")] if isinstance(ssid, str)
         )
         emit(
             NetworkSsidResultsUpdated(

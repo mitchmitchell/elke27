@@ -16,7 +16,6 @@ from elke27_lib import (
 )
 from elke27_lib.dispatcher import DispatchContext, MessageKind
 from elke27_lib.events import (
-    Event,
     UNSET_AT,
     UNSET_CLASSIFICATION,
     UNSET_ROUTE,
@@ -25,6 +24,7 @@ from elke27_lib.events import (
     AreaStatusUpdated,
     CsmSnapshotUpdated,
     DomainCsmChanged,
+    Event,
     TableCsmChanged,
 )
 from elke27_lib.handlers.zone import (
@@ -216,7 +216,7 @@ def test_typed_subscriber_receives_csm_events() -> None:
 
 def test_area_bypass_count_zero_does_not_refresh_bypassed_zones() -> None:
     client = Elke27Client(config=ClientConfig(event_queue_size=2))
-    kernel = getattr(client, "_kernel")
+    kernel = client._kernel
     state = kernel.state
     area = state.get_or_create_area(1)
     area.num_bypassed_zones = 0
@@ -230,7 +230,7 @@ def test_area_bypass_count_zero_does_not_refresh_bypassed_zones() -> None:
         recorded.append((route, dict(kwargs)))
         return 1
 
-    setattr(kernel, "request", _fake_request)
+    kernel.request = _fake_request
     kernel.requests.register(("zone", "get_all_zones_status"), _empty_payload)
 
     evt = AreaStatusUpdated(
@@ -250,7 +250,7 @@ def test_area_bypass_count_zero_does_not_refresh_bypassed_zones() -> None:
 
 def test_area_bypass_count_nonzero_does_not_refresh_non_bypassed_zones() -> None:
     client = Elke27Client(config=ClientConfig(event_queue_size=2))
-    kernel = getattr(client, "_kernel")
+    kernel = client._kernel
     state = kernel.state
     area = state.get_or_create_area(1)
     area.num_bypassed_zones = 1
@@ -267,7 +267,7 @@ def test_area_bypass_count_nonzero_does_not_refresh_non_bypassed_zones() -> None
         recorded.append((route, dict(kwargs)))
         return 1
 
-    setattr(kernel, "request", _fake_request)
+    kernel.request = _fake_request
     kernel.requests.register(("zone", "get_all_zones_status"), _empty_payload)
 
     evt = AreaStatusUpdated(
@@ -287,7 +287,7 @@ def test_area_bypass_count_nonzero_does_not_refresh_non_bypassed_zones() -> None
 
 def test_area_bypass_refresh_suppressed_after_local_command() -> None:
     client = Elke27Client(config=ClientConfig(event_queue_size=2))
-    kernel = getattr(client, "_kernel")
+    kernel = client._kernel
     state = kernel.state
     area = state.get_or_create_area(1)
     area.num_bypassed_zones = 1
@@ -300,13 +300,13 @@ def test_area_bypass_refresh_suppressed_after_local_command() -> None:
         recorded.append((route, dict(kwargs)))
         return 1
 
-    setattr(kernel, "request", _fake_request)
+    kernel.request = _fake_request
     kernel.requests.register(("zone", "get_all_zones_status"), _empty_payload)
 
     def _fake_now() -> float:
         return 100.0
 
-    setattr(kernel, "now", _fake_now)
+    kernel.now = _fake_now
     client._record_local_zone_bypass(33)
 
     evt = AreaStatusUpdated(
@@ -326,14 +326,14 @@ def test_area_bypass_refresh_suppressed_after_local_command() -> None:
 
 def test_area_status_no_change_refreshes_bulk_status() -> None:
     client = Elke27Client(config=ClientConfig(event_queue_size=2))
-    kernel = getattr(client, "_kernel")
+    kernel = client._kernel
     recorded: list[tuple[tuple[str, str], dict[str, object]]] = []
 
     def _fake_request(route: tuple[str, str], **kwargs: object) -> int:
         recorded.append((route, dict(kwargs)))
         return 1
 
-    setattr(kernel, "request", _fake_request)
+    kernel.request = _fake_request
     kernel.requests.register(("zone", "get_all_zones_status"), _empty_payload)
 
     evt = AreaStatusUpdated(
@@ -353,7 +353,7 @@ def test_area_status_no_change_refreshes_bulk_status() -> None:
 
 def test_snapshot_includes_zone_definitions() -> None:
     client = Elke27Client(config=ClientConfig(event_queue_size=2))
-    state = getattr(client, "_kernel").state
+    state = client._kernel.state
     zone = state.get_or_create_zone(1)
     zone.name = "Front Door"
     zone.definition = 1
@@ -380,7 +380,7 @@ def test_snapshot_includes_zone_definitions() -> None:
 
 def test_zone_attribs_handler_updates_snapshot_definitions() -> None:
     client = Elke27Client(config=ClientConfig(event_queue_size=2))
-    state = getattr(client, "_kernel").state
+    state = client._kernel.state
     emitted: list[Event] = []
 
     def _emit(evt: Event, _ctx: DispatchContext) -> None:
@@ -410,7 +410,7 @@ def test_zone_attribs_handler_updates_snapshot_definitions() -> None:
 
 def test_refresh_zone_config_requests_definitions_and_attribs() -> None:
     client = Elke27Client(config=ClientConfig(event_queue_size=2))
-    kernel = getattr(client, "_kernel")
+    kernel = client._kernel
     state = kernel.state
     state.inventory.configured_zones = {1, 2}
     recorded: list[tuple[tuple[str, str], dict[str, object]]] = []
@@ -419,7 +419,7 @@ def test_refresh_zone_config_requests_definitions_and_attribs() -> None:
         recorded.append((route, dict(kwargs)))
         return 1
 
-    setattr(kernel, "request", _fake_request)
+    kernel.request = _fake_request
     kernel.requests.register(("zone", "get_table_info"), _empty_payload)
     kernel.requests.register(("zone", "get_configured"), _empty_payload)
     kernel.requests.register(("zone", "get_defs"), _empty_payload)
@@ -435,7 +435,7 @@ def test_refresh_zone_config_requests_definitions_and_attribs() -> None:
 
 def test_bootstrap_zone_definitions_not_none() -> None:
     client = Elke27Client(config=ClientConfig(event_queue_size=2))
-    state = getattr(client, "_kernel").state
+    state = client._kernel.state
     emitted: list[Event] = []
 
     def _emit(evt: Event, _ctx: DispatchContext) -> None:
@@ -465,7 +465,7 @@ def test_bootstrap_zone_definitions_not_none() -> None:
 
 def test_refresh_zone_config_updates_snapshot_after_handlers() -> None:
     client = Elke27Client(config=ClientConfig(event_queue_size=2))
-    state = getattr(client, "_kernel").state
+    state = client._kernel.state
     emitted: list[Event] = []
 
     def _emit(evt: Event, _ctx: DispatchContext) -> None:

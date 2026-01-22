@@ -20,9 +20,8 @@ import logging
 import random
 from collections.abc import Iterable
 
-from _pytest.logging import LogCaptureFixture
-
 import pytest
+from _pytest.logging import LogCaptureFixture
 
 from elke27_lib.framing import (
     STARTCHAR,
@@ -266,9 +265,7 @@ def test_resync_logs_once_per_sequence(caplog: LogCaptureFixture) -> None:
     stream = partial + bytes([STARTCHAR, 0x81]) + good[1:]
 
     deframe_feed(state, stream)
-    errors: list[logging.LogRecord] = [
-        r for r in caplog.records if r.levelno == logging.ERROR
-    ]
+    errors: list[logging.LogRecord] = [r for r in caplog.records if r.levelno == logging.ERROR]
     assert any("deframe resync" in r.message for r in errors)
 
     caplog.clear()
@@ -416,9 +413,7 @@ def test_wait_start_throttle_with_random_garbage_bursts(caplog: LogCaptureFixtur
         deframe_feed(state, garbage)
         deframe_feed(state, frame_build(protocol_byte=0x80, data_frame=b"OK"))
 
-    errors: list[logging.LogRecord] = [
-        r for r in caplog.records if r.levelno == logging.ERROR
-    ]
+    errors: list[logging.LogRecord] = [r for r in caplog.records if r.levelno == logging.ERROR]
     # Each burst should log at most once due to throttling.
     assert len(errors) <= bursts
 
@@ -477,7 +472,5 @@ def test_truncated_frames_resync_and_throttle(caplog: LogCaptureFixture) -> None
     # Resync path may log errors without emitting FRAMING_ERROR results.
     assert any("deframe resync" in r.message for r in caplog.records)
     # Throttle should keep error logs bounded across repeated truncations.
-    errors: list[logging.LogRecord] = [
-        r for r in caplog.records if r.levelno == logging.ERROR
-    ]
+    errors: list[logging.LogRecord] = [r for r in caplog.records if r.levelno == logging.ERROR]
     assert len(errors) <= 6

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable, Iterable
 from enum import Enum
 
 import pytest
 from _pytest.monkeypatch import MonkeyPatch
-from collections.abc import Callable, Iterable
 
 from elke27_lib import (
     AreaState,
@@ -108,7 +108,7 @@ async def test_async_link_roundtrip_and_auth_error(monkeypatch: MonkeyPatch) -> 
     async def _fake_link(*_args: object, **_kwargs: object) -> E27LinkKeys:
         return E27LinkKeys(tempkey_hex="t", linkkey_hex="k", linkhmac_hex="h")
 
-    kernel = getattr(client, "_kernel")
+    kernel = client._kernel
     monkeypatch.setattr(kernel, "link", _fake_link)
     keys = await client.async_link(
         "1.2.3.4",
@@ -137,6 +137,7 @@ async def test_async_link_roundtrip_and_auth_error(monkeypatch: MonkeyPatch) -> 
 @pytest.mark.asyncio
 async def test_async_connect_disconnect_and_wait_ready(monkeypatch: MonkeyPatch) -> None:
     del monkeypatch
+
     class _FakeKernel:
         _ready: bool
         state: object
@@ -189,7 +190,7 @@ async def test_async_connect_disconnect_and_wait_ready(monkeypatch: MonkeyPatch)
         "1.2.3.4", 2101, LinkKeys(tempkey_hex="t", linkkey_hex="k", linkhmac_hex="h")
     )
     assert client.is_ready is False
-    handle_event = getattr(client, "_handle_kernel_event")
+    handle_event = client._handle_kernel_event
     handle_event(
         AreaConfiguredInventoryReady(
             kind=AreaConfiguredInventoryReady.KIND,

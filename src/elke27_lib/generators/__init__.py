@@ -6,6 +6,7 @@ import importlib
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
+
     class CommandSpec(Protocol):
         pass
 

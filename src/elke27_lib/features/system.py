@@ -347,9 +347,7 @@ def build_system_set_debug_flags_payload(
     return payload
 
 
-def build_system_get_debug_string_payload(
-    *, dbug_id: int, **_kwargs: Any
-) -> Mapping[str, Any]:
+def build_system_get_debug_string_payload(*, dbug_id: int, **_kwargs: Any) -> Mapping[str, Any]:
     if dbug_id < 0:
         raise ValueError("build_system_get_debug_string_payload: dbug_id must be int >= 0")
     return {"dbug_id": dbug_id}

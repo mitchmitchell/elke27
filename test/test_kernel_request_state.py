@@ -1,13 +1,14 @@
 import asyncio
 import unittest
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import Any, cast
 
 from typing_extensions import override
 
 from elke27_lib import kernel as kernel_mod
 from elke27_lib.errors import ConnectionLost, E27Timeout
 from elke27_lib.kernel import E27Kernel
+from test.helpers.internal import get_private
 
 
 class FakeSession:
@@ -36,8 +37,9 @@ class KernelRequestStateTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.kernel = E27Kernel(request_timeout_s=0.05)
         self.fake_session = FakeSession()
-        setattr(self.kernel, "_session", self.fake_session)
-        setattr(self.kernel, "_loop", asyncio.get_running_loop())
+        kernel_any = cast(Any, self.kernel)
+        kernel_any._session = self.fake_session
+        kernel_any._loop = asyncio.get_running_loop()
 
     def _get_kernel(self) -> E27Kernel:
         kernel = self.kernel
@@ -79,16 +81,17 @@ class KernelRequestStateTests(unittest.IsolatedAsyncioTestCase):
         self._send_request(seq)
         await asyncio.sleep(0)
         self.assertEqual(len(session.sent), 1)
-        request_state = getattr(kernel_mod, "_RequestState")
-        self.assertEqual(getattr(kernel, "_request_state"), request_state.IN_FLIGHT)
+        request_state = get_private(kernel_mod, "_RequestState")
+        self.assertEqual(get_private(kernel, "_request_state"), request_state.IN_FLIGHT)
 
         msg = {"seq": seq, "system": {"ping": {"ok": True}}}
-        getattr(kernel, "_on_message")(msg)
+        on_message = get_private(kernel, "_on_message")
+        on_message(msg)
         reply = await asyncio.wait_for(future, timeout=0.1)
         self.assertEqual(reply, msg)
-        request_state = getattr(kernel_mod, "_RequestState")
-        self.assertEqual(getattr(kernel, "_request_state"), request_state.IDLE)
-        self.assertIsNone(getattr(kernel, "_active_seq"))
+        request_state = get_private(kernel_mod, "_RequestState")
+        self.assertEqual(get_private(kernel, "_request_state"), request_state.IDLE)
+        self.assertIsNone(get_private(kernel, "_active_seq"))
 
     async def test_timeout_path(self) -> None:
         kernel = self._get_kernel()
@@ -98,8 +101,8 @@ class KernelRequestStateTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.05)
         with self.assertRaises(E27Timeout):
             await asyncio.wait_for(future, timeout=0.1)
-        request_state = getattr(kernel_mod, "_RequestState")
-        self.assertEqual(getattr(kernel, "_request_state"), request_state.IDLE)
+        request_state = get_private(kernel_mod, "_RequestState")
+        self.assertEqual(get_private(kernel, "_request_state"), request_state.IDLE)
 
     async def test_reply_then_timeout_race(self) -> None:
         kernel = self._get_kernel()
@@ -109,13 +112,15 @@ class KernelRequestStateTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)
 
         msg = {"seq": seq, "system": {"ping": {"ok": True}}}
-        getattr(kernel, "_on_message")(msg)
-        getattr(kernel, "_on_reply_timeout")(seq)
+        on_message = get_private(kernel, "_on_message")
+        on_reply_timeout = get_private(kernel, "_on_reply_timeout")
+        on_message(msg)
+        on_reply_timeout(seq)
         reply = await asyncio.wait_for(future, timeout=0.1)
         self.assertEqual(reply, msg)
-        request_state = getattr(kernel_mod, "_RequestState")
-        self.assertEqual(getattr(kernel, "_request_state"), request_state.IDLE)
-        self.assertIsNone(getattr(kernel, "_active_seq"))
+        request_state = get_private(kernel_mod, "_RequestState")
+        self.assertEqual(get_private(kernel, "_request_state"), request_state.IDLE)
+        self.assertIsNone(get_private(kernel, "_active_seq"))
 
     async def test_late_reply_after_timeout(self) -> None:
         kernel = self._get_kernel()
@@ -124,15 +129,17 @@ class KernelRequestStateTests(unittest.IsolatedAsyncioTestCase):
         self._send_request(seq, timeout_s=0.5)
         await asyncio.sleep(0)
 
-        getattr(kernel, "_on_reply_timeout")(seq)
+        on_reply_timeout = get_private(kernel, "_on_reply_timeout")
+        on_reply_timeout(seq)
         with self.assertRaises(E27Timeout):
             await asyncio.wait_for(future, timeout=0.1)
 
         msg = {"seq": seq, "system": {"ping": {"ok": True}}}
-        getattr(kernel, "_on_message")(msg)
-        request_state = getattr(kernel_mod, "_RequestState")
-        self.assertEqual(getattr(kernel, "_request_state"), request_state.IDLE)
-        self.assertIsNone(getattr(kernel, "_active_seq"))
+        on_message = get_private(kernel, "_on_message")
+        on_message(msg)
+        request_state = get_private(kernel_mod, "_RequestState")
+        self.assertEqual(get_private(kernel, "_request_state"), request_state.IDLE)
+        self.assertIsNone(get_private(kernel, "_active_seq"))
 
     async def test_disconnect_while_in_flight(self) -> None:
         kernel = self._get_kernel()
@@ -141,11 +148,12 @@ class KernelRequestStateTests(unittest.IsolatedAsyncioTestCase):
         self._send_request(seq, timeout_s=0.5)
         await asyncio.sleep(0)
 
-        getattr(kernel, "_abort_requests")(ConnectionLost("Session disconnected."))
+        abort_requests = get_private(kernel, "_abort_requests")
+        abort_requests(ConnectionLost("Session disconnected."))
         with self.assertRaises(ConnectionLost):
             await asyncio.wait_for(future, timeout=0.1)
-        request_state = getattr(kernel_mod, "_RequestState")
-        self.assertEqual(getattr(kernel, "_request_state"), request_state.IDLE)
+        request_state = get_private(kernel_mod, "_RequestState")
+        self.assertEqual(get_private(kernel, "_request_state"), request_state.IDLE)
 
     async def test_no_concurrent_sends(self) -> None:
         kernel = self._get_kernel()
@@ -159,23 +167,26 @@ class KernelRequestStateTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)
 
         self.assertEqual(len(session.sent), 1)
-        getattr(kernel, "_on_message")({"seq": seq1, "system": {"ping": {"ok": True}}})
+        on_message = get_private(kernel, "_on_message")
+        on_message({"seq": seq1, "system": {"ping": {"ok": True}}})
         await asyncio.wait_for(future1, timeout=0.1)
         await asyncio.sleep(0)
         self.assertEqual(len(session.sent), 2)
-        getattr(kernel, "_on_message")({"seq": seq2, "system": {"ping": {"ok": True}}})
+        on_message = get_private(kernel, "_on_message")
+        on_message({"seq": seq2, "system": {"ping": {"ok": True}}})
         await asyncio.wait_for(future2, timeout=0.1)
 
 
 def test_bootstrap_requests_zone_defs() -> None:
     kernel = E27Kernel()
-    setattr(kernel, "_session", object())
+    kernel_any = cast(Any, kernel)
+    kernel_any._session = object()
     recorded: list[tuple[tuple[str, str], dict[str, object]]] = []
 
     def _fake_request(route: tuple[str, str], **kwargs: object) -> None:
         recorded.append((route, dict(kwargs)))
 
-    setattr(kernel, "request", _fake_request)
+    kernel_any.request = _fake_request
     for route in (
         ("area", "get_table_info"),
         ("zone", "get_table_info"),
@@ -187,10 +198,12 @@ def test_bootstrap_requests_zone_defs() -> None:
         ("user", "get_configured"),
         ("zone", "get_defs"),
     ):
+
         def _empty_payload(**_kwargs: object) -> dict[str, Any]:
             return {}
 
         kernel.requests.register(route, _empty_payload)
 
-    getattr(kernel, "_bootstrap_requests")()
+    bootstrap_requests = get_private(kernel, "_bootstrap_requests")
+    bootstrap_requests()
     assert ("zone", "get_defs") in [route for route, _ in recorded]

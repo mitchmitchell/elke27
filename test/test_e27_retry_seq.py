@@ -4,6 +4,7 @@ from collections.abc import Callable
 from typing import Any, cast
 
 from elke27_lib.kernel import E27Kernel
+from test.helpers.internal import get_private
 
 
 def test_no_retry_after_timeout() -> None:
@@ -29,8 +30,9 @@ def test_no_retry_after_timeout() -> None:
     def _noop(*_args: object, **_kwargs: object) -> None:
         return None
 
-    setattr(kernel, "_session", _Session())
-    setattr(kernel, "_log_outbound", _noop)
+    kernel_any = cast(Any, kernel)
+    kernel_any._session = _Session()
+    kernel_any._log_outbound = _noop
 
     kernel.send_request_with_seq(
         1,
@@ -42,6 +44,6 @@ def test_no_retry_after_timeout() -> None:
         expected_route=("zone", "get_status"),
     )
     assert sent == [1]
-    on_reply_timeout = cast(Callable[[int], None], getattr(kernel, "_on_reply_timeout"))
+    on_reply_timeout = cast(Callable[[int], None], get_private(kernel, "_on_reply_timeout"))
     on_reply_timeout(1)
     assert sent == [1]

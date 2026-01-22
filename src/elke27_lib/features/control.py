@@ -66,9 +66,7 @@ def build_control_get_version_info_payload(**_kwargs: Any) -> dict[str, object]:
     return {}
 
 
-def build_control_authenticate_payload(
-    *, pin: int | str, **_kwargs: Any
-) -> dict[str, object]:
+def build_control_authenticate_payload(*, pin: int | str, **_kwargs: Any) -> dict[str, object]:
     if isinstance(pin, str):
         if not pin.isdigit():
             raise ValueError("pin must be an integer or numeric string")

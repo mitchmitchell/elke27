@@ -1,7 +1,7 @@
 import logging
+from collections.abc import Mapping
 
 from _pytest.logging import LogCaptureFixture
-from collections.abc import Mapping
 
 from elke27_lib.dispatcher import DispatchContext, Dispatcher, PagedBlock, PendingRequest
 
@@ -20,9 +20,7 @@ def test_paged_missing_block_id_warns_and_skips(caplog: LogCaptureFixture) -> No
     def _merge(_blocks: list[PagedBlock], count: int) -> dict[str, object]:
         return {"areas": [], "block_count": count}
 
-    dispatcher.register_paged(
-        route, merge_fn=_merge
-    )
+    dispatcher.register_paged(route, merge_fn=_merge)
     dispatcher.add_pending(PendingRequest(seq=1, expected_route=route))
 
     msg = {"seq": 1, "area": {"get_configured": {"block_count": 2, "areas": [1]}}}

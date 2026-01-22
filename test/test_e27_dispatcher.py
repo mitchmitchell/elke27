@@ -1,7 +1,7 @@
-from elke27_lib.const import E27ErrorCode
 from collections.abc import Mapping
 from typing import cast
 
+from elke27_lib.const import E27ErrorCode
 from elke27_lib.dispatcher import (
     ERR_DOMAIN_EMPTY,
     ERR_DOMAIN_MULTI,

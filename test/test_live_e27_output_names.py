@@ -38,9 +38,7 @@ async def test_live_output_names_from_attribs(live_e27_client: Elke27Client) -> 
 
     output_ids_list = cast(list[object], output_ids)
     output_ids = [
-        output_id
-        for output_id in output_ids_list
-        if isinstance(output_id, int) and output_id >= 1
+        output_id for output_id in output_ids_list if isinstance(output_id, int) and output_id >= 1
     ]
 
     for output_id in output_ids:

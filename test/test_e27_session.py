@@ -15,9 +15,9 @@
 
 from __future__ import annotations
 
+import socket
 from collections.abc import Callable
 from dataclasses import dataclass
-import socket
 from typing import Any, cast
 
 import pytest
@@ -27,6 +27,7 @@ import pytest
 from elke27_lib import linking
 from elke27_lib import session as session_mod
 from elke27_lib.framing import DeframeState
+from test.helpers.internal import get_private, set_private
 
 
 @dataclass
@@ -95,8 +96,8 @@ def _make_session_ready(monkeypatch: pytest.MonkeyPatch) -> tuple[session_mod.Se
     fake_sock = _FakeSocket()
 
     # Mark session as "ready"
-    setattr(s, "sock", cast(socket.socket, cast(object, fake_sock)))
-    setattr(s, "_deframe_state", DeframeState())
+    s.sock = cast(socket.socket, cast(object, fake_sock))
+    set_private(s, "_deframe_state", DeframeState())
     s.info = session_mod.SessionInfo(
         session_id=123, session_key_hex="11" * 16, session_hmac_hex="22" * 20
     )
@@ -176,7 +177,7 @@ def test_close_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
     s.close()
     assert fake_sock.closed is True
     assert s.sock is None
-    assert getattr(s, "_deframe_state") is None
+    assert get_private(s, "_deframe_state") is None
     assert s.info is None
 
     # Calling again should not raise.
@@ -232,7 +233,7 @@ def test_send_json_encrypts_frames_and_sendall(monkeypatch: pytest.MonkeyPatch) 
 
 def test_envelope_seq_wraps(monkeypatch: pytest.MonkeyPatch) -> None:
     s, _ = _make_session_ready(monkeypatch)
-    setattr(s, "_tx_envelope_seq", 2_147_483_647)
+    set_private(s, "_tx_envelope_seq", 2147483647)
     captured: list[int] = []
 
     def _fake_encrypt_schema0_envelope(
@@ -292,6 +293,7 @@ def test_recv_json_deframes_decrypts_and_parses(monkeypatch: pytest.MonkeyPatch)
 
 def test_recv_json_rejects_short_frame(monkeypatch: pytest.MonkeyPatch) -> None:
     s, _ = _make_session_ready(monkeypatch)
+
     def _fake_recv_one_frame_no_crc(*, timeout_s: float) -> bytes:
         _ = timeout_s
         return b"\x80\x00"
@@ -305,6 +307,7 @@ def test_recv_json_rejects_short_frame(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_recv_json_rejects_non_object_json(monkeypatch: pytest.MonkeyPatch) -> None:
     s, _ = _make_session_ready(monkeypatch)
+
     def _fake_recv_one_frame_no_crc(*, timeout_s: float) -> bytes:
         _ = timeout_s
         return b"\x81\x03\x00" + b"XYZ"
@@ -325,6 +328,7 @@ def test_recv_json_rejects_non_object_json(monkeypatch: pytest.MonkeyPatch) -> N
 
 def test_recv_json_rejects_invalid_json(monkeypatch: pytest.MonkeyPatch) -> None:
     s, _ = _make_session_ready(monkeypatch)
+
     def _fake_recv_one_frame_no_crc(*, timeout_s: float) -> bytes:
         _ = timeout_s
         return b"\x81\x03\x00" + b"XYZ"
@@ -368,15 +372,13 @@ def test_recv_one_frame_no_crc_uses_deframe_state_and_feed(monkeypatch: pytest.M
 
     monkeypatch.setattr(session_mod, "deframe_feed", _fake_deframe_feed)
 
-    recv_one_frame_no_crc = cast(
-        Callable[..., bytes], getattr(s, "_recv_one_frame_no_crc")
-    )
+    recv_one_frame_no_crc = cast(Callable[..., bytes], get_private(s, "_recv_one_frame_no_crc"))
     frame = recv_one_frame_no_crc(timeout_s=0.5)
     assert frame == b"\x80\x01\x00Z"
 
     # Ensure DeframeState instance was used and deframe_feed called twice.
     assert len(feed_calls) == 2
-    deframe_state = cast(DeframeState, getattr(s, "_deframe_state"))
+    deframe_state = cast(DeframeState, get_private(s, "_deframe_state"))
     assert feed_calls[0][0] is deframe_state
     assert feed_calls[0][1] == b"chunk1"
     assert feed_calls[1][0] is deframe_state
@@ -397,7 +399,7 @@ def test_recv_one_frame_no_crc_queues_multiple_frames(monkeypatch: pytest.Monkey
     monkeypatch.setattr(s, "_recv_some", _fake_recv_some)
 
     def _fake_deframe_feed(state: Any, chunk: bytes) -> list[_DeframeResult]:
-        deframe_state = cast(DeframeState, getattr(s, "_deframe_state"))
+        deframe_state = cast(DeframeState, get_private(s, "_deframe_state"))
         assert state is deframe_state
         assert chunk == b"chunk1"
         return [
@@ -407,9 +409,7 @@ def test_recv_one_frame_no_crc_queues_multiple_frames(monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(session_mod, "deframe_feed", _fake_deframe_feed)
 
-    recv_one_frame_no_crc = cast(
-        Callable[..., bytes], getattr(s, "_recv_one_frame_no_crc")
-    )
+    recv_one_frame_no_crc = cast(Callable[..., bytes], get_private(s, "_recv_one_frame_no_crc"))
     frame1 = recv_one_frame_no_crc(timeout_s=0.5)
     frame2 = recv_one_frame_no_crc(timeout_s=0.5)
 
@@ -430,7 +430,7 @@ def test_recv_json_drains_multi_frame_chunk(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(s, "_recv_some", _fake_recv_some)
 
     def _fake_deframe_feed(state: Any, chunk: bytes) -> list[_DeframeResult]:
-        deframe_state = cast(DeframeState, getattr(s, "_deframe_state"))
+        deframe_state = cast(DeframeState, get_private(s, "_deframe_state"))
         assert state is deframe_state
         assert chunk == b"chunk1"
         return [
@@ -473,7 +473,7 @@ def test_recv_json_skips_invalid_then_reads_next_frame(monkeypatch: pytest.Monke
     monkeypatch.setattr(s, "_recv_some", _fake_recv_some)
 
     def _fake_deframe_feed(state: Any, chunk: bytes) -> list[_DeframeResult]:
-        deframe_state = cast(DeframeState, getattr(s, "_deframe_state"))
+        deframe_state = cast(DeframeState, get_private(s, "_deframe_state"))
         assert state is deframe_state
         assert chunk == b"chunk1"
         return [
@@ -517,7 +517,7 @@ def test_recv_json_handles_partial_frame_then_next_chunk(monkeypatch: pytest.Mon
     monkeypatch.setattr(s, "_recv_some", _fake_recv_some)
 
     def _fake_deframe_feed(state: Any, chunk: bytes) -> list[_DeframeResult]:
-        deframe_state = cast(DeframeState, getattr(s, "_deframe_state"))
+        deframe_state = cast(DeframeState, get_private(s, "_deframe_state"))
         assert state is deframe_state
         if chunk == b"chunk1":
             return []
@@ -549,7 +549,7 @@ def test_recv_json_delivers_after_decrypt_error(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(s, "_recv_some", _fake_recv_some)
 
     def _fake_deframe_feed(state: Any, chunk: bytes) -> list[_DeframeResult]:
-        deframe_state = cast(DeframeState, getattr(s, "_deframe_state"))
+        deframe_state = cast(DeframeState, get_private(s, "_deframe_state"))
         assert state is deframe_state
         assert chunk == b"chunk1"
         return [
@@ -598,6 +598,7 @@ def test_pump_once_dispatches_on_message(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(s, "recv_json", _fake_recv_json)
 
     captured: list[dict[str, Any]] = []
+
     def _on_message(obj: dict[str, Any]) -> None:
         captured.append(obj)
 
@@ -634,7 +635,7 @@ def test_pump_once_disconnects_and_emits_on_disconnected(monkeypatch: pytest.Mon
     # Session should have been closed and callback fired.
     assert s.sock is None
     assert s.info is None
-    assert getattr(s, "_deframe_state") is None
+    assert get_private(s, "_deframe_state") is None
     assert fake_sock.closed is True
 
     assert disconnected["called"] is True

@@ -33,6 +33,7 @@ class OutboundQueue:
 
     Policy: if the queue is stopped, pending items are failed with the provided exception.
     """
+
     _loop: asyncio.AbstractEventLoop
     _send_fn: Callable[[bytes], None]
     _min_interval_s: float

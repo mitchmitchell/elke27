@@ -110,9 +110,7 @@ def calculate_block_padding(length: int) -> int:
     return (16 - (length % 16)) & 15
 
 
-def _require_block_multiple(
-    data: bytes | None, block_size: int = 16, what: str = "data"
-) -> None:
+def _require_block_multiple(data: bytes | None, block_size: int = 16, what: str = "data") -> None:
     if data is None:
         raise E27CryptoError(f"{what}: is None")
     if len(data) == 0:

@@ -1,7 +1,5 @@
 import pytest
 
-from test.helpers.dispatch import make_ctx
-
 from elke27_lib.generators.registry import COMMANDS
 from elke27_lib.permissions import (
     ALL_PERMISSION_KEYS,
@@ -9,6 +7,7 @@ from elke27_lib.permissions import (
     PermissionLevel,
     canonical_generator_key,
 )
+from test.helpers.dispatch import make_ctx
 
 EXPECTED_PERMISSIONS = {
     "area_get_table_info": PermissionLevel.PLT_ENCRYPTION_KEY,

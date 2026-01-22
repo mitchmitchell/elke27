@@ -29,7 +29,6 @@ from elke27_lib.dispatcher import (
     DispatchContext,  # adjust import to your dispatcher module location
 )
 from elke27_lib.events import (
-    Event,
     UNSET_AT,
     UNSET_CLASSIFICATION,
     UNSET_ROUTE,
@@ -41,6 +40,7 @@ from elke27_lib.events import (
     CsmSnapshotUpdated,
     DispatchRoutingError,
     DomainCsmChanged,
+    Event,
     PanelVersionInfoUpdated,
 )
 from elke27_lib.states import PanelState, update_csm_snapshot
@@ -55,6 +55,7 @@ def _as_mapping(obj: object) -> Mapping[str, Any] | None:
     if isinstance(obj, Mapping):
         return cast(Mapping[str, Any], obj)
     return None
+
 
 # -------------------------
 # Module-private reconcile
