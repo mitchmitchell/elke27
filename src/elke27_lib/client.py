@@ -303,10 +303,14 @@ class Elke27Client:
         self._subscriber_lock: threading.Lock = threading.Lock()
         self._subscriber_error_types: set[type] = set()
         self._kernel_event_token: int | None = None
+        self._now_monotonic: Callable[[], float] = now_monotonic or time.monotonic
         self._snapshot: PanelSnapshot = PanelSnapshot.empty()
         self._snapshot_version: int = 0
         self._last_auth_pin: int | None = None
         self._pending_bypass_by_area: dict[int, float] = {}
+        self._last_disconnect_at: float | None = None
+        self._reconnect_csm_snapshot: CsmSnapshot | None = None
+        self._awaiting_reconnect_csm_check: bool = False
         if event_queue_maxlen is None:
             event_queue_maxlen = config.event_queue_maxlen if config is not None else 0
         request_timeout_s = config.request_timeout_s if config is not None else 5.0
@@ -316,7 +320,7 @@ class Elke27Client:
             outbound_min_interval_s = config.outbound_min_interval_s if config is not None else 0.05
             outbound_max_burst = config.outbound_max_burst if config is not None else 1
             self._kernel: E27Kernel = E27Kernel(
-                now_monotonic=now_monotonic or time.monotonic,
+                now_monotonic=self._now_monotonic,
                 event_queue_maxlen=event_queue_maxlen,
                 features=features,
                 logger=self._log,
@@ -848,6 +852,7 @@ class Elke27Client:
         data = redact_for_diagnostics(asdict(evt))
         seq = self._next_event_seq(evt)
         timestamp = datetime.now(UTC)
+        reconnect_window_s = 600.0
 
         if isinstance(evt, ConnectionStateChanged):
             if evt.connected:
@@ -856,6 +861,19 @@ class Elke27Client:
                     evt.reason,
                     evt.error_type,
                 )
+                last_disconnect_at = self._last_disconnect_at
+                if last_disconnect_at is not None:
+                    disconnect_age = self._now_monotonic() - last_disconnect_at
+                    if disconnect_age <= reconnect_window_s:
+                        self._safe_request(("zone", "get_all_zones_status"))
+                        self._awaiting_reconnect_csm_check = False
+                        self._reconnect_csm_snapshot = None
+                    else:
+                        self._awaiting_reconnect_csm_check = True
+                        if self._reconnect_csm_snapshot is None:
+                            self._reconnect_csm_snapshot = self._kernel.state.csm_snapshot
+                        with contextlib.suppress(Exception):
+                            self._kernel.request_csm_refresh(auth_pin=self._last_auth_pin)
                 ready_evt = Elke27Event(
                     event_type=EventType.READY,
                     data={"connected": True},
@@ -879,6 +897,9 @@ class Elke27Client:
                     evt.reason,
                     evt.error_type,
                 )
+                self._last_disconnect_at = self._now_monotonic()
+                self._reconnect_csm_snapshot = self._kernel.state.csm_snapshot
+                self._awaiting_reconnect_csm_check = False
                 disconnected_evt = Elke27Event(
                     event_type=EventType.DISCONNECTED,
                     data={"connected": False, "reason": evt.reason},
@@ -944,6 +965,19 @@ class Elke27Client:
             self._mark_status_seen("output", [evt.output_id])
         elif isinstance(evt, OutputsStatusBulkUpdated):
             self._mark_status_seen("output", evt.updated_ids)
+        elif isinstance(evt, CsmSnapshotUpdated):
+            if self._awaiting_reconnect_csm_check:
+                baseline = self._reconnect_csm_snapshot
+                snapshot = evt.snapshot
+                changed = True
+                if baseline is not None:
+                    changed = dict(baseline.domain_csms) != dict(snapshot.domain_csms) or dict(
+                        baseline.table_csms
+                    ) != dict(snapshot.table_csms)
+                if changed:
+                    self._safe_request(("zone", "get_all_zones_status"))
+                self._awaiting_reconnect_csm_check = False
+                self._reconnect_csm_snapshot = None
 
         if evt.kind in {
             PanelVersionInfoUpdated.KIND,

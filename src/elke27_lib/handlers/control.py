@@ -253,7 +253,7 @@ def make_control_get_trouble_handler(state: PanelState, emit: EmitFn, now: NowFn
         if payload is None:
             return False
         if getattr(ctx, "classification", None) == "BROADCAST":
-            LOG.warning("control.get_trouble broadcast received")
+            LOG.debug("control.get_trouble broadcast received")
 
         error_code = payload.get("error_code", control_obj.get("error_code"))
         if isinstance(error_code, int) and error_code != 0:
