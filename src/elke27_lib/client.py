@@ -952,10 +952,7 @@ class Elke27Client:
             # Defensive: unexpected broadcasts can hide missed zone status updates.
             if getattr(evt, "classification", None) == "BROADCAST":
                 if isinstance(evt.area_id, int):
-                    self._log.warning(
-                        "Area %s troubles broadcast received; refreshing zone status in bulk",
-                        evt.area_id,
-                    )
+                    self._log.debug("Area %s troubles broadcast received", evt.area_id)
                     self._refresh_all_zone_statuses_for_bypass_change(evt.area_id)
         elif isinstance(evt, ZoneStatusUpdated):
             self._mark_status_seen("zone", [evt.zone_id])
