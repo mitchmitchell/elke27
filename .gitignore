@@ -148,6 +148,11 @@ ENV/
 env.bak/
 venv.bak/
 
+# Virtualenvs created directly in the repo root (critical for uv / CI)
+bin/
+include/
+pyvenv.cfg
+
 # Spyder project settings
 .spyderproject
 .spyproject

@@ -36,6 +36,9 @@ jobs:
           # Important for versioning plugins:
           fetch-depth: 0
 
+      - name: Remove accidental venv checked into repo
+        run: rm -rf bin include pyvenv.cfg lib lib64 .venv
+
       - name: Install uv (official Astral action)
         uses: astral-sh/setup-uv@v7
         with:
