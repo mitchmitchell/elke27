@@ -148,3 +148,10 @@ def test_log_mutation_generators_are_disabled():
         COMMANDS["log_realloc"].generator(table_elements=250)
     with pytest.raises(ValueError, match="log_set_attribs is disabled"):
         COMMANDS["log_set_attribs"].generator(log_flags={"arm_changed": True})
+
+
+def test_split_domain_command_requires_separator():
+    from elke27_lib.generators import registry
+
+    with pytest.raises(Exception):
+        registry._split_domain_command("nosplit")

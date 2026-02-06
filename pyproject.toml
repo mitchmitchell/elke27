@@ -57,6 +57,7 @@ dev = [
     "basedpyright>=1.37.1",
     "funlog>=0.2.1",
     "pyyaml>=6.0.1",
+    "pytest-cov>=7.0.0",
 ]
 
 [project.scripts]
@@ -180,3 +181,6 @@ markers = [
     "live_e27: live Elk E27 panel tests",
 ]
 pythonpath = ["src"]
+
+[tool.coverage.run]
+omit = ["test/*_live.py", "test/test_live_e27_*.py"]

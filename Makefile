@@ -15,7 +15,7 @@ lint:
 	uv run python devtools/lint.py
 
 test:
-	uv run pytest
+	uv run pytest --cov=src --cov-report=term-missing -k "not test_live_e27_"
 
 upgrade:
 	uv sync --upgrade --all-extras --dev

@@ -499,7 +499,7 @@ class E27Kernel:
             if panel is None:
                 raise KernelMissingContextError(
                     "connect() requires panel context or session_config (HA must pass host/port)."
-                )
+                )  # pragma: no cover
             host, port = _panel_host_port(panel)
         else:
             host, port = session_config.host, session_config.port
