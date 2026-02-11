@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 from elke27_lib.dispatcher import DispatchContext
-from elke27_lib.events import ApiError, AuthorizationRequiredEvent, CsmSnapshotUpdated, TableCsmChanged
+from elke27_lib.events import (
+    ApiError,
+    AuthorizationRequiredEvent,
+    CsmSnapshotUpdated,
+    TableCsmChanged,
+)
 from elke27_lib.handlers import log as log_handler
 from elke27_lib.states import PanelState
 from test.helpers.dispatch import make_ctx

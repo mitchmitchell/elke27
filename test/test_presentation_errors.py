@@ -47,9 +47,7 @@ def test_decrypt_schema0_envelope_errors(monkeypatch: pytest.MonkeyPatch) -> Non
 
 def test_encrypt_schema0_envelope_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(E27ProtocolError):
-        presentation.encrypt_schema0_envelope(
-            payload=b"", session_key=b"\x00" * 16, src=256
-        )
+        presentation.encrypt_schema0_envelope(payload=b"", session_key=b"\x00" * 16, src=256)
     with pytest.raises(E27ProtocolError):
         presentation.encrypt_schema0_envelope(
             payload=b"", session_key=b"\x00" * 16, envelope_seq=-1

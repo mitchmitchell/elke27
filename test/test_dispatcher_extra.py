@@ -5,7 +5,6 @@ import logging
 import pytest
 
 from elke27_lib.dispatcher import (
-    DispatchError,
     DispatchContext,
     Dispatcher,
     MessageKind,
@@ -71,18 +70,12 @@ def test_extract_route_errors() -> None:
 def test_domain_root_error_and_root_error_envelope() -> None:
     dispatcher = Dispatcher()
     assert dispatcher._is_domain_root_error({"error_code": "abc"}) is False
-    assert (
-        dispatcher._is_domain_root_error({"error_code": "5", "foo": {"bar": 1}})
-        is False
-    )
+    assert dispatcher._is_domain_root_error({"error_code": "5", "foo": {"bar": 1}}) is False
     assert dispatcher._is_domain_root_error({"error_code": "5"}) is True
 
     assert dispatcher._is_root_error_envelope({"error_code": "abc", "error_message": "x"}) is False
     assert dispatcher._is_root_error_envelope({"error_code": 5, "error_message": ""}) is False
-    assert (
-        dispatcher._is_root_error_envelope({"error_code": 5, "error_message": "bad"})
-        is True
-    )
+    assert dispatcher._is_root_error_envelope({"error_code": 5, "error_message": "bad"}) is True
 
 
 def test_classify_kind_variants() -> None:
@@ -113,7 +106,9 @@ def test_paged_transfer_key_and_extract_payload() -> None:
 
     assert dispatcher._extract_paged_payload({"zone": 1}, ("zone", "get_configured")) is None
     assert (
-        dispatcher._extract_paged_payload({"zone": {"get_configured": 1}}, ("zone", "get_configured"))
+        dispatcher._extract_paged_payload(
+            {"zone": {"get_configured": 1}}, ("zone", "get_configured")
+        )
         is None
     )
 
@@ -121,7 +116,9 @@ def test_paged_transfer_key_and_extract_payload() -> None:
 def test_expire_paged_transfers_and_abort() -> None:
     dispatcher = Dispatcher(now=lambda: 10.0, paged_timeout_s=1.0)
     route = ("zone", "get_configured")
-    dispatcher._paged_routes[route] = PagedRouteSpec(merge_fn=lambda *_a: {}, request_block=None, timeout_s=1.0)
+    dispatcher._paged_routes[route] = PagedRouteSpec(
+        merge_fn=lambda *_a: {}, request_block=None, timeout_s=1.0
+    )
     key = PagedTransferKey(session_id=1, transfer_id=1, route=route)
     dispatcher._paged_transfers[key] = PagedTransfer(
         key=key, total_count=1, created_at=0.0, last_update_at=0.0
@@ -171,7 +168,9 @@ def test_maybe_reassemble_paged_branches(monkeypatch: pytest.MonkeyPatch) -> Non
     def _req(_block, _key):  # type: ignore[no-untyped-def]
         raise RuntimeError("fail")
 
-    dispatcher._paged_routes[route] = PagedRouteSpec(merge_fn=lambda blocks, total: {"blocks": len(blocks)}, request_block=_req, timeout_s=1.0)
+    dispatcher._paged_routes[route] = PagedRouteSpec(
+        merge_fn=lambda blocks, total: {"blocks": len(blocks)}, request_block=_req, timeout_s=1.0
+    )
     msg = {"zone": {"get_configured": {"block_id": 1, "block_count": 2}}}
     assert dispatcher._maybe_reassemble_paged(msg, ctx, response_match) is None
 
@@ -192,7 +191,9 @@ def test_maybe_reassemble_paged_branches(monkeypatch: pytest.MonkeyPatch) -> Non
     def _req_ok(_block, _key):  # type: ignore[no-untyped-def]
         return None
 
-    dispatcher._paged_routes[route] = PagedRouteSpec(merge_fn=lambda blocks, total: {"blocks": len(blocks)}, request_block=_req_ok, timeout_s=1.0)
+    dispatcher._paged_routes[route] = PagedRouteSpec(
+        merge_fn=lambda blocks, total: {"blocks": len(blocks)}, request_block=_req_ok, timeout_s=1.0
+    )
     dispatcher._paged_transfers[transfer_key] = PagedTransfer(
         key=transfer_key,
         total_count=None,
@@ -204,7 +205,9 @@ def test_maybe_reassemble_paged_branches(monkeypatch: pytest.MonkeyPatch) -> Non
     assert dispatcher._maybe_reassemble_paged(msg, ctx, response_match) is None
 
 
-def test_dispatch_zone_debug_and_error_emit(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+def test_dispatch_zone_debug_and_error_emit(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     dispatcher = Dispatcher()
     route = ("zone", "get_configured")
     dispatcher.register_paged(route, merge_fn=lambda blocks, total: {"blocks": len(blocks)})
@@ -253,7 +256,9 @@ def test_maybe_reassemble_paged_skips_requested_block(monkeypatch: pytest.Monkey
     def _req(_block, _key):  # type: ignore[no-untyped-def]
         return None
 
-    dispatcher.register_paged(route, merge_fn=lambda blocks, total: {"blocks": len(blocks)}, request_block=_req)
+    dispatcher.register_paged(
+        route, merge_fn=lambda blocks, total: {"blocks": len(blocks)}, request_block=_req
+    )
 
     ctx = DispatchContext(
         kind=MessageKind.DIRECTED,

@@ -3,31 +3,30 @@ from __future__ import annotations
 import asyncio
 import builtins
 import queue
-from typing import Any, Mapping
+from collections.abc import Mapping
+from datetime import UTC, datetime
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 import elke27_lib.client as client_mod
 from elke27_lib.client import Elke27Client, Result
-from datetime import UTC, datetime
-
-from types import SimpleNamespace
-
 from elke27_lib.errors import (
     AuthorizationRequired,
-    Elke27Error,
     ConnectionLost,
     E27Error,
     E27Timeout,
     E27TransportError,
+    Elke27ConnectionError,
+    Elke27Error,
+    Elke27PinRequiredError,
+    Elke27TimeoutError,
     InvalidPin,
     InvalidPinError,
     ProtocolError,
-    Elke27ConnectionError,
-    Elke27PinRequiredError,
-    Elke27TimeoutError,
 )
-from elke27_lib.events import OutputsStatusBulkUpdated, ZoneStatusUpdated, ZonesStatusBulkUpdated
+from elke27_lib.events import OutputsStatusBulkUpdated, ZonesStatusBulkUpdated, ZoneStatusUpdated
 from elke27_lib.kernel import E27Kernel, KernelError
 from elke27_lib.permissions import PermissionLevel
 from elke27_lib.states import CsmSnapshot
@@ -405,7 +404,9 @@ async def test_async_execute_single_error_handling(monkeypatch: pytest.MonkeyPat
     err = await client.async_execute("test_single")
     assert isinstance(err.error, ConnectionLost)
 
-    _patch_send_with_msg(monkeypatch, client._kernel, {"test": {"cmd": {"value": 1}}}, resolve=False)
+    _patch_send_with_msg(
+        monkeypatch, client._kernel, {"test": {"cmd": {"value": 1}}}, resolve=False
+    )
     err = await client.async_execute("test_single", timeout_s=0.01)
     assert isinstance(err.error, E27Timeout)
 
@@ -882,6 +883,7 @@ def test_misc_helpers_coverage(monkeypatch: pytest.MonkeyPatch) -> None:
 
     def _sig_gen(*, pin: int) -> tuple[dict[str, Any], tuple[str, str]]:
         return {"pin": pin}, ("test", "cmd")
+
     _sig_gen.__annotations__["pin"] = int
 
     spec = client_mod.CommandSpec(
@@ -904,9 +906,7 @@ def test_misc_helpers_coverage(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     client._coerce_pin_for_generator(bad_spec, {"pin": "1"})
 
-    err = client._extract_response_payload(
-        {"test": {"cmd": 7, "error_code": 5}}, ("test", "cmd")
-    )
+    err = client._extract_response_payload({"test": {"cmd": 7, "error_code": 5}}, ("test", "cmd"))
     assert err["error_code"] == 5
     assert client._coerce_block_count("nope") is None
 

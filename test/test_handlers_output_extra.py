@@ -182,9 +182,7 @@ def test_output_get_table_info_handler_and_helpers() -> None:
 def test_output_helper_functions() -> None:
     output = OutputState(output_id=1)
     changed: set[str] = set()
-    output_handler._apply_output_status_fields(
-        output, {"status": " off ", "extra": 1}, changed
-    )
+    output_handler._apply_output_status_fields(output, {"status": " off ", "extra": 1}, changed)
     assert output.status == "OFF"
     assert output.on is False
     assert output.fields["extra"] == 1

@@ -25,7 +25,9 @@ def _identity() -> session_mod.linking.E27Identity:
 
 
 class _FakeSocket:
-    def __init__(self, *, recv_data: bytes | None = None, recv_exc: Exception | None = None) -> None:
+    def __init__(
+        self, *, recv_data: bytes | None = None, recv_exc: Exception | None = None
+    ) -> None:
         self._recv_data = recv_data
         self._recv_exc = recv_exc
         self.timeout: float | None = None
@@ -61,7 +63,9 @@ def _ready_session() -> Session:
     sess.state = SessionState.ACTIVE
     sess.sock = _FakeSocket()
     sess._deframe_state = DeframeState()
-    sess.info = session_mod.SessionInfo(session_id=1, session_key_hex="00" * 16, session_hmac_hex="11" * 16)
+    sess.info = session_mod.SessionInfo(
+        session_id=1, session_key_hex="00" * 16, session_hmac_hex="11" * 16
+    )
     return sess
 
 
@@ -111,7 +115,9 @@ def test_connect_hello_error(monkeypatch: pytest.MonkeyPatch) -> None:
     class _HelloErr(E27Error):
         pass
 
-    monkeypatch.setattr(session_mod, "perform_hello", lambda **_k: (_ for _ in ()).throw(_HelloErr("no")))
+    monkeypatch.setattr(
+        session_mod, "perform_hello", lambda **_k: (_ for _ in ()).throw(_HelloErr("no"))
+    )
 
     with pytest.raises(SessionProtocolError):
         sess.connect()
@@ -128,7 +134,9 @@ def test_connect_starts_receiver_when_configured(monkeypatch: pytest.MonkeyPatch
         lambda **_k: SimpleNamespace(session_id=1, session_key_hex="00", hmac_key_hex="11"),
     )
     started: dict[str, int] = {"count": 0}
-    monkeypatch.setattr(sess, "_start_receiver", lambda: started.__setitem__("count", started["count"] + 1))
+    monkeypatch.setattr(
+        sess, "_start_receiver", lambda: started.__setitem__("count", started["count"] + 1)
+    )
     sess.on_message = lambda _msg: None
     sess.connect()
     assert started["count"] == 1
@@ -273,7 +281,9 @@ def test_enable_outbound_queue_starts(monkeypatch: pytest.MonkeyPatch) -> None:
     assert started["count"] == 1
 
 
-def test_encode_json_wire_log(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+def test_encode_json_wire_log(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     sess = _ready_session()
     sess.cfg = SessionConfig(host="example", wire_log=True, auto_receive=False)
 
@@ -297,7 +307,11 @@ def test_recv_json_error_paths(monkeypatch: pytest.MonkeyPatch) -> None:
         sess.recv_json(timeout_s=0.1)
 
     sess._recv_one_frame_no_crc = lambda **_k: b"\x80\x00\x00"  # type: ignore[assignment]
-    monkeypatch.setattr(session_mod, "decrypt_schema0_envelope", lambda **_k: (_ for _ in ()).throw(ValueError("nope")))
+    monkeypatch.setattr(
+        session_mod,
+        "decrypt_schema0_envelope",
+        lambda **_k: (_ for _ in ()).throw(ValueError("nope")),
+    )
     with pytest.raises(SessionProtocolError):
         sess.recv_json(timeout_s=0.1)
 
@@ -336,7 +350,9 @@ def test_pump_once_handles_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     assert called["count"] == 1
 
     handled: dict[str, int] = {"count": 0}
-    monkeypatch.setattr(sess, "_handle_disconnect", lambda _e: handled.__setitem__("count", handled["count"] + 1))
+    monkeypatch.setattr(
+        sess, "_handle_disconnect", lambda _e: handled.__setitem__("count", handled["count"] + 1)
+    )
     sess.recv_json = lambda **_k: (_ for _ in ()).throw(SessionIOError("x"))  # type: ignore[assignment]
     with pytest.raises(SessionIOError):
         sess.pump_once(timeout_s=0.01)
@@ -395,7 +411,9 @@ def test_start_receiver_thread_fallback(monkeypatch: pytest.MonkeyPatch) -> None
     sess.state = SessionState.ACTIVE
     sess.on_message = lambda _msg: None
 
-    monkeypatch.setattr(session_mod.asyncio, "get_running_loop", lambda: (_ for _ in ()).throw(RuntimeError()))
+    monkeypatch.setattr(
+        session_mod.asyncio, "get_running_loop", lambda: (_ for _ in ()).throw(RuntimeError())
+    )
     started: dict[str, int] = {"count": 0}
 
     class _Thread:
@@ -415,7 +433,9 @@ def test_start_receiver_no_loop_no_fallback(monkeypatch: pytest.MonkeyPatch) -> 
     sess = Session(cfg, client_identity=_identity(), link_key_hex="00")
     sess.state = SessionState.ACTIVE
     sess.on_message = lambda _msg: None
-    monkeypatch.setattr(session_mod.asyncio, "get_running_loop", lambda: (_ for _ in ()).throw(RuntimeError()))
+    monkeypatch.setattr(
+        session_mod.asyncio, "get_running_loop", lambda: (_ for _ in ()).throw(RuntimeError())
+    )
     sess._start_receiver()
     assert sess._recv_thread is None
 
@@ -437,7 +457,9 @@ def test_start_auto_receive_conditions(monkeypatch: pytest.MonkeyPatch) -> None:
     sess.start_auto_receive()
 
     called: dict[str, int] = {"count": 0}
-    monkeypatch.setattr(sess, "_start_receiver", lambda: called.__setitem__("count", called["count"] + 1))
+    monkeypatch.setattr(
+        sess, "_start_receiver", lambda: called.__setitem__("count", called["count"] + 1)
+    )
     sess.cfg = SessionConfig(host="example", auto_receive=True)
     sess.state = SessionState.ACTIVE
     sess.start_auto_receive()
@@ -458,7 +480,9 @@ def test_recv_loop_paths(monkeypatch: pytest.MonkeyPatch) -> None:
 
     event = threading.Event()
     handled: dict[str, int] = {"count": 0}
-    monkeypatch.setattr(sess, "_handle_disconnect", lambda _e: handled.__setitem__("count", handled["count"] + 1))
+    monkeypatch.setattr(
+        sess, "_handle_disconnect", lambda _e: handled.__setitem__("count", handled["count"] + 1)
+    )
     sess.recv_json = lambda **_k: (_ for _ in ()).throw(SessionIOError("x"))  # type: ignore[assignment]
     sess._recv_loop(event)
     assert handled["count"] >= 1
@@ -504,7 +528,9 @@ def test_handle_disconnect_records(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_handle_disconnect_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
     sess = _ready_session()
     called: dict[str, int] = {"count": 0}
-    monkeypatch.setattr(sess, "_handle_disconnect", lambda _e: called.__setitem__("count", called["count"] + 1))
+    monkeypatch.setattr(
+        sess, "_handle_disconnect", lambda _e: called.__setitem__("count", called["count"] + 1)
+    )
     sess.handle_disconnect(RuntimeError("x"))
     assert called["count"] == 1
 

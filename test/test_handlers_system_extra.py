@@ -1,9 +1,14 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 
 from elke27_lib.dispatcher import DispatchContext
-from elke27_lib.events import ApiError, AuthorizationRequiredEvent, CsmSnapshotUpdated, TableCsmChanged
+from elke27_lib.events import (
+    ApiError,
+    AuthorizationRequiredEvent,
+    CsmSnapshotUpdated,
+    TableCsmChanged,
+)
 from elke27_lib.handlers import system as system_handler
 from elke27_lib.states import PanelState
 from test.helpers.dispatch import make_ctx
@@ -73,7 +78,10 @@ def test_system_all_command_wrappers() -> None:
     state = PanelState()
     emit = _EmitSpy()
 
-    def call(factory: Callable[[PanelState, _EmitSpy, Callable[[], float]], Callable[..., bool]], command: str):
+    def call(
+        factory: Callable[[PanelState, _EmitSpy, Callable[[], float]], Callable[..., bool]],
+        command: str,
+    ):
         handler = factory(state, emit, now=lambda: 3.0)
         msg = {"system": {command: {"foo": "bar"}}}
         assert handler(msg, make_ctx()) is True

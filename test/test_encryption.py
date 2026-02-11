@@ -19,7 +19,10 @@ def test_hex_to_bytes_invalid(value: str | None) -> None:
 
 def test_swap_endianness_basic() -> None:
     assert enc.swap_endianness(b"\x01\x02\x03\x04") == b"\x04\x03\x02\x01"
-    assert enc.swap_endianness(b"\x01\x02\x03\x04\x10\x11\x12\x13") == b"\x04\x03\x02\x01\x13\x12\x11\x10"
+    assert (
+        enc.swap_endianness(b"\x01\x02\x03\x04\x10\x11\x12\x13")
+        == b"\x04\x03\x02\x01\x13\x12\x11\x10"
+    )
 
 
 @pytest.mark.parametrize("value", [None, b"", b"\x01", b"\x01\x02"])

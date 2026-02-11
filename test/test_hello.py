@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+
 import pytest
 
 from elke27_lib import hello
@@ -72,17 +73,13 @@ def test_perform_hello_predata_parse_error(monkeypatch: pytest.MonkeyPatch) -> N
 
 def test_perform_hello_preobjs_success(monkeypatch: pytest.MonkeyPatch) -> None:
     sock = _FakeSocket(predata=b"pre")
-    hello_obj = {
-        "hello": {"session_id": 1, "sk": "aa", "shm": "bb", "error_code": 0}
-    }
+    hello_obj = {"hello": {"session_id": 1, "sk": "aa", "shm": "bb", "error_code": 0}}
     monkeypatch.setattr(hello, "recv_cleartext_json_objects_from_bytes", lambda _d: [hello_obj])
     monkeypatch.setattr(hello, "send_unframed_json", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         hello,
         "decrypt_key_field_with_linkkey",
-        lambda **_kwargs: b"\x00" * 16
-        if _kwargs["ciphertext_hex"] == "aa"
-        else b"\x00" * 32,
+        lambda **_kwargs: b"\x00" * 16 if _kwargs["ciphertext_hex"] == "aa" else b"\x00" * 32,
     )
     out = hello.perform_hello(sock=sock, client_identity=_identity(), linkkey_hex="00", timeout_s=0)
     assert out.session_id == 1
@@ -107,7 +104,11 @@ def test_perform_hello_timeout_continue(monkeypatch: pytest.MonkeyPatch) -> None
         return 0.0 if calls["n"] <= 2 else 1.1
 
     monkeypatch.setattr(hello, "send_unframed_json", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(hello, "recv_cleartext_json_objects", lambda *_a, **_k: (_ for _ in ()).throw(hello.E27Timeout()))
+    monkeypatch.setattr(
+        hello,
+        "recv_cleartext_json_objects",
+        lambda *_a, **_k: (_ for _ in ()).throw(hello.E27Timeout()),
+    )
     monkeypatch.setattr(hello.time, "monotonic", _fake_monotonic)
     with pytest.raises(E27ProtocolError):
         hello.perform_hello(sock=sock, client_identity=_identity(), linkkey_hex="00", timeout_s=1)
@@ -115,9 +116,7 @@ def test_perform_hello_timeout_continue(monkeypatch: pytest.MonkeyPatch) -> None
 
 def test_perform_hello_error_code(monkeypatch: pytest.MonkeyPatch) -> None:
     sock = _FakeSocket()
-    hello_obj = {
-        "hello": {"session_id": 1, "sk": "aa", "shm": "bb", "error_code": 1}
-    }
+    hello_obj = {"hello": {"session_id": 1, "sk": "aa", "shm": "bb", "error_code": 1}}
     monkeypatch.setattr(hello, "send_unframed_json", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(hello, "recv_cleartext_json_objects", lambda *_a, **_k: [hello_obj])
     monkeypatch.setattr(hello.time, "monotonic", lambda: 0.0)
@@ -127,31 +126,29 @@ def test_perform_hello_error_code(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_perform_hello_decrypt_error(monkeypatch: pytest.MonkeyPatch) -> None:
     sock = _FakeSocket()
-    hello_obj = {
-        "hello": {"session_id": 1, "sk": "aa", "shm": "bb", "error_code": 0}
-    }
-    monkeypatch.setattr(hello, "send_unframed_json", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(hello, "recv_cleartext_json_objects", lambda *_a, **_k: [hello_obj])
-    monkeypatch.setattr(hello.time, "monotonic", lambda: 0.0)
-    monkeypatch.setattr(hello, "decrypt_key_field_with_linkkey", lambda **_kwargs: (_ for _ in ()).throw(ValueError("bad")))
-    with pytest.raises(E27ProtocolError):
-        hello.perform_hello(sock=sock, client_identity=_identity(), linkkey_hex="00", timeout_s=1)
-
-
-def test_perform_hello_bad_session_key_length(monkeypatch: pytest.MonkeyPatch) -> None:
-    sock = _FakeSocket()
-    hello_obj = {
-        "hello": {"session_id": 1, "sk": "aa", "shm": "bb", "error_code": 0}
-    }
+    hello_obj = {"hello": {"session_id": 1, "sk": "aa", "shm": "bb", "error_code": 0}}
     monkeypatch.setattr(hello, "send_unframed_json", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(hello, "recv_cleartext_json_objects", lambda *_a, **_k: [hello_obj])
     monkeypatch.setattr(hello.time, "monotonic", lambda: 0.0)
     monkeypatch.setattr(
         hello,
         "decrypt_key_field_with_linkkey",
-        lambda **_kwargs: b"\x00" * 15
-        if _kwargs["ciphertext_hex"] == "aa"
-        else b"\x00" * 32,
+        lambda **_kwargs: (_ for _ in ()).throw(ValueError("bad")),
+    )
+    with pytest.raises(E27ProtocolError):
+        hello.perform_hello(sock=sock, client_identity=_identity(), linkkey_hex="00", timeout_s=1)
+
+
+def test_perform_hello_bad_session_key_length(monkeypatch: pytest.MonkeyPatch) -> None:
+    sock = _FakeSocket()
+    hello_obj = {"hello": {"session_id": 1, "sk": "aa", "shm": "bb", "error_code": 0}}
+    monkeypatch.setattr(hello, "send_unframed_json", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(hello, "recv_cleartext_json_objects", lambda *_a, **_k: [hello_obj])
+    monkeypatch.setattr(hello.time, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(
+        hello,
+        "decrypt_key_field_with_linkkey",
+        lambda **_kwargs: b"\x00" * 15 if _kwargs["ciphertext_hex"] == "aa" else b"\x00" * 32,
     )
     with pytest.raises(E27ProtocolError):
         hello.perform_hello(sock=sock, client_identity=_identity(), linkkey_hex="00", timeout_s=1)
@@ -159,18 +156,14 @@ def test_perform_hello_bad_session_key_length(monkeypatch: pytest.MonkeyPatch) -
 
 def test_perform_hello_bad_hmac_key_length(monkeypatch: pytest.MonkeyPatch) -> None:
     sock = _FakeSocket()
-    hello_obj = {
-        "hello": {"session_id": 1, "sk": "aa", "shm": "bb", "error_code": 0}
-    }
+    hello_obj = {"hello": {"session_id": 1, "sk": "aa", "shm": "bb", "error_code": 0}}
     monkeypatch.setattr(hello, "send_unframed_json", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(hello, "recv_cleartext_json_objects", lambda *_a, **_k: [hello_obj])
     monkeypatch.setattr(hello.time, "monotonic", lambda: 0.0)
     monkeypatch.setattr(
         hello,
         "decrypt_key_field_with_linkkey",
-        lambda **_kwargs: b"\x00" * 16
-        if _kwargs["ciphertext_hex"] == "aa"
-        else b"\x00" * 31,
+        lambda **_kwargs: b"\x00" * 16 if _kwargs["ciphertext_hex"] == "aa" else b"\x00" * 31,
     )
     with pytest.raises(E27ProtocolError):
         hello.perform_hello(sock=sock, client_identity=_identity(), linkkey_hex="00", timeout_s=1)

@@ -282,14 +282,18 @@ class _KernelStub:
     def register_request(self, route: tuple[str, str], builder: object) -> None:
         self.registered_requests.append((route, builder))
 
-    def register_paged(self, route: tuple[str, str], merge_fn: object, request_block: object) -> None:
+    def register_paged(
+        self, route: tuple[str, str], merge_fn: object, request_block: object
+    ) -> None:
         self.registered_paged.append((route, merge_fn, request_block))
 
 
 def test_features_area_register_and_builders() -> None:
     elk = _KernelStub()
     features_area.register(elk)
-    assert features_area.ROUTE_AREA_GET_CONFIGURED in [route for route, _, _ in elk.registered_paged]
+    assert features_area.ROUTE_AREA_GET_CONFIGURED in [
+        route for route, _, _ in elk.registered_paged
+    ]
     route, _, request_block = elk.registered_paged[0]
     elk.requested: list[tuple[tuple[str, str], dict[str, object]]] = []
     elk.request = lambda r, **kw: elk.requested.append((r, kw))

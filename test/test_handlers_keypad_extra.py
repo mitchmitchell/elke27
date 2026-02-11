@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 from elke27_lib.dispatcher import DispatchContext
-from elke27_lib.events import ApiError, AuthorizationRequiredEvent, CsmSnapshotUpdated, KeypadConfiguredInventoryReady, TableCsmChanged
+from elke27_lib.events import (
+    ApiError,
+    AuthorizationRequiredEvent,
+    CsmSnapshotUpdated,
+    KeypadConfiguredInventoryReady,
+    TableCsmChanged,
+)
 from elke27_lib.handlers import keypad as keypad_handler
 from elke27_lib.states import KeypadState, PanelState
 from test.helpers.dispatch import make_ctx

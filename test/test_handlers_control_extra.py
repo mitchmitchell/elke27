@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from elke27_lib.dispatcher import DispatchContext, PendingRequest
 from elke27_lib.events import (
     ApiError,

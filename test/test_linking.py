@@ -43,7 +43,7 @@ def _monotonic_gen(values: list[float]):
 
 
 def test_parse_concatenated_json_objects() -> None:
-    s = '{"a":1}{"b":"{x}"}{"c":"\\\""}'
+    s = '{"a":1}{"b":"{x}"}{"c":"\\""}'
     parts = linking._parse_concatenated_json_objects(s)
     assert parts == ['{"a":1}', '{"b":"{x}"}', '{"c":"\\""}']
 
@@ -118,7 +118,9 @@ def test_parse_discovery_hello_and_local() -> None:
     assert local == "ts"
 
 
-def test_recv_cleartext_json_objects_from_bytes_skips_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_recv_cleartext_json_objects_from_bytes_skips_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(linking, "_parse_concatenated_json_objects", lambda _s: ["", "{}"])
     assert linking.recv_cleartext_json_objects_from_bytes(b"{}") == [{}]
 
@@ -138,9 +140,7 @@ def test_derive_pass_tempkey_with_cnonce() -> None:
 
 def test_derive_pass_and_tempkey_requires_cnonce() -> None:
     with pytest.raises(RuntimeError):
-        linking.derive_pass_and_tempkey(
-            access_code="a", passphrase="b", nonce="c", mn="m", sn="s"
-        )
+        linking.derive_pass_and_tempkey(access_code="a", passphrase="b", nonce="c", mn="m", sn="s")
 
 
 def test_build_api_link_request() -> None:
@@ -238,9 +238,7 @@ def test_perform_api_link_decode_errors(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(
         linking, "deframe_feed", lambda _s, _c: [_fake_deframe_result(b"\x80\x00\x00" + b"xx")]
     )
-    monkeypatch.setattr(
-        linking, "decrypt_api_link_response", lambda **_k: (0x00, b"\xff")
-    )
+    monkeypatch.setattr(linking, "decrypt_api_link_response", lambda **_k: (0x00, b"\xff"))
     with pytest.raises(E27ProtocolError):
         linking.perform_api_link(
             sock=sock,
@@ -258,9 +256,7 @@ def test_perform_api_link_no_api_link(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         linking, "deframe_feed", lambda _s, _c: [_fake_deframe_result(b"\x80\x00\x00" + b"xx")]
     )
-    monkeypatch.setattr(
-        linking, "decrypt_api_link_response", lambda **_k: (0x00, b'{"x":1}')
-    )
+    monkeypatch.setattr(linking, "decrypt_api_link_response", lambda **_k: (0x00, b'{"x":1}'))
     with pytest.raises(E27ProtocolError):
         linking.perform_api_link(
             sock=sock,

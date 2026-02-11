@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import builtins
 import asyncio
-import logging
+import builtins
 import queue
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -26,47 +25,40 @@ from elke27_lib.errors import (
     E27TransportError,
     Elke27AuthError,
     Elke27ConnectionError,
-    Elke27CryptoError,
     Elke27DisconnectedError,
     Elke27InvalidArgument,
-    Elke27LinkRequiredError,
     Elke27PermissionError,
-    Elke27ProtocolError as Elke27ProtocolErrorV2,
-    Elke27TimeoutError,
-    InvalidPin,
-    InvalidPinError,
     InvalidCredentials,
     InvalidLinkKeys,
+    InvalidPin,
     MissingContext,
     NotAuthenticatedError,
-    PanelNotDisarmedError,
     ProtocolError,
 )
+from elke27_lib.errors import (
+    Elke27ProtocolError as Elke27ProtocolErrorV2,
+)
 from elke27_lib.events import (
-    AreaAttribsUpdated,
-    AreaConfiguredInventoryReady,
     AreaStatusUpdated,
     AreaTroublesUpdated,
     ConnectionStateChanged,
     CsmSnapshotUpdated,
-    KeypadConfiguredInventoryReady,
-    OutputConfiguredInventoryReady,
-    OutputStatusUpdated,
-    OutputsStatusBulkUpdated,
-    PanelVersionInfoUpdated,
-    TstatTableInfoUpdated,
-    ZoneAttribsUpdated,
-    ZoneConfiguredInventoryReady,
-    ZoneDefFlagsUpdated,
-    ZoneDefsUpdated,
-    ZonesStatusBulkUpdated,
     ZoneStatusUpdated,
 )
-from elke27_lib.kernel import E27Kernel
-from elke27_lib.kernel import KernelError, KernelInvalidPanelError, KernelMissingContextError, KernelNotLinkedError
+from elke27_lib.kernel import (
+    E27Kernel,
+    KernelError,
+    KernelInvalidPanelError,
+    KernelMissingContextError,
+    KernelNotLinkedError,
+)
 from elke27_lib.permissions import PermissionLevel
-from elke27_lib.session import SessionConfig, SessionIOError, SessionNotReadyError, SessionProtocolError
-from elke27_lib.states import AreaState, CsmSnapshot, OutputState, ZoneState, update_csm_snapshot
+from elke27_lib.session import (
+    SessionIOError,
+    SessionNotReadyError,
+    SessionProtocolError,
+)
+from elke27_lib.states import AreaState, CsmSnapshot, ZoneState, update_csm_snapshot
 from elke27_lib.types import ArmMode, LinkKeys
 from test.helpers.internal import get_kernel
 
@@ -195,7 +187,9 @@ def test_handle_kernel_event_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     kernel = E27Kernel()
     client = Elke27Client(kernel=kernel)
     calls = {"safe": 0}
-    monkeypatch.setattr(client, "_safe_request", lambda *_a, **_k: calls.__setitem__("safe", calls["safe"] + 1))
+    monkeypatch.setattr(
+        client, "_safe_request", lambda *_a, **_k: calls.__setitem__("safe", calls["safe"] + 1)
+    )
 
     client._last_disconnect_at = 0.0
     client._now_monotonic = lambda: 1000.0
@@ -225,7 +219,9 @@ def test_handle_kernel_event_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     client._handle_kernel_event(evt)
     assert calls["safe"] >= 1
 
-    area_evt = AreaStatusUpdated(**_event_base(AreaStatusUpdated.KIND), area_id=1, changed_fields=())  # type: ignore[arg-type]
+    area_evt = AreaStatusUpdated(
+        **_event_base(AreaStatusUpdated.KIND), area_id=1, changed_fields=()
+    )  # type: ignore[arg-type]
     client._handle_kernel_event(area_evt)
     troubles_evt = AreaTroublesUpdated(
         **_event_base(AreaTroublesUpdated.KIND, classification="BROADCAST"),
@@ -236,7 +232,9 @@ def test_handle_kernel_event_paths(monkeypatch: pytest.MonkeyPatch) -> None:
 
     client.subscribe(lambda _e: (_ for _ in ()).throw(ValueError("x")))  # type: ignore[arg-type]
     client.subscribe_typed(lambda _e: (_ for _ in ()).throw(RuntimeError("x")))  # type: ignore[arg-type]
-    client._handle_kernel_event(ZoneStatusUpdated(**_event_base(ZoneStatusUpdated.KIND), zone_id=1, changed_fields=()))  # type: ignore[arg-type]
+    client._handle_kernel_event(
+        ZoneStatusUpdated(**_event_base(ZoneStatusUpdated.KIND), zone_id=1, changed_fields=())
+    )  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio
@@ -251,13 +249,21 @@ async def test_async_discover_link_connect_paths(monkeypatch: pytest.MonkeyPatch
         await client.async_discover()
 
     with pytest.raises(Elke27InvalidArgument):
-        await client.async_link("", 1, access_code="a", passphrase="b", client_identity={"mn": "m", "sn": "s"})
+        await client.async_link(
+            "", 1, access_code="a", passphrase="b", client_identity={"mn": "m", "sn": "s"}
+        )
     with pytest.raises(Elke27InvalidArgument):
-        await client.async_link("h", 0, access_code="a", passphrase="b", client_identity={"mn": "m", "sn": "s"})
+        await client.async_link(
+            "h", 0, access_code="a", passphrase="b", client_identity={"mn": "m", "sn": "s"}
+        )
     with pytest.raises(Elke27InvalidArgument):
-        await client.async_link("h", 1, access_code="", passphrase="b", client_identity={"mn": "m", "sn": "s"})
+        await client.async_link(
+            "h", 1, access_code="", passphrase="b", client_identity={"mn": "m", "sn": "s"}
+        )
     with pytest.raises(Elke27InvalidArgument):
-        await client.async_link("h", 1, access_code="a", passphrase="", client_identity={"mn": "m", "sn": "s"})
+        await client.async_link(
+            "h", 1, access_code="a", passphrase="", client_identity={"mn": "m", "sn": "s"}
+        )
     with pytest.raises(Elke27InvalidArgument):
         await client.async_link("h", 1, access_code="a", passphrase="b", client_identity=None)
 
@@ -308,7 +314,9 @@ async def test_async_refresh_csm_and_domain_config(monkeypatch: pytest.MonkeyPat
     kernel.state.panel.connected = True
 
     called = {"area": 0}
-    monkeypatch.setattr(client, "_refresh_area_config", lambda: called.__setitem__("area", called["area"] + 1))
+    monkeypatch.setattr(
+        client, "_refresh_area_config", lambda: called.__setitem__("area", called["area"] + 1)
+    )
     await client.async_refresh_domain_config("area")
     assert called["area"] == 1
     with pytest.raises(Elke27InvalidArgument):
@@ -422,7 +430,9 @@ def test_request_authenticate_and_payload_helpers(monkeypatch: pytest.MonkeyPatc
     assert client._has_expected_payload({"zone": {}}, ("zone", "get")) is False
     assert client._extract_response_payload({"zone": {"get": {"x": 1}}}, ("zone", "get"))["x"] == 1
     assert client._extract_response_payload({"zone": {"get": 5}}, ("zone", "get"))["value"] == 5
-    assert client._extract_response_payload({"zone": {"get": None}}, ("zone", "get")) == {"get": None}
+    assert client._extract_response_payload({"zone": {"get": None}}, ("zone", "get")) == {
+        "get": None
+    }
     assert client._extract_response_payload({"zone": {"foo": 1}}, ("zone", "__root__"))["foo"] == 1
     assert client._extract_response_payload({"zone": 1}, ("zone", "get")) == {"zone": 1}
 
@@ -473,7 +483,9 @@ async def test_async_authenticate_error_paths(monkeypatch: pytest.MonkeyPatch) -
 def test_misc_helpers_and_permissions(monkeypatch: pytest.MonkeyPatch) -> None:
     client = Elke27Client(kernel=E27Kernel())
     client._kernel.state.panel.session_id = None
-    assert isinstance(client._enforce_permissions("x", PermissionLevel.PLT_ENCRYPTION_KEY), NotAuthenticatedError)
+    assert isinstance(
+        client._enforce_permissions("x", PermissionLevel.PLT_ENCRYPTION_KEY), NotAuthenticatedError
+    )
 
     def _gen_no_pin() -> tuple[dict[str, object], tuple[str, str]]:
         return {}, ("x", "y")
@@ -529,6 +541,7 @@ def test_misc_helpers_and_permissions(monkeypatch: pytest.MonkeyPatch) -> None:
     assert isinstance(err, CryptoError)
     err = client._normalize_error(E27TransportError("x"), phase="p")
     assert isinstance(err, ConnectionLost)
+
     class _CustomTimeout(Exception):
         pass
 

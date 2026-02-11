@@ -3,7 +3,18 @@ from __future__ import annotations
 import pytest
 
 from elke27_lib.dispatcher import PagedTransferKey
-from elke27_lib.features import bus_ios, keypad, log, network_param, output, rule, system, tstat, user, zone
+from elke27_lib.features import (
+    bus_ios,
+    keypad,
+    log,
+    network_param,
+    output,
+    rule,
+    system,
+    tstat,
+    user,
+    zone,
+)
 from elke27_lib.states import PanelState
 
 
@@ -27,7 +38,9 @@ class _FakeKernel:
     def register_request(self, route: tuple[str, str], builder: object) -> None:
         self.requests.append((route, builder))
 
-    def register_paged(self, route: tuple[str, str], *, merge_fn: object, request_block: object) -> None:
+    def register_paged(
+        self, route: tuple[str, str], *, merge_fn: object, request_block: object
+    ) -> None:
         self.paged.append((route, merge_fn, request_block))
 
     def request(self, route: tuple[str, str], **kwargs: object) -> None:
@@ -427,4 +440,6 @@ def test_zone_register_and_payloads() -> None:
     route, _merge_fn, request_block = kernel.paged[0]
     transfer_key = PagedTransferKey(session_id=2, transfer_id=7, route=route)
     request_block(2, transfer_key)
-    assert kernel.sent == [(zone.ROUTE_ZONE_GET_CONFIGURED, {"block_id": 2, "opaque": transfer_key})]
+    assert kernel.sent == [
+        (zone.ROUTE_ZONE_GET_CONFIGURED, {"block_id": 2, "opaque": transfer_key})
+    ]

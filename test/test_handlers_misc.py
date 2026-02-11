@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-import pytest
-
 from elke27_lib.dispatcher import DispatchContext
 from elke27_lib.events import (
     ApiError,

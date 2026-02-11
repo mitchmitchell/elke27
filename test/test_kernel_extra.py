@@ -6,8 +6,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from elke27_lib import discovery, kernel as kernel_mod, linking, session as session_mod
-from elke27_lib.errors import E27Error, E27Timeout
+from elke27_lib import discovery, linking
+from elke27_lib import kernel as kernel_mod
+from elke27_lib import session as session_mod
+from elke27_lib.errors import E27Error
 from elke27_lib.kernel import (
     E27Kernel,
     KernelError,
@@ -39,7 +41,9 @@ class _FakeSession:
         self.client_identity = client_identity
         self.link_key_hex = link_key_hex
         self.state = session_mod.SessionState.ACTIVE
-        self.info = session_mod.SessionInfo(session_id=11, session_key_hex="00", session_hmac_hex="11")
+        self.info = session_mod.SessionInfo(
+            session_id=11, session_key_hex="00", session_hmac_hex="11"
+        )
         self.on_message = None
         self.on_disconnected = None
         self.on_idle = None
@@ -165,6 +169,7 @@ async def test_link_validation_and_success(monkeypatch: pytest.MonkeyPatch) -> N
         "perform_api_link",
         lambda **_k: linking.E27LinkKeys("aa", "bb", "cc"),
     )
+
     async def _to_thread(fn, *a, **k):  # type: ignore[no-untyped-def]
         return fn(*a, **k)
 
@@ -190,7 +195,9 @@ async def test_link_validation_and_success(monkeypatch: pytest.MonkeyPatch) -> N
     with pytest.raises(KernelError):
         await kernel.link(panel, _identity(), _BadCreds2(), timeout_s=0.01)
 
-    monkeypatch.setattr(linking, "perform_api_link", lambda **_k: (_ for _ in ()).throw(E27Error("no")))
+    monkeypatch.setattr(
+        linking, "perform_api_link", lambda **_k: (_ for _ in ()).throw(E27Error("no"))
+    )
     with pytest.raises(KernelError):
         await kernel.link(panel, _identity(), _Creds(), timeout_s=0.01)
 
@@ -215,6 +222,7 @@ async def test_connect_validations(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_connect_success_and_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     kernel = E27Kernel()
     monkeypatch.setattr(kernel, "load_features_blocking", lambda _modules=None: None)
+
     async def _to_thread(fn, *a, **k):  # type: ignore[no-untyped-def]
         return fn(*a, **k)
 
@@ -250,7 +258,9 @@ async def test_connect_success_and_failure(monkeypatch: pytest.MonkeyPatch) -> N
 
     monkeypatch.setattr(session_mod, "Session", _SessionOk)
     started: dict[str, int] = {"count": 0}
-    monkeypatch.setattr(kernel, "_start_keepalive", lambda: started.__setitem__("count", started["count"] + 1))
+    monkeypatch.setattr(
+        kernel, "_start_keepalive", lambda: started.__setitem__("count", started["count"] + 1)
+    )
 
     cfg = session_mod.SessionConfig(host="h", port=1, keepalive_enabled=True)
     state = await kernel.connect(
@@ -274,6 +284,7 @@ async def test_reconnect_and_close(monkeypatch: pytest.MonkeyPatch) -> None:
     kernel._last_session_config = session_mod.SessionConfig(host="h", port=1)
 
     called: dict[str, int] = {"close": 0, "connect": 0}
+
     async def _close():  # type: ignore[no-untyped-def]
         called["close"] += 1
 
@@ -292,7 +303,11 @@ async def test_reconnect_and_close(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = _FakeSession(session_mod.SessionConfig(host="h"), _identity(), "aa")
     kernel2._session = fake
     called = {"emit": 0}
-    monkeypatch.setattr(kernel2, "_emit_connection_state", lambda **_k: called.__setitem__("emit", called["emit"] + 1))
+    monkeypatch.setattr(
+        kernel2,
+        "_emit_connection_state",
+        lambda **_k: called.__setitem__("emit", called["emit"] + 1),
+    )
     await kernel2.close()
     assert called["emit"] == 1
 
@@ -334,7 +349,9 @@ async def test_keepalive_request_failure_when_no_loop() -> None:
     assert await kernel._send_keepalive_request() is False
 
 
-def test_build_request_message_and_log(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+def test_build_request_message_and_log(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     kernel = E27Kernel()
     kernel.state.panel.session_id = 7
     msg = kernel._build_request_message(5, "zone", "get", {"x": 1})
@@ -401,7 +418,9 @@ def test_dispatch_error_envelopes() -> None:
         raw_route=None,
     )
     assert kernel._handle_panel_error_envelope({"error_code": 11008}, ctx) is True
-    assert kernel._handle_panel_error_envelope({"error_code": 5, "error_message": "oops"}, ctx) is True
+    assert (
+        kernel._handle_panel_error_envelope({"error_code": 5, "error_message": "oops"}, ctx) is True
+    )
 
 
 def test_is_valid_attrib_id() -> None:

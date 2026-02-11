@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
-
 from elke27_lib.dispatcher import DispatchContext, PagedBlock
 from elke27_lib.events import (
     ApiError,
@@ -41,6 +39,7 @@ def test_zone_get_configured_handler_and_merge() -> None:
     emit = _EmitSpy()
     handler = zone_handler.make_zone_get_configured_handler(state, emit, now=lambda: 1.0)
     import logging
+
     logging.getLogger("elke27_lib.handlers.zone").setLevel(logging.DEBUG)
 
     assert handler({"nope": {}}, make_ctx()) is False
@@ -167,6 +166,7 @@ def test_zone_get_status_and_set_status_handlers() -> None:
     get_status = zone_handler.make_zone_get_status_handler(state, emit, now=lambda: 4.0)
     set_status = zone_handler.make_zone_set_status_handler(state, emit, now=lambda: 5.0)
     import logging
+
     logging.getLogger("elke27_lib.handlers.zone").setLevel(logging.DEBUG)
 
     msg = {"zone": {"get_status": {"error_code": 11008, "zone_id": 1}}}
@@ -209,6 +209,7 @@ def test_zone_get_table_info_and_defs() -> None:
     emit = _EmitSpy()
     handler = zone_handler.make_zone_get_table_info_handler(state, emit, now=lambda: 6.0)
     import logging
+
     logging.getLogger("elke27_lib.handlers.zone").setLevel(logging.DEBUG)
 
     assert handler({"nope": {}}, make_ctx()) is False
@@ -269,6 +270,7 @@ def test_zone_get_table_info_and_defs() -> None:
 
 def test_zone_helpers() -> None:
     import logging
+
     logging.getLogger("elke27_lib.handlers.zone").setLevel(logging.DEBUG)
     assert zone_handler._extract_table_csm({"table_csm": True}, domain="zone") is None
     assert zone_handler._extract_table_csm({"table_csm": 2}, domain="zone") == 2
@@ -328,9 +330,7 @@ def test_zone_helpers() -> None:
 
     warnings.clear()
     state.inventory.configured_zones = {2}
-    outcome = zone_handler._reconcile_bulk_zone_status(
-        state, {"zones": [{"zone_id": 1}]}, now=10.0
-    )
+    outcome = zone_handler._reconcile_bulk_zone_status(state, {"zones": [{"zone_id": 1}]}, now=10.0)
     assert outcome.updated_ids == ()
 
     warnings.clear()

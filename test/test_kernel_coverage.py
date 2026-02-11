@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import types
 from types import SimpleNamespace
-from typing import Any, Mapping
+from typing import Any
 
 import pytest
 
@@ -13,8 +13,7 @@ from elke27_lib.events import ConnectionStateChanged
 from elke27_lib.kernel import E27Kernel, KernelError, KernelMissingContextError
 from elke27_lib.linking import E27Identity, E27LinkKeys
 from elke27_lib.outbound import OutboundPriority
-from elke27_lib.permissions import PermissionLevel
-from elke27_lib.session import SessionError, SessionIOError, SessionProtocolError, SessionState
+from elke27_lib.session import SessionIOError, SessionProtocolError, SessionState
 
 
 def test_as_mapping_and_redact_value(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -71,7 +70,9 @@ async def test_connect_missing_context() -> None:
 
 
 @pytest.mark.asyncio
-async def test_close_paths(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+async def test_close_paths(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     kernel = E27Kernel()
     await kernel.close()
 
@@ -154,6 +155,7 @@ async def test_keepalive_loop_branches(monkeypatch: pytest.MonkeyPatch) -> None:
     await kernel._keepalive_loop()
 
     kernel._keepalive_inflight = False
+
     async def _send_keepalive() -> bool:
         kernel._closing = True
         return True
@@ -397,13 +399,17 @@ def test_bootstrap_requests_and_csm_refresh(monkeypatch: pytest.MonkeyPatch) -> 
     kernel.request_csm_refresh(auth_pin=1234, domains=["area"])
 
 
-def test_on_message_paths(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+def test_on_message_paths(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     kernel = E27Kernel()
     kernel._request_state = kernel_mod._RequestState.IN_FLIGHT
     kernel._active_seq = 99
     caplog.set_level("DEBUG", logger="elke27_lib.kernel")
     kernel._on_message(types.MappingProxyType({"authenticate": {"seq": 1, "session_id": 2}}))
-    kernel._on_message(types.MappingProxyType({"seq": "x", "authenticate": {"seq": 2, "session_id": 3}}))
+    kernel._on_message(
+        types.MappingProxyType({"seq": "x", "authenticate": {"seq": 2, "session_id": 3}})
+    )
     assert kernel.state.panel.session_id == 3
 
     kernel._on_message({"seq": 1, "session_id": 2})
@@ -570,7 +576,9 @@ def test_try_send_next_paged_and_send_fail(monkeypatch: pytest.MonkeyPatch) -> N
     kernel._try_send_next()
 
 
-def test_reply_timeout_and_abort(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+def test_reply_timeout_and_abort(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     kernel = E27Kernel()
     kernel._request_state = kernel_mod._RequestState.IN_FLIGHT
     kernel._active_seq = 1
@@ -646,11 +654,15 @@ def test_mark_send_failed_request_and_next_seq(monkeypatch: pytest.MonkeyPatch) 
 def test_send_request_with_seq_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     kernel = E27Kernel()
     with pytest.raises(KernelError):
-        kernel._send_request_with_seq(1, "zone", "get_status", {}, pending=True, opaque=None, expected_route=None)
+        kernel._send_request_with_seq(
+            1, "zone", "get_status", {}, pending=True, opaque=None, expected_route=None
+        )
 
     kernel._session = SimpleNamespace(state=SessionState.DISCONNECTED)
     with pytest.raises(KernelError):
-        kernel._send_request_with_seq(1, "zone", "get_status", {}, pending=True, opaque=None, expected_route=None)
+        kernel._send_request_with_seq(
+            1, "zone", "get_status", {}, pending=True, opaque=None, expected_route=None
+        )
 
     def _send_json(*_a: Any, **_k: Any) -> None:
         raise RuntimeError("boom")
@@ -684,7 +696,12 @@ def test_send_request_with_seq_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     monkeypatch.setattr(kernel, "_send_request_with_seq", lambda *_a, **_k: 7)
-    assert kernel._send_request("zone", "get_status", {"x": 1}, pending=False, opaque=None, expected_route=None) == 7
+    assert (
+        kernel._send_request(
+            "zone", "get_status", {"x": 1}, pending=False, opaque=None, expected_route=None
+        )
+        == 7
+    )
 
 
 def test_build_request_and_emit_and_envelopes(caplog: pytest.LogCaptureFixture) -> None:
@@ -741,40 +758,64 @@ def test_build_request_and_emit_and_envelopes(caplog: pytest.LogCaptureFixture) 
     )
     kernel.unsubscribe(token)
 
-    assert kernel._handle_dispatch_error_envelope({}, kernel_mod.DispatchContext(
-        kind=kernel_mod.MessageKind.UNKNOWN,
-        seq=None,
-        session_id=None,
-        route=("__local__", "connection_state"),
-        classification="LOCAL",
-        response_match=None,
-        raw_route=None,
-    )) is False
-    assert kernel._handle_dispatch_error_envelope({"__error__": {"x": "y"}}, kernel_mod.DispatchContext(
-        kind=kernel_mod.MessageKind.UNKNOWN,
-        seq=None,
-        session_id=None,
-        route=("__local__", "connection_state"),
-        classification="LOCAL",
-        response_match=None,
-        raw_route=None,
-    )) is False
+    assert (
+        kernel._handle_dispatch_error_envelope(
+            {},
+            kernel_mod.DispatchContext(
+                kind=kernel_mod.MessageKind.UNKNOWN,
+                seq=None,
+                session_id=None,
+                route=("__local__", "connection_state"),
+                classification="LOCAL",
+                response_match=None,
+                raw_route=None,
+            ),
+        )
+        is False
+    )
+    assert (
+        kernel._handle_dispatch_error_envelope(
+            {"__error__": {"x": "y"}},
+            kernel_mod.DispatchContext(
+                kind=kernel_mod.MessageKind.UNKNOWN,
+                seq=None,
+                session_id=None,
+                route=("__local__", "connection_state"),
+                classification="LOCAL",
+                response_match=None,
+                raw_route=None,
+            ),
+        )
+        is False
+    )
 
-    assert kernel._handle_panel_error_envelope({"error_code": "x"}, kernel_mod.DispatchContext(
-        kind=kernel_mod.MessageKind.UNKNOWN,
-        seq=None,
-        session_id=None,
-        route=("__local__", "connection_state"),
-        classification="LOCAL",
-        response_match=None,
-        raw_route=None,
-    )) is False
-    assert kernel._handle_panel_error_envelope({"error_code": "1", "error_message": 2}, kernel_mod.DispatchContext(
-        kind=kernel_mod.MessageKind.UNKNOWN,
-        seq=None,
-        session_id=None,
-        route=("__local__", "connection_state"),
-        classification="LOCAL",
-        response_match=None,
-        raw_route=None,
-    )) is True
+    assert (
+        kernel._handle_panel_error_envelope(
+            {"error_code": "x"},
+            kernel_mod.DispatchContext(
+                kind=kernel_mod.MessageKind.UNKNOWN,
+                seq=None,
+                session_id=None,
+                route=("__local__", "connection_state"),
+                classification="LOCAL",
+                response_match=None,
+                raw_route=None,
+            ),
+        )
+        is False
+    )
+    assert (
+        kernel._handle_panel_error_envelope(
+            {"error_code": "1", "error_message": 2},
+            kernel_mod.DispatchContext(
+                kind=kernel_mod.MessageKind.UNKNOWN,
+                seq=None,
+                session_id=None,
+                route=("__local__", "connection_state"),
+                classification="LOCAL",
+                response_match=None,
+                raw_route=None,
+            ),
+        )
+        is True
+    )

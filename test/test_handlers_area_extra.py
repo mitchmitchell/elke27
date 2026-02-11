@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
-
 import logging
-import pytest
 
 from elke27_lib.dispatcher import DispatchContext, PagedBlock
 from elke27_lib.events import (
@@ -22,7 +19,7 @@ from elke27_lib.events import (
     UnknownMessage,
 )
 from elke27_lib.handlers import area as area_handler
-from elke27_lib.states import AreaState, InventoryState, PanelState
+from elke27_lib.states import AreaState, PanelState
 from test.helpers.dispatch import make_ctx
 
 
@@ -308,6 +305,7 @@ def test_area_get_table_info_and_root_handler() -> None:
 def test_area_configured_helpers() -> None:
     state = PanelState()
     import logging
+
     logging.getLogger("elke27_lib.handlers.area").setLevel(logging.DEBUG)
     warnings: list[str] = []
     payload = {"configured": [1, 2], "block_id": 1, "block_count": 1}

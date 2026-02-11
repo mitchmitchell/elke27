@@ -27,12 +27,14 @@ from elke27_lib.errors import (
     Elke27LinkRequiredError,
     Elke27PermissionError,
     Elke27PinRequiredError,
-    Elke27ProtocolError as Elke27ProtocolErrorV2,
     Elke27TimeoutError,
     InvalidPinError,
     NotAuthenticatedError,
     PanelNotDisarmedError,
     ProtocolError,
+)
+from elke27_lib.errors import (
+    Elke27ProtocolError as Elke27ProtocolErrorV2,
 )
 from elke27_lib.events import (
     AreaStatusUpdated,
@@ -40,8 +42,7 @@ from elke27_lib.events import (
     ConnectionStateChanged,
     CsmSnapshotUpdated,
 )
-from elke27_lib.kernel import E27Kernel
-from elke27_lib.kernel import KernelError, KernelMissingContextError
+from elke27_lib.kernel import E27Kernel, KernelError, KernelMissingContextError
 from elke27_lib.permissions import PermissionLevel
 from elke27_lib.session import SessionConfig, SessionNotReadyError, SessionProtocolError
 from elke27_lib.states import AreaState, OutputState, ZoneState
@@ -112,7 +113,7 @@ def test_raise_v2_error_mapping() -> None:
     with pytest.raises(Elke27ConnectionError):
         client._raise_v2_error(E27TransportError("x"), phase="p")
     with pytest.raises(Elke27ConnectionError):
-        client._raise_v2_error(asyncio.TimeoutError(), phase="p")
+        client._raise_v2_error(TimeoutError(), phase="p")
     with pytest.raises(Elke27ConnectionError):
         client._raise_v2_error(TimeoutError("x"), phase="p")
     with pytest.raises(Elke27ProtocolErrorV2):
@@ -208,7 +209,9 @@ def test_handle_kernel_event_connection_paths(monkeypatch: pytest.MonkeyPatch) -
     kernel = E27Kernel()
     client = Elke27Client(kernel=kernel)
     called = {"safe": 0}
-    monkeypatch.setattr(client, "_safe_request", lambda *_a, **_k: called.__setitem__("safe", called["safe"] + 1))
+    monkeypatch.setattr(
+        client, "_safe_request", lambda *_a, **_k: called.__setitem__("safe", called["safe"] + 1)
+    )
 
     client._last_disconnect_at = 0.0
     client._now_monotonic = lambda: 10.0
@@ -221,7 +224,9 @@ def test_handle_kernel_event_connection_paths(monkeypatch: pytest.MonkeyPatch) -
     assert client._last_disconnect_at is not None
 
 
-def test_handle_kernel_event_area_paths(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+def test_handle_kernel_event_area_paths(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     kernel = E27Kernel()
     kernel.state.areas[1] = AreaState(area_id=1, num_bypassed_zones=1)
     client = Elke27Client(kernel=kernel)
@@ -260,10 +265,14 @@ def test_handle_kernel_event_csm_snapshot(monkeypatch: pytest.MonkeyPatch) -> No
     client = Elke27Client(kernel=kernel)
     client._awaiting_reconnect_csm_check = True
     now = datetime.now(UTC)
-    client._reconnect_csm_snapshot = CsmSnapshot(domain_csms={"a": 1}, table_csms={}, version=1, updated_at=now)
+    client._reconnect_csm_snapshot = CsmSnapshot(
+        domain_csms={"a": 1}, table_csms={}, version=1, updated_at=now
+    )
     changed = CsmSnapshot(domain_csms={"a": 2}, table_csms={}, version=2, updated_at=now)
     called = {"safe": 0}
-    monkeypatch.setattr(client, "_safe_request", lambda *_a, **_k: called.__setitem__("safe", called["safe"] + 1))
+    monkeypatch.setattr(
+        client, "_safe_request", lambda *_a, **_k: called.__setitem__("safe", called["safe"] + 1)
+    )
     evt = CsmSnapshotUpdated(**_event_base(CsmSnapshotUpdated.KIND), snapshot=changed)
     client._handle_kernel_event(evt)
     assert called["safe"] == 1
@@ -487,7 +496,9 @@ async def test_async_execute_single_and_paged(monkeypatch: pytest.MonkeyPatch) -
         min_permission=PermissionLevel.PLT_ENCRYPTION_KEY,
     )
     monkeypatch.setitem(client_mod.COMMANDS, "fake_get", spec)
-    monkeypatch.setattr(client_mod, "permission_for_generator", lambda *_a, **_k: PermissionLevel.PLT_ENCRYPTION_KEY)
+    monkeypatch.setattr(
+        client_mod, "permission_for_generator", lambda *_a, **_k: PermissionLevel.PLT_ENCRYPTION_KEY
+    )
 
     result = await client.async_execute("fake_get")
     assert result.ok is True
@@ -616,8 +627,13 @@ def test_pin_coercion_and_merge_helpers() -> None:
     coerced = client._coerce_pin_for_generator(spec, {"pin": "123"})
     assert coerced["pin"] == 123
 
-    assert client._resolve_merge_strategy("output_configured") is client_mod._merge_configured_outputs
-    assert client._resolve_merge_strategy("output_all_status") is client_mod._merge_output_status_strings
+    assert (
+        client._resolve_merge_strategy("output_configured") is client_mod._merge_configured_outputs
+    )
+    assert (
+        client._resolve_merge_strategy("output_all_status")
+        is client_mod._merge_output_status_strings
+    )
     assert client._resolve_merge_strategy(None) is None
 
     blocks = [
@@ -687,8 +703,16 @@ def test_mark_inventory_and_status(monkeypatch: pytest.MonkeyPatch) -> None:
     kernel.state.inventory.configured_zones = {2}
     kernel.state.inventory.configured_outputs = {3}
     called = {"queue": 0, "request": 0}
-    monkeypatch.setattr(client, "_queue_bootstrap_attribs", lambda *_a: called.__setitem__("queue", called["queue"] + 1))
-    monkeypatch.setattr(client, "_request_initial_statuses", lambda *_a: called.__setitem__("request", called["request"] + 1))
+    monkeypatch.setattr(
+        client,
+        "_queue_bootstrap_attribs",
+        lambda *_a: called.__setitem__("queue", called["queue"] + 1),
+    )
+    monkeypatch.setattr(
+        client,
+        "_request_initial_statuses",
+        lambda *_a: called.__setitem__("request", called["request"] + 1),
+    )
     client._mark_inventory_ready("area")
     assert called["queue"] == 1 and called["request"] == 1
     client._mark_inventory_ready("area")
@@ -701,7 +725,9 @@ def test_refresh_helpers(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCapt
     kernel.state.zones[2] = ZoneState(zone_id=2, area_id=1, bypassed=False)
     client = Elke27Client(kernel=kernel)
     called = {"count": 0}
-    monkeypatch.setattr(client, "_safe_request", lambda *_a, **_k: called.__setitem__("count", called["count"] + 1))
+    monkeypatch.setattr(
+        client, "_safe_request", lambda *_a, **_k: called.__setitem__("count", called["count"] + 1)
+    )
     caplog.set_level(logging.DEBUG, logger="elke27_lib.client")
     client._refresh_bypassed_zones_for_area(1)
     client._refresh_unbypassed_zones_for_area(1)
@@ -749,13 +775,21 @@ async def test_async_discover_and_link_errors(monkeypatch: pytest.MonkeyPatch) -
         await client.async_discover()
 
     with pytest.raises(Elke27InvalidArgument):
-        await client.async_link("", 1, access_code="1", passphrase="2", client_identity={"mn": "m", "sn": "s"})
+        await client.async_link(
+            "", 1, access_code="1", passphrase="2", client_identity={"mn": "m", "sn": "s"}
+        )
     with pytest.raises(Elke27InvalidArgument):
-        await client.async_link("h", 0, access_code="1", passphrase="2", client_identity={"mn": "m", "sn": "s"})
+        await client.async_link(
+            "h", 0, access_code="1", passphrase="2", client_identity={"mn": "m", "sn": "s"}
+        )
     with pytest.raises(Elke27InvalidArgument):
-        await client.async_link("h", 1, access_code="", passphrase="2", client_identity={"mn": "m", "sn": "s"})
+        await client.async_link(
+            "h", 1, access_code="", passphrase="2", client_identity={"mn": "m", "sn": "s"}
+        )
     with pytest.raises(Elke27InvalidArgument):
-        await client.async_link("h", 1, access_code="1", passphrase="", client_identity={"mn": "m", "sn": "s"})
+        await client.async_link(
+            "h", 1, access_code="1", passphrase="", client_identity={"mn": "m", "sn": "s"}
+        )
     with pytest.raises(Elke27InvalidArgument):
         await client.async_link("h", 1, access_code="1", passphrase="2", client_identity=None)
 
@@ -764,7 +798,9 @@ async def test_async_discover_and_link_errors(monkeypatch: pytest.MonkeyPatch) -
 
     monkeypatch.setattr(client._kernel, "link", _link)
     with pytest.raises(AssertionError):
-        await client.async_link("h", 1, access_code="1", passphrase="2", client_identity={"mn": "m", "sn": "s"})
+        await client.async_link(
+            "h", 1, access_code="1", passphrase="2", client_identity={"mn": "m", "sn": "s"}
+        )
 
 
 def test_request_authenticate_timeout_and_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -805,7 +841,11 @@ async def test_async_execute_permission_and_disarmed(monkeypatch: pytest.MonkeyP
     client = Elke27Client(kernel=E27Kernel())
     client._kernel.state.panel.session_id = 1
     client._kernel.state.areas[1] = AreaState(area_id=1, arm_state="armed_away")
-    monkeypatch.setattr(client_mod, "permission_for_generator", lambda *_a, **_k: PermissionLevel.PLT_ENCRYPTION_KEY_DISARMED)
+    monkeypatch.setattr(
+        client_mod,
+        "permission_for_generator",
+        lambda *_a, **_k: PermissionLevel.PLT_ENCRYPTION_KEY_DISARMED,
+    )
 
     spec = client_mod.CommandSpec(
         key="needs_disarmed",
@@ -824,7 +864,9 @@ async def test_async_execute_permission_and_disarmed(monkeypatch: pytest.MonkeyP
 async def test_async_execute_pin_validation(monkeypatch: pytest.MonkeyPatch) -> None:
     client = Elke27Client(kernel=E27Kernel())
     client._kernel.state.panel.session_id = 1
-    monkeypatch.setattr(client_mod, "permission_for_generator", lambda *_a, **_k: PermissionLevel.PLT_ANY_USER)
+    monkeypatch.setattr(
+        client_mod, "permission_for_generator", lambda *_a, **_k: PermissionLevel.PLT_ANY_USER
+    )
 
     spec = client_mod.CommandSpec(
         key="needs_pin",
@@ -846,7 +888,9 @@ async def test_async_execute_single_missing_payload(monkeypatch: pytest.MonkeyPa
     kernel = E27Kernel()
     client = Elke27Client(kernel=kernel)
     client._kernel.state.panel.session_id = 1
-    monkeypatch.setattr(client_mod, "permission_for_generator", lambda *_a, **_k: PermissionLevel.PLT_ENCRYPTION_KEY)
+    monkeypatch.setattr(
+        client_mod, "permission_for_generator", lambda *_a, **_k: PermissionLevel.PLT_ENCRYPTION_KEY
+    )
 
     class _Pending:
         def __init__(self) -> None:
@@ -888,7 +932,9 @@ async def test_async_execute_paged_block_mismatch(monkeypatch: pytest.MonkeyPatc
     kernel = E27Kernel()
     client = Elke27Client(kernel=kernel)
     client._kernel.state.panel.session_id = 1
-    monkeypatch.setattr(client_mod, "permission_for_generator", lambda *_a, **_k: PermissionLevel.PLT_ENCRYPTION_KEY)
+    monkeypatch.setattr(
+        client_mod, "permission_for_generator", lambda *_a, **_k: PermissionLevel.PLT_ENCRYPTION_KEY
+    )
 
     class _Pending:
         def __init__(self) -> None:
@@ -906,7 +952,9 @@ async def test_async_execute_paged_block_mismatch(monkeypatch: pytest.MonkeyPatc
     kernel._pending_responses = pending  # type: ignore[attr-defined]
     kernel.register_sent_event = lambda _s, event: event.set()  # type: ignore[assignment]
     seq_counter = {"val": 0}
-    kernel.next_seq = lambda: (seq_counter.__setitem__("val", seq_counter["val"] + 1) or seq_counter["val"])  # type: ignore[assignment]
+    kernel.next_seq = lambda: (
+        seq_counter.__setitem__("val", seq_counter["val"] + 1) or seq_counter["val"]
+    )  # type: ignore[assignment]
 
     def _send(seq, domain, command, payload, **_k):  # type: ignore[no-untyped-def]
         block_id = payload["block_id"]
@@ -942,6 +990,7 @@ def test_request_and_pump_once_errors(monkeypatch: pytest.MonkeyPatch) -> None:
 
     class _Sess:
         cfg = SessionConfig(host="h", port=1)
+
         def pump_once(self, **_k):  # type: ignore[no-untyped-def]
             raise SessionProtocolError("x")
 
