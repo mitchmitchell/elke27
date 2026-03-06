@@ -41,7 +41,12 @@ def generator_area_set_status(
 
 
 def generator_area_set_arm_state(
-    *, area_id: int, arm_state: ArmState | str, pin: int
+    *,
+    area_id: int,
+    arm_state: ArmState | str,
+    pin: int,
+    auto_stay_cancel: bool = False,
+    exit_delay_cancel: bool = False,
 ) -> tuple[dict[str, object], ResponseKey]:
     if area_id < 1:
         raise ValueError(f"area_id must be an int >= 1 (got {area_id!r})")
@@ -49,4 +54,10 @@ def generator_area_set_arm_state(
         raise ValueError(f"arm_state must be one of {_ARM_STATES!r} (got {arm_state!r})")
     if pin <= 0:
         raise ValueError(f"pin must be a positive int (got {pin!r})")
-    return {"area_id": area_id, "arm_state": arm_state, "pin": pin}, ("area", "set_arm_state")
+    return {
+        "area_id": area_id,
+        "arm_state": arm_state,
+        "pin": pin,
+        "auto_stay_cancel": bool(auto_stay_cancel),
+        "exit_delay_cancel": bool(exit_delay_cancel),
+    }, ("area", "set_arm_state")

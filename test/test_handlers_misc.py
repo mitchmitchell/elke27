@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import Any, cast
 
 from elke27_lib.dispatcher import DispatchContext
 from elke27_lib.events import (
@@ -52,7 +53,7 @@ def test_bus_ios_get_trouble_handler_paths() -> None:
     emit.events.clear()
     msg = {"bus_io_dev": {"get_trouble": {"foo": "bar"}}}
     assert handler(msg, make_ctx(classification="BROADCAST")) is True
-    assert state.bus_io_status["get_trouble"]["foo"] == "bar"
+    assert cast(dict[str, Any], state.bus_io_status["get_trouble"])["foo"] == "bar"
     assert state.panel.last_message_at == 1.0
 
 

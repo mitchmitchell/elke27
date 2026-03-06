@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pytest
 
 from elke27_lib.dispatcher import PagedTransferKey
@@ -61,7 +63,7 @@ def _assert_requests(kernel: _FakeKernel, routes: list[tuple[str, str]]) -> None
 
 def test_bus_ios_register_and_payload() -> None:
     kernel = _FakeKernel()
-    bus_ios.register(kernel)
+    bus_ios.register(cast(Any, kernel))
     _assert_registered(kernel, [bus_ios.ROUTE_BUS_IOS_GET_TROUBLE])
     _assert_requests(kernel, [bus_ios.ROUTE_BUS_IOS_GET_TROUBLE])
     assert bus_ios.build_bus_ios_get_trouble_payload() == {}
@@ -69,7 +71,7 @@ def test_bus_ios_register_and_payload() -> None:
 
 def test_keypad_register_and_payloads() -> None:
     kernel = _FakeKernel()
-    keypad.register(kernel)
+    keypad.register(cast(Any, kernel))
     _assert_registered(
         kernel,
         [
@@ -97,7 +99,7 @@ def test_keypad_register_and_payloads() -> None:
 
 def test_log_register_and_payloads() -> None:
     kernel = _FakeKernel()
-    log.register(kernel)
+    log.register(cast(Any, kernel))
     _assert_registered(
         kernel,
         [
@@ -137,7 +139,7 @@ def test_log_register_and_payloads() -> None:
 
 def test_network_param_register_and_payloads() -> None:
     kernel = _FakeKernel()
-    network_param.register(kernel)
+    network_param.register(cast(Any, kernel))
     _assert_registered(
         kernel,
         [
@@ -159,7 +161,7 @@ def test_network_param_register_and_payloads() -> None:
 
 def test_output_register_and_payloads() -> None:
     kernel = _FakeKernel()
-    output.register(kernel)
+    output.register(cast(Any, kernel))
     _assert_registered(
         kernel,
         [
@@ -196,7 +198,7 @@ def test_output_register_and_payloads() -> None:
     assert kernel.paged
     route, _merge_fn, request_block = kernel.paged[0]
     transfer_key = PagedTransferKey(session_id=1, transfer_id=2, route=route)
-    request_block(3, transfer_key)
+    cast(Any, request_block)(3, transfer_key)
     assert kernel.sent == [
         (output.ROUTE_OUTPUT_GET_CONFIGURED, {"block_id": 3, "opaque": transfer_key})
     ]
@@ -204,7 +206,7 @@ def test_output_register_and_payloads() -> None:
 
 def test_rule_register_and_payloads() -> None:
     kernel = _FakeKernel()
-    rule.register(kernel)
+    rule.register(cast(Any, kernel))
     _assert_registered(kernel, [rule.ROUTE_RULE_GET_RULES])
     _assert_requests(kernel, [rule.ROUTE_RULE_GET_RULES])
     assert rule.build_rule_get_rules_payload(block_id=0) == {"block_id": 0}
@@ -214,7 +216,7 @@ def test_rule_register_and_payloads() -> None:
 
 def test_system_register_and_payloads() -> None:
     kernel = _FakeKernel()
-    system.register(kernel)
+    system.register(cast(Any, kernel))
     _assert_registered(
         kernel,
         [
@@ -335,7 +337,7 @@ def test_system_register_and_payloads() -> None:
 
 def test_tstat_register_and_payloads() -> None:
     kernel = _FakeKernel()
-    tstat.register(kernel)
+    tstat.register(cast(Any, kernel))
     _assert_registered(
         kernel,
         [
@@ -358,7 +360,7 @@ def test_tstat_register_and_payloads() -> None:
 
 def test_user_register_and_payloads() -> None:
     kernel = _FakeKernel()
-    user.register(kernel)
+    user.register(cast(Any, kernel))
     _assert_registered(
         kernel,
         [
@@ -383,7 +385,7 @@ def test_user_register_and_payloads() -> None:
 
 def test_zone_register_and_payloads() -> None:
     kernel = _FakeKernel()
-    zone.register(kernel)
+    zone.register(cast(Any, kernel))
     _assert_registered(
         kernel,
         [
@@ -439,7 +441,7 @@ def test_zone_register_and_payloads() -> None:
     assert kernel.paged
     route, _merge_fn, request_block = kernel.paged[0]
     transfer_key = PagedTransferKey(session_id=2, transfer_id=7, route=route)
-    request_block(2, transfer_key)
+    cast(Any, request_block)(2, transfer_key)
     assert kernel.sent == [
         (zone.ROUTE_ZONE_GET_CONFIGURED, {"block_id": 2, "opaque": transfer_key})
     ]

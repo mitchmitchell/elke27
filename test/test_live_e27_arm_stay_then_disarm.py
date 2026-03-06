@@ -68,6 +68,114 @@ async def test_live_arm_stay_then_disarm(live_e27_client: Elke27Client) -> None:
     assert result.ok is True
     assert_payload_shape("area_set_arm_state", result.data)
 
+
+@pytest.mark.live_e27
+@pytest.mark.asyncio
+async def test_live_arm_away_auto_stay_cancel_true(live_e27_client: Elke27Client) -> None:
+    _require_interactive()
+    area_id = _area_id()
+    pin = _get_pin()
+
+    result = await live_e27_client.async_execute(
+        "area_set_arm_state",
+        area_id=area_id,
+        arm_state="DISARMED",
+        pin=pin,
+    )
+    assert result.ok is True
+    assert_payload_shape("area_set_arm_state", result.data)
+
+    result = await live_e27_client.async_execute(
+        "area_set_arm_state",
+        area_id=area_id,
+        arm_state="ARMED_AWAY",
+        pin=pin,
+        auto_stay_cancel=True,
+    )
+    if not result.ok and _is_not_ready_error(result):
+        pytest.skip("Panel reported not-ready for ARMED_AWAY with auto_stay_cancel.")
+    assert result.ok is True
+    assert_payload_shape("area_set_arm_state", result.data)
+
+    result = await live_e27_client.async_execute(
+        "area_set_arm_state",
+        area_id=area_id,
+        arm_state="DISARMED",
+        pin=pin,
+    )
+    assert result.ok is True
+    assert_payload_shape("area_set_arm_state", result.data)
+
+
+@pytest.mark.live_e27
+@pytest.mark.asyncio
+async def test_live_arm_away_auto_stay_cancel_true_leave_armed(
+    live_e27_client: Elke27Client,
+) -> None:
+    _require_interactive()
+    area_id = _area_id()
+    pin = _get_pin()
+
+    result = await live_e27_client.async_execute(
+        "area_set_arm_state",
+        area_id=area_id,
+        arm_state="DISARMED",
+        pin=pin,
+    )
+    assert result.ok is True
+    assert_payload_shape("area_set_arm_state", result.data)
+
+    result = await live_e27_client.async_execute(
+        "area_set_arm_state",
+        area_id=area_id,
+        arm_state="ARMED_AWAY",
+        pin=pin,
+        auto_stay_cancel=False,
+        exit_delay_cancel=True,
+    )
+    if not result.ok and _is_not_ready_error(result):
+        pytest.skip("Panel reported not-ready for ARMED_AWAY with auto_stay_cancel.")
+    assert result.ok is True
+    assert_payload_shape("area_set_arm_state", result.data)
+
+
+@pytest.mark.live_e27
+@pytest.mark.asyncio
+async def test_live_arm_away_exit_delay_cancel_true(live_e27_client: Elke27Client) -> None:
+    _require_interactive()
+    area_id = _area_id()
+    pin = _get_pin()
+
+    result = await live_e27_client.async_execute(
+        "area_set_arm_state",
+        area_id=area_id,
+        arm_state="DISARMED",
+        pin=pin,
+    )
+    assert result.ok is True
+    assert_payload_shape("area_set_arm_state", result.data)
+
+    result = await live_e27_client.async_execute(
+        "area_set_arm_state",
+        area_id=area_id,
+        arm_state="ARMED_AWAY",
+        pin=pin,
+        exit_delay_cancel=True,
+    )
+    if not result.ok and _is_not_ready_error(result):
+        pytest.skip("Panel reported not-ready for ARMED_AWAY with exit_delay_cancel.")
+    assert result.ok is True
+    assert_payload_shape("area_set_arm_state", result.data)
+
+    result = await live_e27_client.async_execute(
+        "area_set_arm_state",
+        area_id=area_id,
+        arm_state="DISARMED",
+        pin=pin,
+    )
+    assert result.ok is True
+    assert_payload_shape("area_set_arm_state", result.data)
+
     result = await live_e27_client.async_execute(
         "area_set_arm_state",
         area_id=area_id,

@@ -1,5 +1,6 @@
 import pytest
 
+from elke27_lib.errors import Elke27ProtocolError
 from elke27_lib.generators.registry import COMMANDS
 from elke27_lib.permissions import (
     ALL_PERMISSION_KEYS,
@@ -54,7 +55,13 @@ EXPECTED_CALLS = {
     "area_get_attribs": {"area_id": 1},
     "area_get_status": {"area_id": 1},
     "area_set_status": {"area_id": 1, "chime": True},
-    "area_set_arm_state": {"area_id": 1, "arm_state": "ARMED_AWAY", "pin": 1234},
+    "area_set_arm_state": {
+        "area_id": 1,
+        "arm_state": "ARMED_AWAY",
+        "pin": 1234,
+        "auto_stay_cancel": False,
+        "exit_delay_cancel": False,
+    },
     "zone_get_table_info": {},
     "zone_get_configured": {"block_id": 1},
     "zone_get_attribs": {"zone_id": 1},
@@ -153,5 +160,5 @@ def test_log_mutation_generators_are_disabled():
 def test_split_domain_command_requires_separator():
     from elke27_lib.generators import registry
 
-    with pytest.raises(Exception):
+    with pytest.raises(Elke27ProtocolError):
         registry._split_domain_command("nosplit")

@@ -4,11 +4,10 @@ import hashlib
 import json
 import logging
 import os
-import socket
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Final, cast
+from typing import Any, Final, Protocol, cast
 
 from .errors import (
     E27ErrorContext,
@@ -23,6 +22,12 @@ LOG = logging.getLogger(__name__)
 
 # Fixed IV for api_link and hello flows
 API_LINK_IV: Final[bytes] = bytes(range(16))  # 00 01 02 ... 0f (Java initVectorBytes)
+
+
+class SocketLike(Protocol):
+    def settimeout(self, *args: Any, **kwargs: Any) -> object: ...
+    def recv(self, *args: Any, **kwargs: Any) -> bytes: ...
+    def sendall(self, *args: Any, **kwargs: Any) -> object: ...
 
 
 def _as_mapping(obj: object) -> Mapping[str, Any] | None:
@@ -99,7 +104,7 @@ def _parse_concatenated_json_objects(s: str) -> list[str]:
 
 
 def recv_cleartext_json_objects(
-    sock: socket.socket, timeout_s: float = 5.0
+    sock: SocketLike, timeout_s: float = 5.0
 ) -> list[dict[str, object]]:
     """
     Read some bytes and parse 1..N concatenated JSON objects.
@@ -144,7 +149,7 @@ def recv_cleartext_json_objects(
     return objs
 
 
-def wait_for_discovery_nonce(sock: socket.socket, timeout_s: float = 10.0) -> str:
+def wait_for_discovery_nonce(sock: SocketLike, timeout_s: float = 10.0) -> str:
     """
     Wait for discovery hello containing ELKWC2017 and return nonce string.
     """
@@ -277,7 +282,7 @@ def build_api_link_request(
     return json.dumps(msg, separators=(",", ":"))
 
 
-def send_unframed_json(sock: socket.socket, json_text: str) -> None:
+def send_unframed_json(sock: SocketLike, json_text: str) -> None:
     """
     api_link request is cleartext and NOT link-framed.
     hello request is cleartext and NOT link-framed.
@@ -294,7 +299,7 @@ def send_unframed_json(sock: socket.socket, json_text: str) -> None:
 
 def perform_api_link(
     *,
-    sock: socket.socket,
+    sock: SocketLike,
     client_identity: E27Identity,
     access_code: str,
     passphrase: str,

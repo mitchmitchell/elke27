@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -301,7 +302,7 @@ async def test_reconnect_and_close(monkeypatch: pytest.MonkeyPatch) -> None:
 
     kernel2 = E27Kernel()
     fake = _FakeSession(session_mod.SessionConfig(host="h"), _identity(), "aa")
-    kernel2._session = fake
+    cast(Any, kernel2)._session = fake
     called = {"emit": 0}
     monkeypatch.setattr(
         kernel2,
@@ -319,8 +320,8 @@ async def test_keepalive_loop_disconnect(monkeypatch: pytest.MonkeyPatch) -> Non
     kernel._keepalive_interval_s = 0.0
     kernel._keepalive_max_missed = 1
     session = _FakeSession(session_mod.SessionConfig(host="h"), _identity(), "aa")
-    session._outbound = SimpleNamespace(is_idle=lambda: True)
-    kernel._session = session
+    cast(Any, session)._outbound = SimpleNamespace(is_idle=lambda: True)
+    cast(Any, kernel)._session = session
     monkeypatch.setattr(kernel, "_send_keepalive_request", lambda: asyncio.sleep(0, result=False))
     await kernel._keepalive_loop()
     assert session.disconnected is not None
@@ -329,12 +330,14 @@ async def test_keepalive_loop_disconnect(monkeypatch: pytest.MonkeyPatch) -> Non
 @pytest.mark.asyncio
 async def test_send_keepalive_request_success(monkeypatch: pytest.MonkeyPatch) -> None:
     kernel = E27Kernel(now_monotonic=lambda: 100.0)
-    kernel._loop = asyncio.get_running_loop()
-    kernel._session = _FakeSession(session_mod.SessionConfig(host="h"), _identity(), "aa")
+    cast(Any, kernel)._loop = asyncio.get_running_loop()
+    cast(Any, kernel)._session = _FakeSession(
+        session_mod.SessionConfig(host="h"), _identity(), "aa"
+    )
     kernel._last_exchange_at = 0.0
     kernel.requests.register(("system", "r_u_alive"), lambda: {})
 
-    future: asyncio.Future[object] = kernel._loop.create_future()
+    future: asyncio.Future[object] = cast(asyncio.AbstractEventLoop, kernel._loop).create_future()
     future.set_result({"ok": True})
     monkeypatch.setattr(kernel._pending_responses, "create", lambda *a, **k: future)
     monkeypatch.setattr(kernel, "_register_sent_event", lambda _seq, event: (event.set(), event)[1])

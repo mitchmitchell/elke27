@@ -4,6 +4,7 @@ import asyncio
 import logging
 import threading
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -61,7 +62,7 @@ def _ready_session() -> Session:
     cfg = SessionConfig(host="example", auto_receive=False)
     sess = Session(cfg, client_identity=_identity(), link_key_hex="00")
     sess.state = SessionState.ACTIVE
-    sess.sock = _FakeSocket()
+    cast(Any, sess).sock = _FakeSocket()
     sess._deframe_state = DeframeState()
     sess.info = session_mod.SessionInfo(
         session_id=1, session_key_hex="00" * 16, session_hmac_hex="11" * 16
@@ -165,19 +166,19 @@ def test_require_ready_raises() -> None:
 
 def test_recv_some_errors_and_empty() -> None:
     sess = _ready_session()
-    sess.sock = _FakeSocket(recv_exc=TimeoutError("wait"))
+    cast(Any, sess).sock = _FakeSocket(recv_exc=TimeoutError("wait"))
     with pytest.raises(TimeoutError):
         sess._recv_some(max_bytes=1)
 
-    sess.sock = _FakeSocket(recv_exc=OSError("oops"))
+    cast(Any, sess).sock = _FakeSocket(recv_exc=OSError("oops"))
     with pytest.raises(SessionIOError):
         sess._recv_some(max_bytes=1)
 
-    sess.sock = _FakeSocket(recv_data=b"")
+    cast(Any, sess).sock = _FakeSocket(recv_data=b"")
     with pytest.raises(SessionIOError):
         sess._recv_some(max_bytes=1)
 
-    sess.sock = _FakeSocket(recv_data=b"abc")
+    cast(Any, sess).sock = _FakeSocket(recv_data=b"abc")
     assert sess._recv_some(max_bytes=3) == b"abc"
 
 
@@ -188,7 +189,7 @@ def test_send_all_error() -> None:
         def sendall(self, data: bytes) -> None:  # type: ignore[override]
             raise OSError("nope")
 
-    sess.sock = _Sock()
+    cast(Any, sess).sock = _Sock()
     with pytest.raises(SessionIOError):
         sess._send_all(b"x")
 
@@ -235,7 +236,6 @@ def test_recv_one_frame_no_crc_with_idle_and_wire_log(
 
 def test_recv_one_frame_timeout() -> None:
     sess = _ready_session()
-    sess._recv_one_frame_no_crc  # keep lint quiet
     with pytest.raises(TimeoutError):
         sess._recv_one_frame_no_crc(timeout_s=0.0)
 

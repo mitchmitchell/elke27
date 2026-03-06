@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import types
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -83,14 +83,14 @@ async def test_close_paths(
         def close(self) -> None:
             raise OSError("boom")
 
-    kernel._session = _Session()
+    cast(Any, kernel)._session = _Session()
     caplog.set_level("DEBUG", logger="elke27_lib.kernel")
     await kernel.close()
 
 
 def test_start_stop_keepalive(monkeypatch: pytest.MonkeyPatch) -> None:
     kernel = E27Kernel()
-    kernel._loop = None
+    cast(Any, kernel)._loop = None
     kernel._start_keepalive()
 
     class _Task:
@@ -104,15 +104,15 @@ def test_start_stop_keepalive(monkeypatch: pytest.MonkeyPatch) -> None:
         coro.close()
         return _Task()
 
-    kernel._loop = SimpleNamespace(create_task=_create_task)
-    kernel._keepalive_task = None
+    cast(Any, kernel)._loop = SimpleNamespace(create_task=_create_task)
+    cast(Any, kernel)._keepalive_task = None
     kernel._start_keepalive()
-    kernel._keepalive_task = _Task()
+    cast(Any, kernel)._keepalive_task = _Task()
     kernel._start_keepalive()
 
-    kernel._keepalive_task = None
+    cast(Any, kernel)._keepalive_task = None
     kernel._stop_keepalive()
-    kernel._keepalive_task = _Task()
+    cast(Any, kernel)._keepalive_task = _Task()
     kernel._stop_keepalive()
 
 
@@ -137,20 +137,20 @@ async def test_keepalive_loop_branches(monkeypatch: pytest.MonkeyPatch) -> None:
 
     kernel._keepalive_interval_s = 0.0
     kernel._last_exchange_at = 0.0
-    kernel._session = None
+    cast(Any, kernel)._session = None
     await kernel._keepalive_loop()
 
-    kernel._session = SimpleNamespace(state=SessionState.ACTIVE)
+    cast(Any, kernel)._session = SimpleNamespace(state=SessionState.ACTIVE)
     kernel._request_state = kernel_mod._RequestState.IN_FLIGHT
     await kernel._keepalive_loop()
 
     kernel._request_state = kernel_mod._RequestState.IDLE
-    kernel._session = SimpleNamespace(
+    cast(Any, kernel)._session = SimpleNamespace(
         state=SessionState.ACTIVE, _outbound=SimpleNamespace(is_idle=lambda: False)
     )
     await kernel._keepalive_loop()
 
-    kernel._session = SimpleNamespace(state=SessionState.ACTIVE)
+    cast(Any, kernel)._session = SimpleNamespace(state=SessionState.ACTIVE)
     kernel._keepalive_inflight = True
     await kernel._keepalive_loop()
 
@@ -180,20 +180,20 @@ async def test_keepalive_loop_sleep_cancellations(monkeypatch: pytest.MonkeyPatc
 
     kernel._keepalive_interval_s = 0.0
     kernel._last_exchange_at = 0.0
-    kernel._session = None
+    cast(Any, kernel)._session = None
     await kernel._keepalive_loop()
 
-    kernel._session = SimpleNamespace(state=SessionState.ACTIVE)
+    cast(Any, kernel)._session = SimpleNamespace(state=SessionState.ACTIVE)
     kernel._request_state = kernel_mod._RequestState.IN_FLIGHT
     await kernel._keepalive_loop()
 
     kernel._request_state = kernel_mod._RequestState.IDLE
-    kernel._session = SimpleNamespace(
+    cast(Any, kernel)._session = SimpleNamespace(
         state=SessionState.ACTIVE, _outbound=SimpleNamespace(is_idle=lambda: False)
     )
     await kernel._keepalive_loop()
 
-    kernel._session = SimpleNamespace(state=SessionState.ACTIVE)
+    cast(Any, kernel)._session = SimpleNamespace(state=SessionState.ACTIVE)
     kernel._keepalive_inflight = True
     await kernel._keepalive_loop()
 
@@ -221,7 +221,7 @@ async def test_keepalive_loop_session_cancel_line_666(monkeypatch: pytest.Monkey
     kernel._keepalive_enabled = True
     kernel._keepalive_interval_s = 0.0
     kernel._last_exchange_at = 0.0
-    kernel._session = None
+    cast(Any, kernel)._session = None
     await kernel._keepalive_loop()
 
 
@@ -235,7 +235,7 @@ async def test_keepalive_loop_request_cancel_line_676(monkeypatch: pytest.Monkey
     kernel._keepalive_enabled = True
     kernel._keepalive_interval_s = 0.0
     kernel._last_exchange_at = 0.0
-    kernel._session = SimpleNamespace(state=SessionState.ACTIVE)
+    cast(Any, kernel)._session = SimpleNamespace(state=SessionState.ACTIVE)
     kernel._request_state = kernel_mod._RequestState.IN_FLIGHT
     await kernel._keepalive_loop()
 
@@ -250,7 +250,7 @@ async def test_keepalive_loop_outbound_cancel_line_683(monkeypatch: pytest.Monke
     kernel._keepalive_enabled = True
     kernel._keepalive_interval_s = 0.0
     kernel._last_exchange_at = 0.0
-    kernel._session = SimpleNamespace(
+    cast(Any, kernel)._session = SimpleNamespace(
         state=SessionState.ACTIVE, _outbound=SimpleNamespace(is_idle=lambda: False)
     )
     await kernel._keepalive_loop()
@@ -266,7 +266,7 @@ async def test_keepalive_loop_inflight_cancel_line_689(monkeypatch: pytest.Monke
     kernel._keepalive_enabled = True
     kernel._keepalive_interval_s = 0.0
     kernel._last_exchange_at = 0.0
-    kernel._session = SimpleNamespace(state=SessionState.ACTIVE)
+    cast(Any, kernel)._session = SimpleNamespace(state=SessionState.ACTIVE)
     kernel._keepalive_inflight = True
     await kernel._keepalive_loop()
 
@@ -289,23 +289,23 @@ async def test_keepalive_loop_continue_paths(monkeypatch: pytest.MonkeyPatch) ->
     kernel._closing = False
     kernel._keepalive_interval_s = 0.0
     kernel._last_exchange_at = 0.0
-    kernel._session = None
+    cast(Any, kernel)._session = None
     await kernel._keepalive_loop()
 
     kernel._closing = False
-    kernel._session = SimpleNamespace(state=SessionState.ACTIVE)
+    cast(Any, kernel)._session = SimpleNamespace(state=SessionState.ACTIVE)
     kernel._request_state = kernel_mod._RequestState.IN_FLIGHT
     await kernel._keepalive_loop()
 
     kernel._closing = False
     kernel._request_state = kernel_mod._RequestState.IDLE
-    kernel._session = SimpleNamespace(
+    cast(Any, kernel)._session = SimpleNamespace(
         state=SessionState.ACTIVE, _outbound=SimpleNamespace(is_idle=lambda: False)
     )
     await kernel._keepalive_loop()
 
     kernel._closing = False
-    kernel._session = SimpleNamespace(state=SessionState.ACTIVE)
+    cast(Any, kernel)._session = SimpleNamespace(state=SessionState.ACTIVE)
     kernel._keepalive_inflight = True
     await kernel._keepalive_loop()
 
@@ -316,8 +316,8 @@ async def test_send_keepalive_request_branches(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(kernel, "_set_loop_if_needed", lambda: None)
     assert await kernel._send_keepalive_request() is False
 
-    kernel._loop = asyncio.get_running_loop()
-    kernel._session = SimpleNamespace(state=SessionState.ACTIVE)
+    cast(Any, kernel)._loop = asyncio.get_running_loop()
+    cast(Any, kernel)._session = SimpleNamespace(state=SessionState.ACTIVE)
     kernel._last_exchange_at = kernel.now()
     kernel._keepalive_interval_s = 10.0
     assert await kernel._send_keepalive_request() is True
@@ -377,16 +377,16 @@ def test_bootstrap_requests_and_csm_refresh(monkeypatch: pytest.MonkeyPatch) -> 
     kernel = E27Kernel()
     kernel._bootstrap_requests()
 
-    kernel._session = SimpleNamespace(state=SessionState.ACTIVE)
+    cast(Any, kernel)._session = SimpleNamespace(state=SessionState.ACTIVE)
     monkeypatch.setattr(kernel.requests, "get", lambda *_a, **_k: True)
     monkeypatch.setattr(kernel, "request", lambda *_a, **_k: (_ for _ in ()).throw(E27Error("x")))
     kernel._bootstrap_requests()
 
-    kernel._session = None
+    cast(Any, kernel)._session = None
     with pytest.raises(KernelError):
         kernel.request_csm_refresh()
 
-    kernel._session = SimpleNamespace(state=SessionState.ACTIVE)
+    cast(Any, kernel)._session = SimpleNamespace(state=SessionState.ACTIVE)
     monkeypatch.setattr(
         kernel.requests,
         "get",
@@ -501,7 +501,7 @@ def test_enqueue_kick_and_try_send_next(monkeypatch: pytest.MonkeyPatch) -> None
     kernel._enqueue_request(item)
     assert kernel._request_queue_high
 
-    kernel._loop = SimpleNamespace(is_running=lambda: False)
+    cast(Any, kernel)._loop = SimpleNamespace(is_running=lambda: False)
     kernel._kick_scheduler()
     assert called["try"] == 1
 
@@ -512,7 +512,7 @@ def test_enqueue_kick_and_try_send_next(monkeypatch: pytest.MonkeyPatch) -> None
         def call_soon_threadsafe(self, fn: Any) -> None:
             fn()
 
-    kernel._loop = _Loop()
+    cast(Any, kernel)._loop = _Loop()
     kernel._kick_scheduler()
 
     kernel._request_state = kernel_mod._RequestState.IN_FLIGHT
@@ -521,10 +521,10 @@ def test_enqueue_kick_and_try_send_next(monkeypatch: pytest.MonkeyPatch) -> None
     kernel._request_queue_high.clear()
     kernel._request_queue_normal.clear()
     kernel._try_send_next()
-    kernel._session = None
+    cast(Any, kernel)._session = None
     kernel._request_queue_high.append(item)
     kernel._try_send_next()
-    kernel._session = SimpleNamespace(state=SessionState.DISCONNECTED)
+    cast(Any, kernel)._session = SimpleNamespace(state=SessionState.DISCONNECTED)
     kernel._request_queue_high.append(item)
     kernel._try_send_next()
 
@@ -544,13 +544,15 @@ def test_try_send_next_session_not_active() -> None:
         timeout_s=1.0,
     )
     kernel._request_queue_high.append(item)
-    kernel._session = SimpleNamespace(state=SessionState.DISCONNECTED)
+    cast(Any, kernel)._session = SimpleNamespace(state=SessionState.DISCONNECTED)
     kernel._try_send_next()
 
 
 def test_try_send_next_paged_and_send_fail(monkeypatch: pytest.MonkeyPatch) -> None:
     kernel = E27Kernel()
-    kernel._session = SimpleNamespace(state=SessionState.ACTIVE, send_json=lambda *_a, **_k: None)
+    cast(Any, kernel)._session = SimpleNamespace(
+        state=SessionState.ACTIVE, send_json=lambda *_a, **_k: None
+    )
     kernel.dispatcher.is_paged = lambda *_a, **_k: True  # type: ignore[assignment]
     kernel.dispatcher.add_pending = lambda *_a, **_k: None  # type: ignore[assignment]
     kernel.state.panel.session_id = 1
@@ -641,8 +643,8 @@ def test_mark_send_failed_request_and_next_seq(monkeypatch: pytest.MonkeyPatch) 
     kernel._seq = 0
     assert kernel._next_seq() == 10
 
-    kernel._active_timeout_handle = SimpleNamespace(cancel=lambda: None)
-    kernel._loop = SimpleNamespace(call_later=lambda *_a, **_k: None)
+    cast(Any, kernel)._active_timeout_handle = SimpleNamespace(cancel=lambda: None)
+    cast(Any, kernel)._loop = SimpleNamespace(call_later=lambda *_a, **_k: None)
     kernel._arm_reply_timeout(1, 0)
     kernel._arm_reply_timeout(1, 1)
     kernel._request_state = kernel_mod._RequestState.IN_FLIGHT
@@ -658,7 +660,7 @@ def test_send_request_with_seq_paths(monkeypatch: pytest.MonkeyPatch) -> None:
             1, "zone", "get_status", {}, pending=True, opaque=None, expected_route=None
         )
 
-    kernel._session = SimpleNamespace(state=SessionState.DISCONNECTED)
+    cast(Any, kernel)._session = SimpleNamespace(state=SessionState.DISCONNECTED)
     with pytest.raises(KernelError):
         kernel._send_request_with_seq(
             1, "zone", "get_status", {}, pending=True, opaque=None, expected_route=None
@@ -667,7 +669,7 @@ def test_send_request_with_seq_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     def _send_json(*_a: Any, **_k: Any) -> None:
         raise RuntimeError("boom")
 
-    kernel._session = SimpleNamespace(state=SessionState.ACTIVE, send_json=_send_json)
+    cast(Any, kernel)._session = SimpleNamespace(state=SessionState.ACTIVE, send_json=_send_json)
     with pytest.raises(KernelError):
         kernel._send_request_with_seq(
             1,
@@ -680,7 +682,9 @@ def test_send_request_with_seq_paths(monkeypatch: pytest.MonkeyPatch) -> None:
             expects_reply=False,
         )
 
-    kernel._session = SimpleNamespace(state=SessionState.ACTIVE, send_json=lambda *_a, **_k: None)
+    cast(Any, kernel)._session = SimpleNamespace(
+        state=SessionState.ACTIVE, send_json=lambda *_a, **_k: None
+    )
     assert (
         kernel._send_request_with_seq(
             2,

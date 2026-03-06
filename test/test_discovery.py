@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
+from typing import cast
 
 import pytest
 
@@ -70,7 +71,9 @@ async def test_async_run_scan_respects_future() -> None:
 
     fut: asyncio.Future[bool] = asyncio.Future()
     fut.set_result(True)
-    await scanner._async_run_scan(_Transport(), ("255.255.255.255", 2362), 1, fut)
+    await scanner._async_run_scan(
+        cast(asyncio.DatagramTransport, _Transport()), ("255.255.255.255", 2362), 1, fut
+    )
     assert sent
 
 
@@ -138,7 +141,9 @@ async def test_async_run_scan_zero_timeout() -> None:
             sent.append((data, dest))
 
     fut: asyncio.Future[bool] = asyncio.Future()
-    await scanner._async_run_scan(_Transport(), ("255.255.255.255", 2362), 0, fut)
+    await scanner._async_run_scan(
+        cast(asyncio.DatagramTransport, _Transport()), ("255.255.255.255", 2362), 0, fut
+    )
     assert sent
 
 
@@ -162,7 +167,9 @@ async def test_async_run_scan_timeout_retry(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(asyncio, "wait_for", _wait_for)
     monkeypatch.setattr(discovery.time, "monotonic", _fake_monotonic)
     fut: asyncio.Future[bool] = asyncio.Future()
-    await scanner._async_run_scan(_Transport(), ("255.255.255.255", 2362), 1, fut)
+    await scanner._async_run_scan(
+        cast(asyncio.DatagramTransport, _Transport()), ("255.255.255.255", 2362), 1, fut
+    )
     assert len(sent) >= 2
 
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
 from elke27_lib.dispatcher import DispatchContext
 from elke27_lib.events import (
     ApiError,
@@ -101,37 +103,37 @@ def test_log_handlers_store_status_and_errors() -> None:
     emit.events.clear()
     msg = {"log": {"get_trouble": {"foo": "bar"}}}
     assert trouble(msg, make_ctx()) is True
-    assert state.log_status["get_trouble"]["foo"] == "bar"
+    assert cast(dict[str, Any], state.log_status["get_trouble"])["foo"] == "bar"
     assert state.panel.last_message_at == 1.0
 
     msg = {"log": {"get_index": {"idx": 1}}}
     assert index(msg, make_ctx()) is True
-    assert state.log_status["get_index"]["idx"] == 1
+    assert cast(dict[str, Any], state.log_status["get_index"])["idx"] == 1
     assert state.panel.last_message_at == 2.0
 
     msg = {"log": {"get_attribs": {"a": 1}}}
     assert attribs(msg, make_ctx()) is True
-    assert state.log_status["get_attribs"]["a"] == 1
+    assert cast(dict[str, Any], state.log_status["get_attribs"])["a"] == 1
 
     msg = {"log": {"set_attribs": {"b": 2}}}
     assert set_attribs(msg, make_ctx()) is True
-    assert state.log_status["set_attribs"]["b"] == 2
+    assert cast(dict[str, Any], state.log_status["set_attribs"])["b"] == 2
 
     msg = {"log": {"get_list": {"c": 3}}}
     assert get_list(msg, make_ctx()) is True
-    assert state.log_status["get_list"]["c"] == 3
+    assert cast(dict[str, Any], state.log_status["get_list"])["c"] == 3
 
     msg = {"log": {"get_log": {"d": 4}}}
     assert get_log(msg, make_ctx()) is True
-    assert state.log_status["get_log"]["d"] == 4
+    assert cast(dict[str, Any], state.log_status["get_log"])["d"] == 4
 
     msg = {"log": {"clear": {"e": 5}}}
     assert clear(msg, make_ctx()) is True
-    assert state.log_status["clear"]["e"] == 5
+    assert cast(dict[str, Any], state.log_status["clear"])["e"] == 5
 
     msg = {"log": {"realloc": {"f": 6}}}
     assert realloc(msg, make_ctx()) is True
-    assert state.log_status["realloc"]["f"] == 6
+    assert cast(dict[str, Any], state.log_status["realloc"])["f"] == 6
 
 
 def test_log_table_info_and_helpers() -> None:

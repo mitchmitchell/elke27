@@ -5,6 +5,7 @@ import builtins
 import queue
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -63,7 +64,7 @@ from elke27_lib.types import ArmMode, LinkKeys
 from test.helpers.internal import get_kernel
 
 
-def _event_base(kind: str, *, classification: str = "LOCAL") -> dict[str, object]:
+def _event_base(kind: str, *, classification: str = "LOCAL") -> dict[str, Any]:
     return dict(
         kind=kind,
         at=0.0,
@@ -176,11 +177,11 @@ def test_event_queue_full_and_types() -> None:
     client._signal_event_stream_end()
     assert client._event_queue.qsize() == 1
 
-    seq1 = client._next_event_seq(SimpleNamespace(seq=None, session_id=1))
-    seq2 = client._next_event_seq(SimpleNamespace(seq=None, session_id=1))
+    seq1 = client._next_event_seq(cast(Any, SimpleNamespace(seq=None, session_id=1)))
+    seq2 = client._next_event_seq(cast(Any, SimpleNamespace(seq=None, session_id=1)))
     assert seq2 == seq1 + 1
-    assert client._next_event_seq(SimpleNamespace(seq=5, session_id=1)) == 5
-    assert client._next_event_seq(SimpleNamespace(seq=None, session_id=2)) == 1
+    assert client._next_event_seq(cast(Any, SimpleNamespace(seq=5, session_id=1))) == 5
+    assert client._next_event_seq(cast(Any, SimpleNamespace(seq=None, session_id=2))) == 1
 
 
 def test_handle_kernel_event_paths(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -445,7 +446,7 @@ async def test_async_authenticate_error_paths(monkeypatch: pytest.MonkeyPatch) -
 
     class _Pending:
         def __init__(self) -> None:
-            self.future: asyncio.Future[dict[str, object]] | None = None
+            self.future: asyncio.Future[dict[str, Any]] | None = None
 
         def create(self, *_a, **_k):  # type: ignore[no-untyped-def]
             self.future = asyncio.get_running_loop().create_future()
@@ -459,6 +460,7 @@ async def test_async_authenticate_error_paths(monkeypatch: pytest.MonkeyPatch) -
     kernel.register_sent_event = lambda _s, event: event.set()  # type: ignore[assignment]
 
     def _send(*_a, **_k):  # type: ignore[no-untyped-def]
+        assert pending.future is not None
         pending.future.set_result({"authenticate": 1})
 
     kernel.send_request_with_seq = _send  # type: ignore[assignment]
@@ -466,6 +468,7 @@ async def test_async_authenticate_error_paths(monkeypatch: pytest.MonkeyPatch) -
     assert res.ok is False and isinstance(res.error, ProtocolError)
 
     def _send_err(*_a, **_k):  # type: ignore[no-untyped-def]
+        assert pending.future is not None
         pending.future.set_result({"authenticate": {"__root__": {"error_code": 11008}}})
 
     kernel.send_request_with_seq = _send_err  # type: ignore[assignment]
@@ -473,6 +476,7 @@ async def test_async_authenticate_error_paths(monkeypatch: pytest.MonkeyPatch) -
     assert res.ok is False and isinstance(res.error, AuthorizationRequired)
 
     def _send_err2(*_a, **_k):  # type: ignore[no-untyped-def]
+        assert pending.future is not None
         pending.future.set_result({"authenticate": {"__root__": {"error_code": 9}}})
 
     kernel.send_request_with_seq = _send_err2  # type: ignore[assignment]

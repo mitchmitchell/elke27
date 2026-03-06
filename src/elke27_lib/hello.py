@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import json
 import logging
-import socket
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -34,6 +33,7 @@ from .errors import (
 )
 from .linking import (
     E27Identity,
+    SocketLike,
     recv_cleartext_json_objects,
     recv_cleartext_json_objects_from_bytes,
     send_unframed_json,
@@ -90,7 +90,7 @@ def _select_hello_object(objs: list[Mapping[str, object]]) -> Mapping[str, objec
 
 def perform_hello(
     *,
-    sock: socket.socket,
+    sock: SocketLike,
     client_identity: E27Identity,
     linkkey_hex: str,
     seq: int = 110,

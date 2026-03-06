@@ -1290,6 +1290,8 @@ class Elke27Client:
         *,
         mode: ArmMode,
         pin: str | None = None,
+        auto_stay_cancel: bool = False,
+        exit_delay_cancel: bool = False,
     ) -> None:
         """Arm an area using the requested mode (v2 public API)."""
         if area_id < 1:
@@ -1297,7 +1299,12 @@ class Elke27Client:
         if mode is ArmMode.DISARMED:
             if not pin:
                 raise Elke27InvalidArgument("PIN is required to disarm.")
-            await self.async_disarm_area(area_id, pin=pin)
+            await self.async_disarm_area(
+                area_id,
+                pin=pin,
+                auto_stay_cancel=auto_stay_cancel,
+                exit_delay_cancel=exit_delay_cancel,
+            )
             return
         if mode is ArmMode.ARMED_NIGHT:
             raise Elke27InvalidArgument("ARMED_NIGHT is not supported by the current protocol.")
@@ -1311,13 +1318,22 @@ class Elke27Client:
             area_id=area_id,
             arm_state=arm_state,
             pin=pin,
+            auto_stay_cancel=auto_stay_cancel,
+            exit_delay_cancel=exit_delay_cancel,
         )
         if not result.ok:
             if result.error is not None:
                 self._raise_v2_command_error(result.error)
             raise Elke27ProtocolErrorV2("Failed to arm area.")
 
-    async def async_disarm_area(self, area_id: int, *, pin: str) -> None:
+    async def async_disarm_area(
+        self,
+        area_id: int,
+        *,
+        pin: str,
+        auto_stay_cancel: bool = False,
+        exit_delay_cancel: bool = False,
+    ) -> None:
         """Disarm an area (v2 public API)."""
         if area_id < 1:
             raise Elke27InvalidArgument("area_id must be a positive integer.")
@@ -1330,6 +1346,8 @@ class Elke27Client:
             area_id=area_id,
             arm_state="DISARMED",
             pin=pin,
+            auto_stay_cancel=auto_stay_cancel,
+            exit_delay_cancel=exit_delay_cancel,
         )
         if not result.ok:
             if result.error is not None:

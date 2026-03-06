@@ -4,6 +4,7 @@ import asyncio
 import logging
 import queue
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 
@@ -53,7 +54,7 @@ def _identity() -> linking.E27Identity:
     return linking.E27Identity("mn", "sn", "fw", "hw", "os")
 
 
-def _event_base(kind: str) -> dict[str, object]:
+def _event_base(kind: str) -> dict[str, Any]:
     return dict(
         kind=kind,
         at=0.0,
@@ -463,7 +464,7 @@ async def test_async_execute_single_and_paged(monkeypatch: pytest.MonkeyPatch) -
 
     class _Pending:
         def __init__(self) -> None:
-            self.futures: dict[int, asyncio.Future[dict[str, object]]] = {}
+            self.futures: dict[int, asyncio.Future[dict[str, Any]]] = {}
 
         def create(self, seq, **_k):  # type: ignore[no-untyped-def]
             fut = asyncio.get_running_loop().create_future()
@@ -484,7 +485,7 @@ async def test_async_execute_single_and_paged(monkeypatch: pytest.MonkeyPatch) -
 
     kernel.send_request_with_seq = _send  # type: ignore[assignment]
 
-    def _gen(**_k):  # type: ignore[no-untyped-def]
+    def _gen(**_k: Any) -> tuple[dict[str, object], tuple[str, str]]:
         return {"x": 1}, ("zone", "get")
 
     spec = client_mod.CommandSpec(
@@ -894,7 +895,7 @@ async def test_async_execute_single_missing_payload(monkeypatch: pytest.MonkeyPa
 
     class _Pending:
         def __init__(self) -> None:
-            self.futures: dict[int, asyncio.Future[dict[str, object]]] = {}
+            self.futures: dict[int, asyncio.Future[dict[str, Any]]] = {}
 
         def create(self, seq, **_k):  # type: ignore[no-untyped-def]
             fut = asyncio.get_running_loop().create_future()
@@ -938,7 +939,7 @@ async def test_async_execute_paged_block_mismatch(monkeypatch: pytest.MonkeyPatc
 
     class _Pending:
         def __init__(self) -> None:
-            self.futures: dict[int, asyncio.Future[dict[str, object]]] = {}
+            self.futures: dict[int, asyncio.Future[dict[str, Any]]] = {}
 
         def create(self, seq, **_k):  # type: ignore[no-untyped-def]
             fut = asyncio.get_running_loop().create_future()

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
 from elke27_lib.dispatcher import DispatchContext, PendingRequest
 from elke27_lib.events import (
     ApiError,
@@ -197,7 +199,7 @@ def test_control_get_trouble_handler() -> None:
 
     msg = {"control": {"get_trouble": {"foo": "bar"}}}
     assert handler(msg, make_ctx()) is True
-    assert state.control_status["get_trouble"]["foo"] == "bar"
+    assert cast(dict[str, Any], state.control_status["get_trouble"])["foo"] == "bar"
     assert state.panel.last_message_at == 3.0
 
 

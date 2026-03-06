@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pytest
 
 from elke27_lib import generators
@@ -23,7 +25,13 @@ def test_generator_area_validations() -> None:
     payload, route = generators.area.generator_area_set_arm_state(
         area_id=1, arm_state="ARMED_STAY", pin=1234
     )
-    assert payload == {"area_id": 1, "arm_state": "ARMED_STAY", "pin": 1234}
+    assert payload == {
+        "area_id": 1,
+        "arm_state": "ARMED_STAY",
+        "pin": 1234,
+        "auto_stay_cancel": False,
+        "exit_delay_cancel": False,
+    }
     assert route == ("area", "set_arm_state")
     with pytest.raises(ValueError):
         generators.area.generator_area_set_arm_state(area_id=0, arm_state="ARMED_STAY", pin=1234)
@@ -290,15 +298,15 @@ class _KernelStub:
 
 def test_features_area_register_and_builders() -> None:
     elk = _KernelStub()
-    features_area.register(elk)
+    features_area.register(cast(Any, elk))
     assert features_area.ROUTE_AREA_GET_CONFIGURED in [
         route for route, _, _ in elk.registered_paged
     ]
     route, _, request_block = elk.registered_paged[0]
-    elk.requested: list[tuple[tuple[str, str], dict[str, object]]] = []
-    elk.request = lambda r, **kw: elk.requested.append((r, kw))
-    request_block(2, object())
-    assert elk.requested
+    requested: list[tuple[tuple[str, str], dict[str, object]]] = []
+    cast(Any, elk).request = lambda r, **kw: requested.append((r, kw))
+    cast(Any, request_block)(2, object())
+    assert requested
     handler_routes = [route for route, _ in elk.registered_handlers]
     assert features_area.ROUTE_AREA_GET_STATUS in handler_routes
     assert features_area.ROUTE_AREA_GET_ATTRIBS in handler_routes
@@ -332,7 +340,7 @@ def test_features_area_register_and_builders() -> None:
 
 def test_features_control_register_and_builders() -> None:
     elk = _KernelStub()
-    features_control.register(elk)
+    features_control.register(cast(Any, elk))
     handler_routes = [route for route, _ in elk.registered_handlers]
     assert features_control.ROUTE_CONTROL_GET_VERSION_INFO in handler_routes
     assert features_control.ROUTE_CONTROL_AUTHENTICATE in handler_routes

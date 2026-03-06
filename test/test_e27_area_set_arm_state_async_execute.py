@@ -42,8 +42,7 @@ def _set_session(kernel: object, session: _FakeSession) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("arm_state", ["DISARMED", "ARMED_AWAY", "ARMED_STAY"])
-async def test_area_set_arm_state_payload(arm_state: str) -> None:
+async def test_area_set_arm_state_payload_defaults() -> None:
     client = Elke27Client()
     kernel = get_kernel(client)
     fake_session = _FakeSession()
@@ -51,12 +50,127 @@ async def test_area_set_arm_state_payload(arm_state: str) -> None:
     kernel.state.panel.session_id = 1
 
     task = asyncio.create_task(
-        client.async_execute("area_set_arm_state", area_id=1, arm_state=arm_state, pin=1234)
+        client.async_execute("area_set_arm_state", area_id=1, arm_state="ARMED_AWAY", pin=1234)
     )
     await asyncio.sleep(0)
 
     sent = fake_session.sent[0]
-    assert sent["area"]["set_arm_state"] == {"area_id": 1, "arm_state": arm_state, "pin": 1234}
+    assert sent["area"]["set_arm_state"] == {
+        "area_id": 1,
+        "arm_state": "ARMED_AWAY",
+        "pin": 1234,
+        "auto_stay_cancel": False,
+        "exit_delay_cancel": False,
+    }
+
+    on_message = get_private(kernel, "_on_message")
+    on_message(
+        {"seq": sent["seq"], "area": {"set_arm_state": {"error_code": E27ErrorCode.ELKERR_NONE}}}
+    )
+    result = await task
+    assert result.ok is True
+
+
+@pytest.mark.asyncio
+async def test_area_set_arm_state_payload_auto_stay_cancel_true() -> None:
+    client = Elke27Client()
+    kernel = get_kernel(client)
+    fake_session = _FakeSession()
+    _set_session(kernel, fake_session)
+    kernel.state.panel.session_id = 1
+
+    task = asyncio.create_task(
+        client.async_execute(
+            "area_set_arm_state",
+            area_id=1,
+            arm_state="ARMED_AWAY",
+            pin=1234,
+            auto_stay_cancel=True,
+        )
+    )
+    await asyncio.sleep(0)
+
+    sent = fake_session.sent[0]
+    assert sent["area"]["set_arm_state"] == {
+        "area_id": 1,
+        "arm_state": "ARMED_AWAY",
+        "pin": 1234,
+        "auto_stay_cancel": True,
+        "exit_delay_cancel": False,
+    }
+
+    on_message = get_private(kernel, "_on_message")
+    on_message(
+        {"seq": sent["seq"], "area": {"set_arm_state": {"error_code": E27ErrorCode.ELKERR_NONE}}}
+    )
+    result = await task
+    assert result.ok is True
+
+
+@pytest.mark.asyncio
+async def test_area_set_arm_state_payload_exit_delay_cancel_true() -> None:
+    client = Elke27Client()
+    kernel = get_kernel(client)
+    fake_session = _FakeSession()
+    _set_session(kernel, fake_session)
+    kernel.state.panel.session_id = 1
+
+    task = asyncio.create_task(
+        client.async_execute(
+            "area_set_arm_state",
+            area_id=1,
+            arm_state="ARMED_AWAY",
+            pin=1234,
+            exit_delay_cancel=True,
+        )
+    )
+    await asyncio.sleep(0)
+
+    sent = fake_session.sent[0]
+    assert sent["area"]["set_arm_state"] == {
+        "area_id": 1,
+        "arm_state": "ARMED_AWAY",
+        "pin": 1234,
+        "auto_stay_cancel": False,
+        "exit_delay_cancel": True,
+    }
+
+    on_message = get_private(kernel, "_on_message")
+    on_message(
+        {"seq": sent["seq"], "area": {"set_arm_state": {"error_code": E27ErrorCode.ELKERR_NONE}}}
+    )
+    result = await task
+    assert result.ok is True
+
+
+@pytest.mark.asyncio
+async def test_area_set_arm_state_payload_both_cancel_flags_true() -> None:
+    client = Elke27Client()
+    kernel = get_kernel(client)
+    fake_session = _FakeSession()
+    _set_session(kernel, fake_session)
+    kernel.state.panel.session_id = 1
+
+    task = asyncio.create_task(
+        client.async_execute(
+            "area_set_arm_state",
+            area_id=1,
+            arm_state="ARMED_AWAY",
+            pin=1234,
+            auto_stay_cancel=True,
+            exit_delay_cancel=True,
+        )
+    )
+    await asyncio.sleep(0)
+
+    sent = fake_session.sent[0]
+    assert sent["area"]["set_arm_state"] == {
+        "area_id": 1,
+        "arm_state": "ARMED_AWAY",
+        "pin": 1234,
+        "auto_stay_cancel": True,
+        "exit_delay_cancel": True,
+    }
 
     on_message = get_private(kernel, "_on_message")
     on_message(

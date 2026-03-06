@@ -20,6 +20,9 @@ class _FakeSocket:
     def recv(self, _size: int) -> bytes:
         return self.predata
 
+    def sendall(self, _data: bytes, _flags: int = 0) -> None:
+        return None
+
 
 def _identity() -> E27Identity:
     return E27Identity(mn="mn", sn="sn", fwver="fw", hwver="hw", osver="os")

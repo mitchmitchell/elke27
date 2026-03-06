@@ -6,7 +6,7 @@ import queue
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal, cast
 
 import pytest
 
@@ -66,7 +66,7 @@ def _patch_send_with_msg(
 def _make_command_spec(
     *,
     key: str,
-    response_mode: str,
+    response_mode: Literal["single", "paged_blocks"],
     block_field: str | None = None,
     block_count_field: str | None = None,
     merge_strategy: Any = None,
@@ -80,7 +80,7 @@ def _make_command_spec(
         domain="test",
         command="cmd",
         generator=_gen,
-        handler=lambda *_a, **_k: None,  # type: ignore[no-untyped-def]
+        handler=lambda *_a, **_k: True,  # type: ignore[no-untyped-def]
         min_permission=PermissionLevel.PLT_ENCRYPTION_KEY,
         response_mode=response_mode,
         block_field=block_field,
@@ -476,7 +476,10 @@ async def test_async_execute_paged_error_handling(monkeypatch: pytest.MonkeyPatc
     ok = await client.async_execute("test_paged")
     assert ok.ok is True
 
-    bad_spec = _make_command_spec(key="test_bad_mode", response_mode="stream")
+    bad_spec = cast(
+        client_mod.CommandSpec,
+        _make_command_spec(key="test_bad_mode", response_mode=cast(Any, "stream")),
+    )
     monkeypatch.setitem(client_mod.COMMANDS, "test_bad_mode", bad_spec)
     err = await client.async_execute("test_bad_mode")
     assert isinstance(err.error, ProtocolError)
@@ -670,6 +673,7 @@ async def test_async_execute_attribs_inventory_paths(
     def _send_for_expected(*args: Any, **kwargs: Any) -> int:
         seq = args[0]
         expected = kwargs.get("expected_route")
+        assert expected is not None
         client._kernel._signal_sent_event(seq)
         client._kernel.pending_responses.resolve(seq, {expected[0]: {expected[1]: {"ok": True}}})
         return seq
@@ -776,6 +780,7 @@ async def test_async_execute_zone_set_status_records_bypass(
     def _send_for_expected(*args: Any, **kwargs: Any) -> int:
         seq = args[0]
         expected = kwargs.get("expected_route")
+        assert expected is not None
         client._kernel._signal_sent_event(seq)
         client._kernel.pending_responses.resolve(seq, {expected[0]: {expected[1]: {"ok": True}}})
         return seq
@@ -874,7 +879,7 @@ def test_misc_helpers_coverage(monkeypatch: pytest.MonkeyPatch) -> None:
     def _pump_once(*_a: Any, **_k: Any) -> dict[str, Any]:
         return {"ok": True}
 
-    client._kernel._session = SimpleNamespace(
+    cast(Any, client._kernel)._session = SimpleNamespace(
         pump_once=_pump_once,
         cfg=SimpleNamespace(host="host", port=2101),
     )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any, cast
 
 from elke27_lib.dispatcher import DispatchContext
 from elke27_lib.events import (
@@ -46,7 +47,7 @@ def test_system_get_trouble_and_errors() -> None:
     emit.events.clear()
     msg = {"system": {"get_troubles": {"troubles": [1, 2]}}}
     assert handler(msg, make_ctx()) is True
-    assert state.system_status["get_trouble"]["troubles"] == [1, 2]
+    assert cast(dict[str, Any], state.system_status["get_trouble"])["troubles"] == [1, 2]
     assert state.system_status["troubles"] == [1, 2]
     assert state.panel.last_message_at == 1.0
 
@@ -82,10 +83,10 @@ def test_system_all_command_wrappers() -> None:
         factory: Callable[[PanelState, _EmitSpy, Callable[[], float]], Callable[..., bool]],
         command: str,
     ):
-        handler = factory(state, emit, now=lambda: 3.0)
+        handler = cast(Any, factory)(state, emit, now=lambda: 3.0)
         msg = {"system": {command: {"foo": "bar"}}}
         assert handler(msg, make_ctx()) is True
-        assert state.system_status[command]["foo"] == "bar"
+        assert cast(dict[str, Any], state.system_status[command])["foo"] == "bar"
 
     call(system_handler.make_system_get_troubles_handler, "get_troubles")
     call(system_handler.make_system_get_attribs_handler, "get_attribs")
