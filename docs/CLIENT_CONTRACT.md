@@ -58,23 +58,68 @@ a breaking change.
 - `zones`
 - `outputs`
 - `lights`
+- `barriers`
+- `locks`
 - `thermostats`
 - Snapshots return read-only views or dataclasses; do not deep-copy large structures.
 
 ## Configured Inventory Filtering
 
 - `areas` and `zones` snapshots are filtered to configured ids reported by the panel.
-- `outputs`, `lights`, and `thermostats` snapshots are filtered to `table_info` element counts when known.
-- Inventory is populated via `area.get_configured` / `zone.get_configured` using paging:
+- `outputs`, `lights`, `barriers`, `locks`, and `thermostats` snapshots are filtered to
+  `table_info` element counts when known.
+- Inventory is populated via paged `get_configured` calls using:
   - Start with `block_id=1`
   - Response includes `block_count`
   - Continue requesting `block_id=2..block_count`
+- Domains using this paged configured flow include:
+  - `area`
+  - `zone`
+  - `output`
+  - `light`
+  - `barrier`
+  - `lock`
+  - `tstat`
 - While paging is in progress, snapshots include configured ids known so far (may be empty).
 - If the panel requires authorization (error_code `11008`), inventory may be unavailable until authenticated.
 - Optional events: `area_configured_inventory_ready` / `zone_configured_inventory_ready` signal completion.
 - After inventory completes, the library issues per-id `get_attribs` requests to populate `name`.
 - Attribute requests are filtered to configured ids (and capped by table_info table_elements when known); toggle via `Elke27Client(filter_attribs_to_configured=...)`.
 - `name` fields are trimmed; empty names are normalized to `None`.
+
+## Domain API Coverage (runtime)
+
+The following runtime domains are implemented with a common shape:
+
+- `get_table_info`
+- `get_configured`
+- `get_attribs`
+- `get_status`
+- `set_status` (for controllable domains)
+
+Controllable runtime domains currently include:
+
+- `output`
+- `light`
+- `barrier`
+- `lock`
+- `tstat`
+
+Lock and barrier status semantics are panel-defined. For lock control, the
+Dealer API command field is `status="ON"` to lock and `status="OFF"` to unlock.
+
+## Arm/Disarm Extended Parameters
+
+The public arm/disarm helpers support two optional flags that are included in
+the outbound `area.set_arm_state` payload:
+
+- `auto_stay_cancel: bool = False`
+- `exit_delay_cancel: bool = False`
+
+Public methods:
+
+- `async_arm_area(area_id, *, mode, pin, auto_stay_cancel=False, exit_delay_cancel=False)`
+- `async_disarm_area(area_id, *, pin, auto_stay_cancel=False, exit_delay_cancel=False)`
 
 ## Commands
 

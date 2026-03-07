@@ -69,7 +69,8 @@ Implementation entry points:
 
 ### 4) Features (domain APIs)
 The library exposes “feature” modules (domains) that implement E27 API handlers such as:
-- areas, zones, outputs, thermostats, keypads, control/system, network parameters, rules, logs, users, etc.
+- areas, zones, outputs, lights, barriers (garage doors), locks, thermostats,
+  keypads, control/system, network parameters, rules, logs, users, etc.
 
 These are internal to the library; Home Assistant should not import them directly and should rely on the client contract and snapshots/events.
 
@@ -223,6 +224,8 @@ If you are working on a Home Assistant integration:
   persists indefinitely.
 - Request concurrency should remain conservative (one request at a time per
   panel session) to avoid exhausting panel resources.
+- Arm/disarm helpers support extended arm-state flags:
+  `auto_stay_cancel` and `exit_delay_cancel`.
 
 ---
 

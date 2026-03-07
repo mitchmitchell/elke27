@@ -60,15 +60,24 @@ async def main():
 
     # issue commands (no optimistic updates; state updates arrive via events/snapshot)
     await client.async_set_output(output_id=1, on=True)
-    await client.async_arm_area(area_id=1, mode=ArmMode.ARMED_STAY, pin="1234")
-    await client.async_disarm_area(area_id=1, pin="1234")
+    await client.async_arm_area(
+        area_id=1,
+        mode=ArmMode.ARMED_STAY,
+        pin="1234",
+        auto_stay_cancel=False,
+        exit_delay_cancel=False,
+    )
+    await client.async_disarm_area(
+        area_id=1,
+        pin="1234",
+        auto_stay_cancel=False,
+        exit_delay_cancel=False,
+    )
 
     # cleanup
     unsubscribe()
     await client.async_disconnect()
 
-# The v2 surface is currently a spec-first skeleton and may raise
-# NotImplementedError until wired to the protocol layer.
 ```
 
 ## Notes
@@ -82,3 +91,35 @@ async def main():
 - Subscriber callbacks are invoked synchronously and must not block.
 - Diagnostic helpers such as `redact_for_diagnostics` remove likely secrets
   from structured data before logging.
+
+## Runtime Domain APIs
+
+The runtime domain APIs exposed through `async_execute(command_key, **kwargs)`
+follow a shared pattern:
+
+- `get_table_info`
+- `get_configured`
+- `get_attribs`
+- `get_status`
+- `set_status` (controllable domains)
+
+Implemented controllable domains:
+
+- `output`
+- `light`
+- `barrier`
+- `lock`
+- `tstat`
+
+Example command keys:
+
+- `output_set_status`
+- `light_set_status`
+- `barrier_set_status`
+- `lock_set_status`
+- `tstat_set_status`
+
+Lock control payload semantics follow the Dealer API:
+
+- `lock_set_status(..., status="ON")` locks
+- `lock_set_status(..., status="OFF")` unlocks

@@ -188,6 +188,42 @@ class OutputState:
 
 
 @dataclass(slots=True)
+class LightState:
+    light_id: int
+
+    name: str | None = None
+    area_id: int | None = None
+    status: str | None = None
+    on: bool | None = None
+    level: int | None = None
+    fields: dict[str, object] = field(default_factory=dict)
+    last_update_at: float | None = None
+
+
+@dataclass(slots=True)
+class BarrierState:
+    barrier_id: int
+
+    name: str | None = None
+    area_id: int | None = None
+    status: str | None = None
+    fields: dict[str, object] = field(default_factory=dict)
+    last_update_at: float | None = None
+
+
+@dataclass(slots=True)
+class LockState:
+    lock_id: int
+
+    name: str | None = None
+    area_id: int | None = None
+    status: str | None = None
+    locked: bool | None = None
+    fields: dict[str, object] = field(default_factory=dict)
+    last_update_at: float | None = None
+
+
+@dataclass(slots=True)
 class TstatState:
     tstat_id: int
 
@@ -215,6 +251,10 @@ class InventoryState:
     configured_areas: set[int] = field(default_factory=set)
     configured_zones: set[int] = field(default_factory=set)
     configured_outputs: set[int] = field(default_factory=set)
+    configured_lights: set[int] = field(default_factory=set)
+    configured_barriers: set[int] = field(default_factory=set)
+    configured_locks: set[int] = field(default_factory=set)
+    configured_tstats: set[int] = field(default_factory=set)
     configured_users: set[int] = field(default_factory=set)
     configured_keypads: set[int] = field(default_factory=set)
 
@@ -225,6 +265,10 @@ class InventoryState:
     area_attribs_requested: set[int] = field(default_factory=set)
     zone_attribs_requested: set[int] = field(default_factory=set)
     output_attribs_requested: set[int] = field(default_factory=set)
+    light_attribs_requested: set[int] = field(default_factory=set)
+    barrier_attribs_requested: set[int] = field(default_factory=set)
+    lock_attribs_requested: set[int] = field(default_factory=set)
+    tstat_attribs_requested: set[int] = field(default_factory=set)
     user_attribs_requested: set[int] = field(default_factory=set)
     keypad_attribs_requested: set[int] = field(default_factory=set)
 
@@ -236,6 +280,10 @@ class InventoryState:
     configured_areas_complete: bool = False
     configured_zones_complete: bool = False
     configured_outputs_complete: bool = False
+    configured_lights_complete: bool = False
+    configured_barriers_complete: bool = False
+    configured_locks_complete: bool = False
+    configured_tstats_complete: bool = False
     configured_users_complete: bool = False
     configured_keypads_complete: bool = False
     area_names_logged: bool = False
@@ -266,6 +314,9 @@ class PanelState:
     zone_def_flags_by_id: dict[int, dict[str, object]] = field(default_factory=dict)
     zone_def_flags_by_name: dict[str, dict[str, object]] = field(default_factory=dict)
     outputs: dict[int, OutputState] = field(default_factory=dict)
+    lights: dict[int, LightState] = field(default_factory=dict)
+    barriers: dict[int, BarrierState] = field(default_factory=dict)
+    locks: dict[int, LockState] = field(default_factory=dict)
     tstats: dict[int, TstatState] = field(default_factory=dict)
     users: dict[int, UserState] = field(default_factory=dict)
     keypads: dict[int, KeypadState] = field(default_factory=dict)
@@ -323,6 +374,27 @@ class PanelState:
             user = UserState(user_id=user_id)
             self.users[user_id] = user
         return user
+
+    def get_or_create_light(self, light_id: int) -> LightState:
+        light = self.lights.get(light_id)
+        if light is None:
+            light = LightState(light_id=light_id)
+            self.lights[light_id] = light
+        return light
+
+    def get_or_create_barrier(self, barrier_id: int) -> BarrierState:
+        barrier = self.barriers.get(barrier_id)
+        if barrier is None:
+            barrier = BarrierState(barrier_id=barrier_id)
+            self.barriers[barrier_id] = barrier
+        return barrier
+
+    def get_or_create_lock(self, lock_id: int) -> LockState:
+        lock = self.locks.get(lock_id)
+        if lock is None:
+            lock = LockState(lock_id=lock_id)
+            self.locks[lock_id] = lock
+        return lock
 
     def get_or_create_keypad(self, keypad_id: int) -> KeypadState:
         keypad = self.keypads.get(keypad_id)

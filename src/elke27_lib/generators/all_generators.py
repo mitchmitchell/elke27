@@ -9,9 +9,12 @@ from elke27_lib.permissions import ALL_PERMISSION_KEYS, canonical_generator_key
 
 from . import (
     area,
+    barrier,
     bus_ios,
     control,
     keypad,
+    light,
+    lock,
     log,
     network_param,
     output,
@@ -48,9 +51,12 @@ def _stub_generator(key: str) -> GeneratorFn:
 _EXISTING: dict[str, GeneratorFn] = {}
 for _module in (
     area,
+    barrier,
     bus_ios,
     control,
     keypad,
+    light,
+    lock,
     log,
     network_param,
     output,

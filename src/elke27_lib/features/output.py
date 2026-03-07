@@ -18,13 +18,17 @@ from elke27_lib.handlers.output import (
     make_output_configured_merge,
     make_output_get_all_outputs_status_handler,
     make_output_get_attribs_handler,
+    make_output_get_available_handler,
     make_output_get_configured_handler,
     make_output_get_status_handler,
     make_output_get_table_info_handler,
+    make_output_set_status_handler,
 )
 
 ROUTE_OUTPUT_GET_STATUS = ("output", "get_status")
+ROUTE_OUTPUT_SET_STATUS = ("output", "set_status")
 ROUTE_OUTPUT_GET_ALL_OUTPUTS_STATUS = ("output", "get_all_outputs_status")
+ROUTE_OUTPUT_GET_AVAILABLE = ("output", "get_available")
 ROUTE_OUTPUT_GET_TABLE_INFO = ("output", "get_table_info")
 ROUTE_OUTPUT_TABLE_INFO = ("output", "table_info")
 ROUTE_OUTPUT_GET_ATTRIBS = ("output", "get_attribs")
@@ -44,12 +48,20 @@ def register(elk: E27Kernel) -> None:
         make_output_get_status_handler(elk.state, elk.emit, elk.now),
     )
     elk.register_handler(
+        ROUTE_OUTPUT_SET_STATUS,
+        make_output_set_status_handler(elk.state, elk.emit, elk.now),
+    )
+    elk.register_handler(
         ROUTE_OUTPUT_GET_CONFIGURED,
         make_output_get_configured_handler(elk.state, elk.emit, elk.now),
     )
     elk.register_handler(
         ROUTE_OUTPUT_GET_ALL_OUTPUTS_STATUS,
         make_output_get_all_outputs_status_handler(elk.state, elk.emit, elk.now),
+    )
+    elk.register_handler(
+        ROUTE_OUTPUT_GET_AVAILABLE,
+        make_output_get_available_handler(elk.state, elk.emit, elk.now),
     )
     elk.register_handler(
         ROUTE_OUTPUT_GET_ATTRIBS,
@@ -75,12 +87,20 @@ def register(elk: E27Kernel) -> None:
         build_output_get_status_payload,
     )
     elk.register_request(
+        ROUTE_OUTPUT_SET_STATUS,
+        build_output_set_status_payload,
+    )
+    elk.register_request(
         ROUTE_OUTPUT_GET_CONFIGURED,
         build_output_get_configured_payload,
     )
     elk.register_request(
         ROUTE_OUTPUT_GET_ALL_OUTPUTS_STATUS,
         build_output_get_all_outputs_status_payload,
+    )
+    elk.register_request(
+        ROUTE_OUTPUT_GET_AVAILABLE,
+        build_output_get_available_payload,
     )
     elk.register_request(
         ROUTE_OUTPUT_GET_ATTRIBS,
@@ -100,8 +120,25 @@ def build_output_get_status_payload(*, output_id: int, **_kwargs: Any) -> Mappin
     return {"output_id": output_id}
 
 
+def build_output_set_status_payload(
+    *, output_id: int, status: str, **_kwargs: Any
+) -> Mapping[str, Any]:
+    if output_id < 1:
+        raise ValueError(
+            f"build_output_set_status_payload: output_id must be int >= 1 (got {output_id!r})"
+        )
+    normalized = status.strip().upper()
+    if normalized not in {"ON", "OFF"}:
+        raise ValueError(f"build_output_set_status_payload: status must be ON/OFF (got {status!r})")
+    return {"output_id": output_id, "status": normalized}
+
+
 def build_output_get_all_outputs_status_payload(**_kwargs: Any) -> bool:
     return True
+
+
+def build_output_get_available_payload(**_kwargs: Any) -> Mapping[str, Any]:
+    return {}
 
 
 def build_output_get_attribs_payload(*, output_id: int, **_kwargs: Any) -> Mapping[str, Any]:

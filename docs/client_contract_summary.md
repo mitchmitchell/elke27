@@ -34,18 +34,30 @@ Snapshots (read-only views):
 - `zones`
 - `outputs`
 - `lights`
+- `barriers`
+- `locks`
 - `thermostats`
 
 Configured inventory filtering:
 - `areas` and `zones` snapshots include only configured ids reported by the panel.
-- `outputs`, `lights`, and `thermostats` snapshots are filtered to `table_info` element counts when known.
-- Inventory is populated via `area.get_configured` / `zone.get_configured` (paged by block_id/block_count).
+- `outputs`, `lights`, `barriers`, `locks`, and `thermostats` snapshots are filtered to `table_info` element counts when known.
+- Inventory is populated via paged `get_configured` calls (block_id/block_count) for `area`, `zone`, `output`, `light`, `barrier`, `lock`, and `tstat`.
 - While paging is in progress, snapshots include the configured ids known so far (may be empty).
 - If auth is required for configured inventory (error_code 11008), snapshots may remain empty until authenticated.
 - Optional events: `area_configured_inventory_ready` / `zone_configured_inventory_ready` fire when paging completes.
 - After inventory completes, the library issues per-id `get_attribs` requests to populate `name`.
 - Attribute requests are filtered to configured ids (and capped by table_info table_elements when known); toggle via `Elke27Client(filter_attribs_to_configured=...)`.
 - `name` values are normalized (trimmed); empty names become `None`.
+
+Arm/disarm extended parameters:
+- `async_arm_area(..., auto_stay_cancel=False, exit_delay_cancel=False)`
+- `async_disarm_area(..., auto_stay_cancel=False, exit_delay_cancel=False)`
+- These flags are forwarded in `area.set_arm_state` payloads.
+
+Runtime domain command pattern:
+- `get_table_info`, `get_configured`, `get_attribs`, `get_status`, and `set_status` (controllable domains).
+- Controllable runtime domains: `output`, `light`, `barrier`, `lock`, `tstat`.
+- Lock control command semantics use `status=ON` (lock) and `status=OFF` (unlock).
 
 Commands:
 - Inventory-driven calls via `request(route, **kwargs)` (may have helper methods).

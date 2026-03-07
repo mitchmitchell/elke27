@@ -100,6 +100,9 @@ def test_generator_output_validations() -> None:
         generators.output.generator_output_get_attribs(output_id=0)
     with pytest.raises(ValueError):
         generators.output.generator_output_get_all_outputs_status(block_id=0)
+    payload, route = generators.output.generator_output_get_available()
+    assert payload == {}
+    assert route == ("output", "get_available")
 
 
 def test_generator_rule_validations() -> None:
@@ -117,8 +120,101 @@ def test_generator_tstat_validations() -> None:
     payload, route = generators.tstat.generator_tstat_get_status(tstat_id=1)
     assert payload == {"tstat_id": 1}
     assert route == ("tstat", "get_status")
+    payload, route = generators.tstat.generator_tstat_get_configured(block_id=1)
+    assert payload == {"block_id": 1}
+    assert route == ("tstat", "get_configured")
+    payload, route = generators.tstat.generator_tstat_get_attribs(tstat_id=1)
+    assert payload == {"tstat_id": 1}
+    assert route == ("tstat", "get_attribs")
+    payload, route = generators.tstat.generator_tstat_set_status(tstat_id=1, mode="COOL")
+    assert payload == {"tstat_id": 1, "mode": "COOL"}
+    assert route == ("tstat", "set_status")
     with pytest.raises(ValueError):
         generators.tstat.generator_tstat_get_status(tstat_id=0)
+    with pytest.raises(ValueError):
+        generators.tstat.generator_tstat_get_configured(block_id=0)
+    with pytest.raises(ValueError):
+        generators.tstat.generator_tstat_get_attribs(tstat_id=0)
+    with pytest.raises(ValueError):
+        generators.tstat.generator_tstat_set_status(tstat_id=1)
+
+
+def test_generator_light_validations() -> None:
+    payload, route = generators.light.generator_light_get_table_info()
+    assert payload == {}
+    assert route == ("light", "get_table_info")
+    payload, route = generators.light.generator_light_get_configured(block_id=1)
+    assert payload == {"block_id": 1}
+    assert route == ("light", "get_configured")
+    payload, route = generators.light.generator_light_get_attribs(light_id=1)
+    assert payload == {"light_id": 1}
+    assert route == ("light", "get_attribs")
+    payload, route = generators.light.generator_light_get_status(light_id=1)
+    assert payload == {"light_id": 1}
+    assert route == ("light", "get_status")
+    payload, route = generators.light.generator_light_set_status(light_id=1, status="ON", level=50)
+    assert payload == {"light_id": 1, "status": "ON", "level": 50}
+    assert route == ("light", "set_status")
+    with pytest.raises(ValueError):
+        generators.light.generator_light_get_configured(block_id=0)
+    with pytest.raises(ValueError):
+        generators.light.generator_light_get_attribs(light_id=0)
+    with pytest.raises(ValueError):
+        generators.light.generator_light_get_status(light_id=0)
+    with pytest.raises(ValueError):
+        generators.light.generator_light_set_status(light_id=1)
+
+
+def test_generator_barrier_validations() -> None:
+    payload, route = generators.barrier.generator_barrier_get_table_info()
+    assert payload == {}
+    assert route == ("barrier", "get_table_info")
+    payload, route = generators.barrier.generator_barrier_get_configured(block_id=1)
+    assert payload == {"block_id": 1}
+    assert route == ("barrier", "get_configured")
+    payload, route = generators.barrier.generator_barrier_get_attribs(barrier_id=1)
+    assert payload == {"barrier_id": 1}
+    assert route == ("barrier", "get_attribs")
+    payload, route = generators.barrier.generator_barrier_get_status(barrier_id=1)
+    assert payload == {"barrier_id": 1}
+    assert route == ("barrier", "get_status")
+    payload, route = generators.barrier.generator_barrier_set_status(barrier_id=1, status="OPEN")
+    assert payload == {"barrier_id": 1, "status": "OPEN"}
+    assert route == ("barrier", "set_status")
+    with pytest.raises(ValueError):
+        generators.barrier.generator_barrier_get_configured(block_id=0)
+    with pytest.raises(ValueError):
+        generators.barrier.generator_barrier_get_attribs(barrier_id=0)
+    with pytest.raises(ValueError):
+        generators.barrier.generator_barrier_get_status(barrier_id=0)
+    with pytest.raises(ValueError):
+        generators.barrier.generator_barrier_set_status(barrier_id=1, status="BAD")
+
+
+def test_generator_lock_validations() -> None:
+    payload, route = generators.lock.generator_lock_get_table_info()
+    assert payload == {}
+    assert route == ("lock", "get_table_info")
+    payload, route = generators.lock.generator_lock_get_configured(block_id=1)
+    assert payload == {"block_id": 1}
+    assert route == ("lock", "get_configured")
+    payload, route = generators.lock.generator_lock_get_attribs(lock_id=1)
+    assert payload == {"lock_id": 1}
+    assert route == ("lock", "get_attribs")
+    payload, route = generators.lock.generator_lock_get_status(lock_id=1)
+    assert payload == {"lock_id": 1}
+    assert route == ("lock", "get_status")
+    payload, route = generators.lock.generator_lock_set_status(lock_id=1, status="ON")
+    assert payload == {"lock_id": 1, "status": "ON"}
+    assert route == ("lock", "set_status")
+    with pytest.raises(ValueError):
+        generators.lock.generator_lock_get_configured(block_id=0)
+    with pytest.raises(ValueError):
+        generators.lock.generator_lock_get_attribs(lock_id=0)
+    with pytest.raises(ValueError):
+        generators.lock.generator_lock_get_status(lock_id=0)
+    with pytest.raises(ValueError):
+        generators.lock.generator_lock_set_status(lock_id=1, status="BAD")
 
 
 def test_generator_user_validations() -> None:

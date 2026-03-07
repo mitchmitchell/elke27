@@ -10,9 +10,12 @@ from elke27_lib.permissions import ALL_PERMISSION_KEYS
 
 from . import (
     area,
+    barrier,
     bus_ios,
     control,
     keypad,
+    light,
+    lock,
     log,
     network_param,
     output,
@@ -49,9 +52,12 @@ def _stub_handler(key: str) -> HandlerFn:
 _EXISTING: dict[str, HandlerFn] = {}
 for _module in (
     area,
+    barrier,
     bus_ios,
     control,
     keypad,
+    light,
+    lock,
     log,
     network_param,
     output,

@@ -110,6 +110,8 @@ The library exposes read-only accessors for:
 - zones
 - outputs
 - lights
+- barriers
+- locks
 - thermostats
 
 State is updated by:
@@ -129,7 +131,7 @@ Home Assistant:
 The library emits semantic events only.
 
 Events:
-- are domain-oriented (panel, area, zone, output, etc.)
+- are domain-oriented (panel, area, zone, output, light, barrier, lock, tstat, etc.)
 - include stable identifiers (e.g., area_id, zone_id)
 - do not expose raw protocol fields
 
@@ -149,6 +151,13 @@ Home Assistant issues commands exclusively through library request APIs.
 Entities and services:
 - call hub methods
 - hub methods call library request() functions
+
+Runtime domain command shape expected by HA:
+- `get_table_info`
+- `get_configured`
+- `get_attribs`
+- `get_status`
+- `set_status` for controllable domains (`output`, `light`, `barrier`, `lock`, `tstat`)
 
 The library returns:
 - success results, or

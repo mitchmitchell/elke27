@@ -1,4 +1,36 @@
 
+  Runtime Domain Expansion + Arm/Disarm Flags
+
+  - Added runtime domain support for:
+    - lights
+    - barriers (garage doors)
+    - locks
+    - outputs (extended coverage)
+    - thermostats (extended coverage)
+  - Added full per-domain runtime API shape across the new domains:
+    - get_table_info
+    - get_configured (paged where applicable)
+    - get_attribs
+    - get_status
+    - set_status (controllable domains)
+  - Canonical snapshot and event coverage now include:
+    - barriers
+    - locks
+    - lights
+    - outputs
+    - thermostats
+  - Added/updated live tests for:
+    - Plug Dimmer light control
+    - Closet Door lock control
+    - File Room thermostat status/control
+    - new-domain runtime coverage
+  - Updated lock command semantics to match Dealer API:
+    - set_status status=ON to lock
+    - set_status status=OFF to unlock
+  - Extended area arm/disarm payload support and public helper signatures with:
+    - auto_stay_cancel (default false)
+    - exit_delay_cancel (default false)
+
   Public Client Surface (stable import path)
 
   - Public import path is elke27_lib.client and HA should use from elke27_lib.client import Elke27Client, Result only. I kept this as the single public entry point

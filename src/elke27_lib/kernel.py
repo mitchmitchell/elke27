@@ -271,7 +271,10 @@ class E27Kernel:
         "elke27_lib.features.log",
         "elke27_lib.features.system",
         "elke27_lib.features.area",
+        "elke27_lib.features.barrier",
         "elke27_lib.features.bus_ios",
+        "elke27_lib.features.light",
+        "elke27_lib.features.lock",
         "elke27_lib.features.zone",
         "elke27_lib.features.output",
         "elke27_lib.features.tstat",
@@ -327,6 +330,10 @@ class E27Kernel:
             ("area", "get_attribs"),
             ("zone", "get_attribs"),
             ("output", "get_attribs"),
+            ("light", "get_attribs"),
+            ("barrier", "get_attribs"),
+            ("lock", "get_attribs"),
+            ("tstat", "get_attribs"),
             ("user", "get_attribs"),
             ("keypad", "get_attribs"),
         }
@@ -563,7 +570,7 @@ class E27Kernel:
         self.state.table_info_known.clear()
         self.state.bootstrap_counts_ready = False
         self._reset_inventory_state()
-        for domain in ("area", "zone", "output", "tstat"):
+        for domain in ("area", "zone", "output", "light", "barrier", "lock", "tstat"):
             self.state.table_info_by_domain.setdefault(
                 domain,
                 {"table_elements": None, "increment_size": None},
@@ -819,6 +826,10 @@ class E27Kernel:
         inv.configured_areas = set()
         inv.configured_zones = set()
         inv.configured_outputs = set()
+        inv.configured_lights = set()
+        inv.configured_barriers = set()
+        inv.configured_locks = set()
+        inv.configured_tstats = set()
         inv.configured_users = set()
         inv.configured_keypads = set()
         inv.configured_area_blocks_seen = set()
@@ -832,6 +843,10 @@ class E27Kernel:
         inv.configured_areas_complete = False
         inv.configured_zones_complete = False
         inv.configured_outputs_complete = False
+        inv.configured_lights_complete = False
+        inv.configured_barriers_complete = False
+        inv.configured_locks_complete = False
+        inv.configured_tstats_complete = False
         inv.configured_users_complete = False
         inv.configured_keypads_complete = False
         inv.area_names_logged = False
@@ -839,6 +854,10 @@ class E27Kernel:
         inv.area_attribs_requested = set()
         inv.zone_attribs_requested = set()
         inv.output_attribs_requested = set()
+        inv.light_attribs_requested = set()
+        inv.barrier_attribs_requested = set()
+        inv.lock_attribs_requested = set()
+        inv.tstat_attribs_requested = set()
         inv.user_attribs_requested = set()
         inv.keypad_attribs_requested = set()
         inv.area_invalid_streak = 0
@@ -856,6 +875,9 @@ class E27Kernel:
             ("area", "get_table_info"),
             ("zone", "get_table_info"),
             ("output", "get_table_info"),
+            ("light", "get_table_info"),
+            ("barrier", "get_table_info"),
+            ("lock", "get_table_info"),
             ("tstat", "get_table_info"),
         ):
             if self.requests.get(route) is None:
@@ -869,6 +891,10 @@ class E27Kernel:
             ("area", "get_configured"),
             ("zone", "get_configured"),
             ("output", "get_configured"),
+            ("light", "get_configured"),
+            ("barrier", "get_configured"),
+            ("lock", "get_configured"),
+            ("tstat", "get_configured"),
             ("user", "get_configured"),
         ):
             if self.requests.get(route) is None:
@@ -899,7 +925,7 @@ class E27Kernel:
             with contextlib.suppress(E27Error, KeyError, RuntimeError, TypeError, ValueError):
                 self.request(("control", "authenticate"), pin=auth_pin)
 
-        for domain in domains or ("area", "zone", "output", "tstat"):
+        for domain in domains or ("area", "zone", "output", "light", "barrier", "lock", "tstat"):
             route = (domain, "get_table_info")
             if self.requests.get(route) is None:
                 continue
@@ -1035,6 +1061,18 @@ class E27Kernel:
             and inv.configured_outputs
             and entity_id not in inv.configured_outputs
         ):
+            return False
+        if domain == "light" and inv.configured_lights and entity_id not in inv.configured_lights:
+            return False
+        if (
+            domain == "barrier"
+            and inv.configured_barriers
+            and entity_id not in inv.configured_barriers
+        ):
+            return False
+        if domain == "lock" and inv.configured_locks and entity_id not in inv.configured_locks:
+            return False
+        if domain == "tstat" and inv.configured_tstats and entity_id not in inv.configured_tstats:
             return False
         if domain == "user" and inv.configured_users and entity_id not in inv.configured_users:
             return False

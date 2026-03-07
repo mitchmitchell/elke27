@@ -109,6 +109,30 @@ _COMMAND_OVERRIDES: dict[str, dict[str, object]] = {
         "block_count_field": "block_count",
         "merge_strategy": "output_configured",
     },
+    "light_get_configured": {
+        "response_mode": "paged_blocks",
+        "block_field": "block_id",
+        "block_count_field": "block_count",
+        "merge_strategy": "light_configured",
+    },
+    "barrier_get_configured": {
+        "response_mode": "paged_blocks",
+        "block_field": "block_id",
+        "block_count_field": "block_count",
+        "merge_strategy": "barrier_configured",
+    },
+    "lock_get_configured": {
+        "response_mode": "paged_blocks",
+        "block_field": "block_id",
+        "block_count_field": "block_count",
+        "merge_strategy": "lock_configured",
+    },
+    "tstat_get_configured": {
+        "response_mode": "paged_blocks",
+        "block_field": "block_id",
+        "block_count_field": "block_count",
+        "merge_strategy": "tstat_configured",
+    },
     "output_get_all_outputs_status": {
         "response_mode": "paged_blocks",
         "block_field": "block_id",

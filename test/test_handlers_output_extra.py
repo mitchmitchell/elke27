@@ -57,6 +57,29 @@ def test_output_get_status_handler() -> None:
     assert state.panel.last_message_at == 1.0
 
 
+def test_output_set_status_and_get_available_handlers() -> None:
+    state = PanelState()
+    emit = _EmitSpy()
+    set_status = output_handler.make_output_set_status_handler(state, emit, now=lambda: 1.5)
+    get_available = output_handler.make_output_get_available_handler(state, emit, now=lambda: 1.6)
+
+    assert set_status({"nope": {}}, make_ctx()) is False
+    assert set_status({"output": {}}, make_ctx()) is False
+    assert set_status({"output": {"set_status": {"output_id": 0}}}, make_ctx()) is False
+
+    msg = {"output": {"set_status": {"output_id": 1, "status": "ON"}}}
+    assert set_status(msg, make_ctx()) is True
+    assert state.outputs[1].on is True
+    assert _any_event(emit, OutputStatusUpdated)
+
+    assert get_available({"nope": {}}, make_ctx()) is False
+    assert get_available({"output": {}}, make_ctx()) is False
+    msg = {"output": {"get_available": {"outputs": [1, 2]}}}
+    assert get_available(msg, make_ctx()) is True
+    assert state.inventory.configured_outputs == {1, 2}
+    assert state.panel.last_message_at == 1.6
+
+
 def test_output_get_configured_handler() -> None:
     state = PanelState()
     emit = _EmitSpy()

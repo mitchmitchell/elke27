@@ -199,6 +199,54 @@ class OutputConfiguredInventoryReady(Event):
 
 
 @dataclass(frozen=True, slots=True)
+class LightConfiguredUpdated(Event):
+    KIND: ClassVar[str] = "light_configured_updated"
+
+    configured_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class LightConfiguredInventoryReady(Event):
+    KIND: ClassVar[str] = "light_configured_inventory_ready"
+
+
+@dataclass(frozen=True, slots=True)
+class BarrierConfiguredUpdated(Event):
+    KIND: ClassVar[str] = "barrier_configured_updated"
+
+    configured_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class BarrierConfiguredInventoryReady(Event):
+    KIND: ClassVar[str] = "barrier_configured_inventory_ready"
+
+
+@dataclass(frozen=True, slots=True)
+class LockConfiguredUpdated(Event):
+    KIND: ClassVar[str] = "lock_configured_updated"
+
+    configured_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class LockConfiguredInventoryReady(Event):
+    KIND: ClassVar[str] = "lock_configured_inventory_ready"
+
+
+@dataclass(frozen=True, slots=True)
+class TstatConfiguredUpdated(Event):
+    KIND: ClassVar[str] = "tstat_configured_updated"
+
+    configured_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class TstatConfiguredInventoryReady(Event):
+    KIND: ClassVar[str] = "tstat_configured_inventory_ready"
+
+
+@dataclass(frozen=True, slots=True)
 class UserConfiguredInventoryReady(Event):
     KIND: ClassVar[str] = "user_configured_inventory_ready"
 
@@ -238,6 +286,33 @@ class TstatStatusUpdated(Event):
     mode: str | None
     fan_mode: str | None
     temperature: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class LightStatusUpdated(Event):
+    KIND: ClassVar[str] = "light_status_updated"
+
+    light_id: int
+    status: str | None
+    on: bool | None
+    level: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class BarrierStatusUpdated(Event):
+    KIND: ClassVar[str] = "barrier_status_updated"
+
+    barrier_id: int
+    status: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class LockStatusUpdated(Event):
+    KIND: ClassVar[str] = "lock_status_updated"
+
+    lock_id: int
+    status: str | None
+    locked: bool | None
 
 
 # -------------------------
@@ -295,6 +370,33 @@ class OutputTableInfoUpdated(Event):
 @dataclass(frozen=True, slots=True)
 class TstatTableInfoUpdated(Event):
     KIND: ClassVar[str] = "tstat_table_info_updated"
+
+    table_elements: int | None
+    increment_size: int | None
+    table_csm: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class LightTableInfoUpdated(Event):
+    KIND: ClassVar[str] = "light_table_info_updated"
+
+    table_elements: int | None
+    increment_size: int | None
+    table_csm: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class BarrierTableInfoUpdated(Event):
+    KIND: ClassVar[str] = "barrier_table_info_updated"
+
+    table_elements: int | None
+    increment_size: int | None
+    table_csm: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class LockTableInfoUpdated(Event):
+    KIND: ClassVar[str] = "lock_table_info_updated"
 
     table_elements: int | None
     increment_size: int | None

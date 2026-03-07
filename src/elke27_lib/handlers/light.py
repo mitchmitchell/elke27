@@ -1,7 +1,7 @@
 """
-elke27_lib/handlers/tstat.py
+elke27_lib/handlers/light.py
 
-Read/observe-only handlers for the "tstat" domain.
+Read/observe handlers for the "light" domain.
 """
 
 from __future__ import annotations
@@ -22,13 +22,13 @@ from elke27_lib.events import (
     BootstrapCountsReady,
     CsmSnapshotUpdated,
     Event,
+    LightConfiguredInventoryReady,
+    LightConfiguredUpdated,
+    LightStatusUpdated,
+    LightTableInfoUpdated,
     TableCsmChanged,
-    TstatConfiguredInventoryReady,
-    TstatConfiguredUpdated,
-    TstatStatusUpdated,
-    TstatTableInfoUpdated,
 )
-from elke27_lib.states import PanelState, TstatState, update_csm_snapshot
+from elke27_lib.states import LightState, PanelState, update_csm_snapshot
 
 EmitFn = Callable[[Event, DispatchContext], None]
 NowFn = Callable[[], float]
@@ -46,17 +46,12 @@ def _coerce_int(value: object) -> int | None:
     return value if isinstance(value, int) else None
 
 
-def make_tstat_get_status_handler(state: PanelState, emit: EmitFn, now: NowFn):
-    """
-    Handler for ("tstat","get_status").
-    """
-
-    def handler_tstat_get_status(msg: Mapping[str, Any], ctx: DispatchContext) -> bool:
-        tstat_obj = _as_mapping(msg.get("tstat"))
-        if tstat_obj is None:
+def make_light_get_status_handler(state: PanelState, emit: EmitFn, now: NowFn):
+    def handler_light_get_status(msg: Mapping[str, Any], ctx: DispatchContext) -> bool:
+        light_obj = _as_mapping(msg.get("light"))
+        if light_obj is None:
             return False
-
-        payload = _as_mapping(tstat_obj.get("get_status"))
+        payload = _as_mapping(light_obj.get("get_status"))
         if payload is None:
             return False
 
@@ -71,122 +66,92 @@ def make_tstat_get_status_handler(state: PanelState, emit: EmitFn, now: NowFn):
                     route=UNSET_ROUTE,
                     session_id=UNSET_SESSION_ID,
                     error_code=error_code,
-                    scope="tstat",
-                    entity_id=_coerce_int(payload.get("tstat_id")),
+                    scope="light",
+                    entity_id=_coerce_int(payload.get("light_id")),
                     message=None,
                 ),
                 ctx,
             )
             return True
 
-        tstat_id = payload.get("tstat_id")
-        if not isinstance(tstat_id, int) or tstat_id < 1:
+        light_id = payload.get("light_id")
+        if not isinstance(light_id, int) or light_id < 1:
             return False
 
-        tstat = state.get_or_create_tstat(tstat_id)
-        changed: set[str] = set()
-        _apply_tstat_status_fields(tstat, payload, changed)
-        tstat.last_update_at = now()
-        state.panel.last_message_at = tstat.last_update_at
+        light = state.get_or_create_light(light_id)
+        _apply_light_status_fields(light, payload)
+        light.last_update_at = now()
+        state.panel.last_message_at = light.last_update_at
 
         emit(
-            TstatStatusUpdated(
-                kind=TstatStatusUpdated.KIND,
+            LightStatusUpdated(
+                kind=LightStatusUpdated.KIND,
                 at=UNSET_AT,
                 seq=UNSET_SEQ,
                 classification=UNSET_CLASSIFICATION,
                 route=UNSET_ROUTE,
                 session_id=UNSET_SESSION_ID,
-                tstat_id=tstat_id,
-                mode=tstat.mode,
-                fan_mode=tstat.fan_mode,
-                temperature=tstat.temperature,
+                light_id=light_id,
+                status=light.status,
+                on=light.on,
+                level=light.level,
             ),
             ctx,
         )
         return True
 
-    return handler_tstat_get_status
+    return handler_light_get_status
 
 
-def make_tstat_set_status_handler(state: PanelState, emit: EmitFn, now: NowFn):
-    """
-    Handler for ("tstat","set_status").
-    """
-
-    def handler_tstat_set_status(msg: Mapping[str, Any], ctx: DispatchContext) -> bool:
-        tstat_obj = _as_mapping(msg.get("tstat"))
-        if tstat_obj is None:
+def make_light_set_status_handler(state: PanelState, emit: EmitFn, now: NowFn):
+    def handler_light_set_status(msg: Mapping[str, Any], ctx: DispatchContext) -> bool:
+        light_obj = _as_mapping(msg.get("light"))
+        if light_obj is None:
             return False
-
-        payload = _as_mapping(tstat_obj.get("set_status"))
+        payload = _as_mapping(light_obj.get("set_status"))
         if payload is None:
             return False
 
-        error_code = payload.get("error_code")
-        if isinstance(error_code, int) and error_code != 0:
-            emit(
-                ApiError(
-                    kind=ApiError.KIND,
-                    at=UNSET_AT,
-                    seq=UNSET_SEQ,
-                    classification=UNSET_CLASSIFICATION,
-                    route=UNSET_ROUTE,
-                    session_id=UNSET_SESSION_ID,
-                    error_code=error_code,
-                    scope="tstat",
-                    entity_id=_coerce_int(payload.get("tstat_id")),
-                    message=None,
-                ),
-                ctx,
-            )
-            return True
-
-        tstat_id = payload.get("tstat_id")
-        if not isinstance(tstat_id, int) or tstat_id < 1:
+        light_id = payload.get("light_id")
+        if not isinstance(light_id, int) or light_id < 1:
             return False
 
-        tstat = state.get_or_create_tstat(tstat_id)
-        changed: set[str] = set()
-        _apply_tstat_status_fields(tstat, payload, changed)
-        tstat.last_update_at = now()
-        state.panel.last_message_at = tstat.last_update_at
+        light = state.get_or_create_light(light_id)
+        _apply_light_status_fields(light, payload)
+        light.last_update_at = now()
+        state.panel.last_message_at = light.last_update_at
 
         emit(
-            TstatStatusUpdated(
-                kind=TstatStatusUpdated.KIND,
+            LightStatusUpdated(
+                kind=LightStatusUpdated.KIND,
                 at=UNSET_AT,
                 seq=UNSET_SEQ,
                 classification=UNSET_CLASSIFICATION,
                 route=UNSET_ROUTE,
                 session_id=UNSET_SESSION_ID,
-                tstat_id=tstat_id,
-                mode=tstat.mode,
-                fan_mode=tstat.fan_mode,
-                temperature=tstat.temperature,
+                light_id=light_id,
+                status=light.status,
+                on=light.on,
+                level=light.level,
             ),
             ctx,
         )
         return True
 
-    return handler_tstat_set_status
+    return handler_light_set_status
 
 
-def make_tstat_get_configured_handler(state: PanelState, emit: EmitFn, now: NowFn):
-    """
-    Handler for ("tstat","get_configured").
-    """
-
-    def handler_tstat_get_configured(msg: Mapping[str, Any], ctx: DispatchContext) -> bool:
-        tstat_obj = _as_mapping(msg.get("tstat"))
-        if tstat_obj is None:
+def make_light_get_configured_handler(state: PanelState, emit: EmitFn, now: NowFn):
+    def handler_light_get_configured(msg: Mapping[str, Any], ctx: DispatchContext) -> bool:
+        light_obj = _as_mapping(msg.get("light"))
+        if light_obj is None:
             return False
 
-        payload = _as_mapping(tstat_obj.get("get_configured"))
+        payload = _as_mapping(light_obj.get("get_configured"))
         if payload is None:
             return False
 
-        error_code = payload.get("error_code", tstat_obj.get("error_code"))
+        error_code = payload.get("error_code", light_obj.get("error_code"))
         if isinstance(error_code, int) and error_code != 0:
             if error_code == 11008:
                 emit(
@@ -198,7 +163,7 @@ def make_tstat_get_configured_handler(state: PanelState, emit: EmitFn, now: NowF
                         route=UNSET_ROUTE,
                         session_id=UNSET_SESSION_ID,
                         error_code=error_code,
-                        scope="tstat",
+                        scope="light",
                         entity_id=None,
                         message=None,
                     ),
@@ -214,7 +179,7 @@ def make_tstat_get_configured_handler(state: PanelState, emit: EmitFn, now: NowF
                     route=UNSET_ROUTE,
                     session_id=UNSET_SESSION_ID,
                     error_code=error_code,
-                    scope="tstat",
+                    scope="light",
                     entity_id=None,
                     message=None,
                 ),
@@ -222,21 +187,21 @@ def make_tstat_get_configured_handler(state: PanelState, emit: EmitFn, now: NowF
             )
             return True
 
-        ids = _extract_configured_tstat_ids(payload)
-        table_info = _as_mapping(state.table_info_by_domain.get("tstat"))
+        ids = _extract_configured_ids(payload, ("lights", "light_ids", "configured_lights"))
+        table_info = _as_mapping(state.table_info_by_domain.get("light"))
         if table_info is not None:
             max_id = table_info.get("table_elements")
             if isinstance(max_id, int) and max_id >= 1:
-                ids = [tstat_id for tstat_id in ids if tstat_id <= max_id]
+                ids = [entity_id for entity_id in ids if entity_id <= max_id]
 
         inv = state.inventory
-        inv.configured_tstats = set(ids)
-        inv.configured_tstats_complete = True
+        inv.configured_lights = set(ids)
+        inv.configured_lights_complete = True
         state.panel.last_message_at = now()
 
         emit(
-            TstatConfiguredUpdated(
-                kind=TstatConfiguredUpdated.KIND,
+            LightConfiguredUpdated(
+                kind=LightConfiguredUpdated.KIND,
                 at=UNSET_AT,
                 seq=UNSET_SEQ,
                 classification=UNSET_CLASSIFICATION,
@@ -247,8 +212,8 @@ def make_tstat_get_configured_handler(state: PanelState, emit: EmitFn, now: NowF
             ctx,
         )
         emit(
-            TstatConfiguredInventoryReady(
-                kind=TstatConfiguredInventoryReady.KIND,
+            LightConfiguredInventoryReady(
+                kind=LightConfiguredInventoryReady.KIND,
                 at=UNSET_AT,
                 seq=UNSET_SEQ,
                 classification=UNSET_CLASSIFICATION,
@@ -259,35 +224,33 @@ def make_tstat_get_configured_handler(state: PanelState, emit: EmitFn, now: NowF
         )
         return True
 
-    return handler_tstat_get_configured
+    return handler_light_get_configured
 
 
-def make_tstat_configured_merge(_state: PanelState):
+def make_light_configured_merge(_state: PanelState):
     def _merge(blocks: list[PagedBlock], block_count: int) -> Mapping[str, Any]:
         merged: set[int] = set()
         for block in blocks:
-            for tstat_id in _extract_configured_tstat_ids(block.payload):
-                merged.add(tstat_id)
-        return {"tstats": sorted(merged), "block_count": block_count}
+            for entity_id in _extract_configured_ids(
+                block.payload, ("lights", "light_ids", "configured_lights")
+            ):
+                merged.add(entity_id)
+        return {"lights": sorted(merged), "block_count": block_count}
 
     return _merge
 
 
-def make_tstat_get_attribs_handler(state: PanelState, emit: EmitFn, now: NowFn):
-    """
-    Handler for ("tstat","get_attribs").
-    """
-
-    def handler_tstat_get_attribs(msg: Mapping[str, Any], ctx: DispatchContext) -> bool:
-        tstat_obj = _as_mapping(msg.get("tstat"))
-        if tstat_obj is None:
+def make_light_get_attribs_handler(state: PanelState, emit: EmitFn, now: NowFn):
+    def handler_light_get_attribs(msg: Mapping[str, Any], ctx: DispatchContext) -> bool:
+        light_obj = _as_mapping(msg.get("light"))
+        if light_obj is None:
             return False
 
-        payload = _as_mapping(tstat_obj.get("get_attribs"))
+        payload = _as_mapping(light_obj.get("get_attribs"))
         if payload is None:
             return False
 
-        error_code = payload.get("error_code", tstat_obj.get("error_code"))
+        error_code = payload.get("error_code", light_obj.get("error_code"))
         if isinstance(error_code, int) and error_code != 0:
             if error_code == 11008:
                 emit(
@@ -299,8 +262,8 @@ def make_tstat_get_attribs_handler(state: PanelState, emit: EmitFn, now: NowFn):
                         route=UNSET_ROUTE,
                         session_id=UNSET_SESSION_ID,
                         error_code=error_code,
-                        scope="tstat",
-                        entity_id=_coerce_int(payload.get("tstat_id")),
+                        scope="light",
+                        entity_id=_coerce_int(payload.get("light_id")),
                         message=None,
                     ),
                     ctx,
@@ -315,41 +278,36 @@ def make_tstat_get_attribs_handler(state: PanelState, emit: EmitFn, now: NowFn):
                     route=UNSET_ROUTE,
                     session_id=UNSET_SESSION_ID,
                     error_code=error_code,
-                    scope="tstat",
-                    entity_id=_coerce_int(payload.get("tstat_id")),
+                    scope="light",
+                    entity_id=_coerce_int(payload.get("light_id")),
                     message=None,
                 ),
                 ctx,
             )
             return True
 
-        tstat_id = payload.get("tstat_id")
-        if not isinstance(tstat_id, int) or tstat_id < 1:
+        light_id = payload.get("light_id")
+        if not isinstance(light_id, int) or light_id < 1:
             return False
 
-        tstat = state.get_or_create_tstat(tstat_id)
-        changed: set[str] = set()
-        _apply_tstat_attribs(tstat, payload, changed)
-        tstat.last_update_at = now()
-        state.panel.last_message_at = tstat.last_update_at
+        light = state.get_or_create_light(light_id)
+        _apply_light_attribs(light, payload)
+        light.last_update_at = now()
+        state.panel.last_message_at = light.last_update_at
         return True
 
-    return handler_tstat_get_attribs
+    return handler_light_get_attribs
 
 
-def make_tstat_get_table_info_handler(state: PanelState, emit: EmitFn, now: NowFn):
-    """
-    Handler for ("tstat","get_table_info").
-    """
-
-    def handler_tstat_get_table_info(msg: Mapping[str, Any], ctx: DispatchContext) -> bool:
-        tstat_obj = _as_mapping(msg.get("tstat"))
-        if tstat_obj is None:
+def make_light_get_table_info_handler(state: PanelState, emit: EmitFn, now: NowFn):
+    def handler_light_get_table_info(msg: Mapping[str, Any], ctx: DispatchContext) -> bool:
+        light_obj = _as_mapping(msg.get("light"))
+        if light_obj is None:
             return False
 
-        payload = _as_mapping(tstat_obj.get("get_table_info"))
+        payload = _as_mapping(light_obj.get("get_table_info"))
         if payload is None:
-            payload = _as_mapping(tstat_obj.get("table_info"))
+            payload = _as_mapping(light_obj.get("table_info"))
         if payload is None:
             return False
 
@@ -364,7 +322,7 @@ def make_tstat_get_table_info_handler(state: PanelState, emit: EmitFn, now: NowF
                     route=UNSET_ROUTE,
                     session_id=UNSET_SESSION_ID,
                     error_code=error_code,
-                    scope="tstat",
+                    scope="light",
                     entity_id=None,
                     message=None,
                 ),
@@ -372,15 +330,14 @@ def make_tstat_get_table_info_handler(state: PanelState, emit: EmitFn, now: NowF
             )
             return True
 
-        table_info = dict(payload)
-        state.table_info_by_domain["tstat"] = table_info
+        state.table_info_by_domain["light"] = dict(payload)
         state.panel.last_message_at = now()
         table_elements = _extract_int(payload, "table_elements")
-        table_csm = _extract_table_csm(payload, domain="tstat")
+        table_csm = _extract_table_csm(payload, domain="light")
         if table_csm is not None:
-            old = state.table_csm_by_domain.get("tstat")
+            old = state.table_csm_by_domain.get("light")
             if old != table_csm:
-                state.table_csm_by_domain["tstat"] = table_csm
+                state.table_csm_by_domain["light"] = table_csm
                 emit(
                     TableCsmChanged(
                         kind=TableCsmChanged.KIND,
@@ -389,18 +346,18 @@ def make_tstat_get_table_info_handler(state: PanelState, emit: EmitFn, now: NowF
                         classification=UNSET_CLASSIFICATION,
                         route=UNSET_ROUTE,
                         session_id=UNSET_SESSION_ID,
-                        csm_domain="tstat",
+                        csm_domain="light",
                         old=old,
                         new=table_csm,
                     ),
                     ctx,
                 )
         if table_elements is not None:
-            state.table_info_known.add("tstat")
+            state.table_info_known.add("light")
 
         emit(
-            TstatTableInfoUpdated(
-                kind=TstatTableInfoUpdated.KIND,
+            LightTableInfoUpdated(
+                kind=LightTableInfoUpdated.KIND,
                 at=UNSET_AT,
                 seq=UNSET_SEQ,
                 classification=UNSET_CLASSIFICATION,
@@ -445,65 +402,63 @@ def make_tstat_get_table_info_handler(state: PanelState, emit: EmitFn, now: NowF
             )
         return True
 
-    return handler_tstat_get_table_info
+    return handler_light_get_table_info
 
 
-def _apply_tstat_status_fields(
-    tstat: TstatState, payload: Mapping[str, Any], changed: set[str]
-) -> None:
-    _maybe_set(tstat, "temperature", payload.get("temperature"), changed)
-    _maybe_set(tstat, "cool_setpoint", payload.get("cool_setpoint"), changed)
-    _maybe_set(tstat, "heat_setpoint", payload.get("heat_setpoint"), changed)
-    _maybe_set(tstat, "mode", payload.get("mode"), changed)
-    _maybe_set(tstat, "fan_mode", payload.get("fan_mode"), changed)
-    _maybe_set(tstat, "humidity", payload.get("humidity"), changed)
-    _maybe_set(tstat, "rssi", payload.get("rssi"), changed)
+def _apply_light_status_fields(light: LightState, payload: Mapping[str, Any]) -> None:
+    status = payload.get("status")
+    if isinstance(status, str):
+        normalized = status.strip().upper()
+        light.status = normalized
+        if normalized in {"ON", "OFF"}:
+            light.on = normalized == "ON"
 
-    battery = payload.get("battery level")
-    if battery is None:
-        battery = payload.get("battery_level")
-    _maybe_set(tstat, "battery_level", battery, changed)
+    level = payload.get("level")
+    if isinstance(level, int):
+        light.level = level
+        if level == 0:
+            light.on = False
+        elif level > 0 and light.on is None:
+            light.on = True
 
-    prec = payload.get("prec")
-    if isinstance(prec, list):
-        prec_items = cast(list[object], prec)
-        prec_values: list[int] = []
-        all_ints = True
-        for item in prec_items:
-            if not isinstance(item, int):
-                all_ints = False
-                break
-            prec_values.append(item)
-        if all_ints:
-            _maybe_set(tstat, "prec", prec_values, changed)
+    state_val = payload.get("state")
+    if isinstance(state_val, bool):
+        light.on = state_val
+        light.status = "ON" if state_val else "OFF"
 
     for key, value in payload.items():
-        if key in {
-            "tstat_id",
-            "error_code",
-            "temperature",
-            "cool_setpoint",
-            "heat_setpoint",
-            "mode",
-            "fan_mode",
-            "humidity",
-            "rssi",
-            "battery level",
-            "battery_level",
-            "prec",
-        }:
+        if key in {"light_id", "error_code", "status", "state", "level"}:
             continue
-        if tstat.fields.get(key) != value:
-            tstat.fields[key] = value
-            changed.add(key)
+        light.fields[key] = value
 
 
-def _maybe_set(tstat: TstatState, attr: str, value: Any, changed: set[str]) -> None:
+def _normalize_name(value: Any) -> str | None:
     if value is None:
-        return
-    if getattr(tstat, attr) != value:
-        setattr(tstat, attr, value)
-        changed.add(attr)
+        return None
+    text = str(value).strip()
+    return text if text else None
+
+
+def _apply_light_attribs(light: LightState, payload: Mapping[str, Any]) -> None:
+    if "name" in payload:
+        light.name = _normalize_name(payload.get("name"))
+    if "area_id" in payload and isinstance(payload.get("area_id"), int):
+        light.area_id = cast(int, payload.get("area_id"))
+    for key, value in payload.items():
+        if key in {"light_id", "error_code", "name", "area_id"}:
+            continue
+        light.fields[key] = value
+
+
+def _extract_configured_ids(payload: Mapping[str, Any], keys: tuple[str, ...]) -> list[int]:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, list):
+            ids = [
+                item for item in cast(list[object], value) if isinstance(item, int) and item >= 1
+            ]
+            return sorted(set(ids))
+    return []
 
 
 def _extract_int(payload: Mapping[str, Any], key: str) -> int | None:
@@ -528,30 +483,3 @@ def _extract_table_csm(payload: Mapping[str, Any], *, domain: str) -> int | None
             return int(text)
     LOG.warning("%s.get_table_info table_csm has non-int value %r.", domain, value)
     return None
-
-
-def _extract_configured_tstat_ids(payload: Mapping[str, Any]) -> list[int]:
-    keys = ("tstats", "tstat_ids", "configured_tstats", "configured_tstat_ids")
-    for key in keys:
-        value = payload.get(key)
-        if isinstance(value, list):
-            ids = [
-                item for item in cast(list[object], value) if isinstance(item, int) and item >= 1
-            ]
-            return sorted(set(ids))
-    return []
-
-
-def _apply_tstat_attribs(tstat: TstatState, payload: Mapping[str, Any], changed: set[str]) -> None:
-    name = payload.get("name")
-    if isinstance(name, str):
-        normalized_name = name.strip() or None
-        if tstat.name != normalized_name:
-            tstat.name = normalized_name
-            changed.add("name")
-    for key, value in payload.items():
-        if key in {"tstat_id", "error_code", "name"}:
-            continue
-        if tstat.fields.get(key) != value:
-            tstat.fields[key] = value
-            changed.add(key)

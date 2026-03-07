@@ -95,15 +95,25 @@ from .events import (
     AreaStatusUpdated,
     AreaTableInfoUpdated,
     AreaTroublesUpdated,
+    BarrierConfiguredInventoryReady,
+    BarrierStatusUpdated,
+    BarrierTableInfoUpdated,
     ConnectionStateChanged,
     CsmSnapshotUpdated,
     Event,
     KeypadConfiguredInventoryReady,
+    LightConfiguredInventoryReady,
+    LightStatusUpdated,
+    LightTableInfoUpdated,
+    LockConfiguredInventoryReady,
+    LockStatusUpdated,
+    LockTableInfoUpdated,
     OutputConfiguredInventoryReady,
     OutputsStatusBulkUpdated,
     OutputStatusUpdated,
     OutputTableInfoUpdated,
     PanelVersionInfoUpdated,
+    TstatConfiguredInventoryReady,
     TstatTableInfoUpdated,
     UserConfiguredInventoryReady,
     ZoneAttribsUpdated,
@@ -715,6 +725,34 @@ class Elke27Client:
                 except (E27Error, KeyError, RuntimeError, TypeError, ValueError):
                     continue
             return
+        if domain == "light":
+            for light_id in sorted(ids):
+                try:
+                    self._kernel.request(("light", "get_status"), light_id=light_id)
+                except (E27Error, KeyError, RuntimeError, TypeError, ValueError):
+                    continue
+            return
+        if domain == "barrier":
+            for barrier_id in sorted(ids):
+                try:
+                    self._kernel.request(("barrier", "get_status"), barrier_id=barrier_id)
+                except (E27Error, KeyError, RuntimeError, TypeError, ValueError):
+                    continue
+            return
+        if domain == "lock":
+            for lock_id in sorted(ids):
+                try:
+                    self._kernel.request(("lock", "get_status"), lock_id=lock_id)
+                except (E27Error, KeyError, RuntimeError, TypeError, ValueError):
+                    continue
+            return
+        if domain == "tstat":
+            for tstat_id in sorted(ids):
+                try:
+                    self._kernel.request(("tstat", "get_status"), tstat_id=tstat_id)
+                except (E27Error, KeyError, RuntimeError, TypeError, ValueError):
+                    continue
+            return
 
     def _queue_bootstrap_attribs(self, domain: str) -> None:
         inv = self._kernel.state.inventory
@@ -734,6 +772,30 @@ class Elke27Client:
             for output_id in sorted(inv.configured_outputs):
                 try:
                     self._kernel.request(("output", "get_attribs"), output_id=output_id)
+                except (E27Error, KeyError, RuntimeError, TypeError, ValueError):
+                    continue
+        elif domain == "light" and inv.configured_lights:
+            for light_id in sorted(inv.configured_lights):
+                try:
+                    self._kernel.request(("light", "get_attribs"), light_id=light_id)
+                except (E27Error, KeyError, RuntimeError, TypeError, ValueError):
+                    continue
+        elif domain == "barrier" and inv.configured_barriers:
+            for barrier_id in sorted(inv.configured_barriers):
+                try:
+                    self._kernel.request(("barrier", "get_attribs"), barrier_id=barrier_id)
+                except (E27Error, KeyError, RuntimeError, TypeError, ValueError):
+                    continue
+        elif domain == "lock" and inv.configured_locks:
+            for lock_id in sorted(inv.configured_locks):
+                try:
+                    self._kernel.request(("lock", "get_attribs"), lock_id=lock_id)
+                except (E27Error, KeyError, RuntimeError, TypeError, ValueError):
+                    continue
+        elif domain == "tstat" and inv.configured_tstats:
+            for tstat_id in sorted(inv.configured_tstats):
+                try:
+                    self._kernel.request(("tstat", "get_attribs"), tstat_id=tstat_id)
                 except (E27Error, KeyError, RuntimeError, TypeError, ValueError):
                     continue
         elif domain == "user" and inv.configured_users:
@@ -833,6 +895,8 @@ class Elke27Client:
             return EventType.ZONE
         if "output" in evt.kind:
             return EventType.OUTPUT
+        if "light" in evt.kind or "lock" in evt.kind or "barrier" in evt.kind:
+            return EventType.OUTPUT
         if "panel" in evt.kind or "table_info" in evt.kind or "csm" in evt.kind:
             return EventType.PANEL
         return EventType.SYSTEM
@@ -927,6 +991,26 @@ class Elke27Client:
             self._mark_inventory_ready("zone")
         elif isinstance(evt, OutputConfiguredInventoryReady):
             self._mark_inventory_ready("output")
+        elif isinstance(evt, LightConfiguredInventoryReady):
+            self._queue_bootstrap_attribs("light")
+            self._request_initial_statuses(
+                "light", set(self._kernel.state.inventory.configured_lights)
+            )
+        elif isinstance(evt, BarrierConfiguredInventoryReady):
+            self._queue_bootstrap_attribs("barrier")
+            self._request_initial_statuses(
+                "barrier", set(self._kernel.state.inventory.configured_barriers)
+            )
+        elif isinstance(evt, LockConfiguredInventoryReady):
+            self._queue_bootstrap_attribs("lock")
+            self._request_initial_statuses(
+                "lock", set(self._kernel.state.inventory.configured_locks)
+            )
+        elif isinstance(evt, TstatConfiguredInventoryReady):
+            self._queue_bootstrap_attribs("tstat")
+            self._request_initial_statuses(
+                "tstat", set(self._kernel.state.inventory.configured_tstats)
+            )
         elif isinstance(evt, UserConfiguredInventoryReady):
             self._queue_bootstrap_attribs("user")
         elif isinstance(evt, KeypadConfiguredInventoryReady):
@@ -962,6 +1046,12 @@ class Elke27Client:
             self._mark_status_seen("output", [evt.output_id])
         elif isinstance(evt, OutputsStatusBulkUpdated):
             self._mark_status_seen("output", evt.updated_ids)
+        elif isinstance(evt, LightStatusUpdated):
+            pass
+        elif isinstance(evt, BarrierStatusUpdated):
+            pass
+        elif isinstance(evt, LockStatusUpdated):
+            pass
         elif isinstance(evt, CsmSnapshotUpdated):
             if self._awaiting_reconnect_csm_check:
                 baseline = self._reconnect_csm_snapshot
@@ -981,6 +1071,9 @@ class Elke27Client:
             AreaTableInfoUpdated.KIND,
             ZoneTableInfoUpdated.KIND,
             OutputTableInfoUpdated.KIND,
+            LightTableInfoUpdated.KIND,
+            BarrierTableInfoUpdated.KIND,
+            LockTableInfoUpdated.KIND,
             TstatTableInfoUpdated.KIND,
             AreaStatusUpdated.KIND,
             AreaAttribsUpdated.KIND,
@@ -990,6 +1083,9 @@ class Elke27Client:
             ZonesStatusBulkUpdated.KIND,
             OutputStatusUpdated.KIND,
             OutputsStatusBulkUpdated.KIND,
+            LightStatusUpdated.KIND,
+            BarrierStatusUpdated.KIND,
+            LockStatusUpdated.KIND,
             ZoneStatusUpdated.KIND,
         }:
             if evt.kind == AreaStatusUpdated.KIND and skip_snapshot_update:
@@ -1239,6 +1335,12 @@ class Elke27Client:
             self._refresh_zone_config()
         elif domain_key == "output":
             self._refresh_output_config()
+        elif domain_key == "light":
+            self._refresh_light_config()
+        elif domain_key == "barrier":
+            self._refresh_barrier_config()
+        elif domain_key == "lock":
+            self._refresh_lock_config()
         elif domain_key == "tstat":
             self._refresh_tstat_config()
         else:
@@ -1260,8 +1362,21 @@ class Elke27Client:
         self._safe_request(("output", "get_table_info"))
         self._safe_request(("output", "get_configured"), block_id=1)
 
+    def _refresh_light_config(self) -> None:
+        self._safe_request(("light", "get_table_info"))
+        self._safe_request(("light", "get_configured"), block_id=1)
+
+    def _refresh_barrier_config(self) -> None:
+        self._safe_request(("barrier", "get_table_info"))
+        self._safe_request(("barrier", "get_configured"), block_id=1)
+
+    def _refresh_lock_config(self) -> None:
+        self._safe_request(("lock", "get_table_info"))
+        self._safe_request(("lock", "get_configured"), block_id=1)
+
     def _refresh_tstat_config(self) -> None:
         self._safe_request(("tstat", "get_table_info"))
+        self._safe_request(("tstat", "get_configured"), block_id=1)
 
     def _safe_request(self, route: RouteKey, /, **kwargs: Any) -> None:
         if self._kernel.requests.get(route) is None:
@@ -1527,6 +1642,73 @@ class Elke27Client:
                             item for item in outputs_list if isinstance(item, int) and item >= 1
                         }
                     inv.configured_outputs_complete = True
+            if spec.key == "light_get_attribs":
+                inv = self._kernel.state.inventory
+                if not inv.configured_lights and not inv.configured_lights_complete:
+                    configured_result = await self.async_execute("light_get_configured")
+                    if not configured_result.ok:
+                        return _err(
+                            configured_result.error or ProtocolError("light_get_configured failed.")
+                        )
+                    lights = (
+                        configured_result.data.get("lights") if configured_result.data else None
+                    )
+                    if isinstance(lights, list):
+                        lights_list = cast(list[object], lights)
+                        inv.configured_lights = {
+                            item for item in lights_list if isinstance(item, int) and item >= 1
+                        }
+                    inv.configured_lights_complete = True
+            if spec.key == "barrier_get_attribs":
+                inv = self._kernel.state.inventory
+                if not inv.configured_barriers and not inv.configured_barriers_complete:
+                    configured_result = await self.async_execute("barrier_get_configured")
+                    if not configured_result.ok:
+                        return _err(
+                            configured_result.error
+                            or ProtocolError("barrier_get_configured failed.")
+                        )
+                    barriers = (
+                        configured_result.data.get("barriers") if configured_result.data else None
+                    )
+                    if isinstance(barriers, list):
+                        barriers_list = cast(list[object], barriers)
+                        inv.configured_barriers = {
+                            item for item in barriers_list if isinstance(item, int) and item >= 1
+                        }
+                    inv.configured_barriers_complete = True
+            if spec.key == "lock_get_attribs":
+                inv = self._kernel.state.inventory
+                if not inv.configured_locks and not inv.configured_locks_complete:
+                    configured_result = await self.async_execute("lock_get_configured")
+                    if not configured_result.ok:
+                        return _err(
+                            configured_result.error or ProtocolError("lock_get_configured failed.")
+                        )
+                    locks = configured_result.data.get("locks") if configured_result.data else None
+                    if isinstance(locks, list):
+                        locks_list = cast(list[object], locks)
+                        inv.configured_locks = {
+                            item for item in locks_list if isinstance(item, int) and item >= 1
+                        }
+                    inv.configured_locks_complete = True
+            if spec.key == "tstat_get_attribs":
+                inv = self._kernel.state.inventory
+                if not inv.configured_tstats and not inv.configured_tstats_complete:
+                    configured_result = await self.async_execute("tstat_get_configured")
+                    if not configured_result.ok:
+                        return _err(
+                            configured_result.error or ProtocolError("tstat_get_configured failed.")
+                        )
+                    tstats = (
+                        configured_result.data.get("tstats") if configured_result.data else None
+                    )
+                    if isinstance(tstats, list):
+                        tstats_list = cast(list[object], tstats)
+                        inv.configured_tstats = {
+                            item for item in tstats_list if isinstance(item, int) and item >= 1
+                        }
+                    inv.configured_tstats_complete = True
             if spec.key == "user_get_attribs":
                 inv = self._kernel.state.inventory
                 if not inv.configured_users and not inv.configured_users_complete:
@@ -1901,8 +2083,22 @@ class Elke27Client:
     @property
     def lights(self) -> Mapping[int, Any]:
         return _FilteredMapping(
-            self._kernel.state.outputs,
-            _configured_ids_from_table(self._kernel.state, "output"),
+            self._kernel.state.lights,
+            _configured_ids_from_table(self._kernel.state, "light"),
+        )
+
+    @property
+    def barriers(self) -> Mapping[int, Any]:
+        return _FilteredMapping(
+            self._kernel.state.barriers,
+            _configured_ids_from_table(self._kernel.state, "barrier"),
+        )
+
+    @property
+    def locks(self) -> Mapping[int, Any]:
+        return _FilteredMapping(
+            self._kernel.state.locks,
+            _configured_ids_from_table(self._kernel.state, "lock"),
         )
 
     @property
@@ -2101,6 +2297,14 @@ class Elke27Client:
             return make_zone_configured_merge(self._kernel.state)
         if strategy == "output_configured":
             return _merge_configured_outputs
+        if strategy == "light_configured":
+            return _merge_configured_lights
+        if strategy == "barrier_configured":
+            return _merge_configured_barriers
+        if strategy == "lock_configured":
+            return _merge_configured_locks
+        if strategy == "tstat_configured":
+            return _merge_configured_tstats
         if strategy == "output_all_status":
             return _merge_output_status_strings
         if strategy == "rule_blocks":
@@ -2169,6 +2373,62 @@ def _merge_configured_users(blocks: list[PagedBlock], block_count: int) -> Mappi
                     if isinstance(item, int):
                         merged.append(item)
     return {"users": sorted(set(merged)), "block_count": block_count}
+
+
+def _merge_configured_lights(blocks: list[PagedBlock], block_count: int) -> Mapping[str, Any]:
+    keys = ("lights", "light_ids", "configured_lights", "configured_light_ids")
+    merged: list[int] = []
+    for block in blocks:
+        for key in keys:
+            value = block.payload.get(key)
+            if isinstance(value, list):
+                value_list = cast(list[object], value)
+                for item in value_list:
+                    if isinstance(item, int):
+                        merged.append(item)
+    return {"lights": sorted(set(merged)), "block_count": block_count}
+
+
+def _merge_configured_barriers(blocks: list[PagedBlock], block_count: int) -> Mapping[str, Any]:
+    keys = ("barriers", "barrier_ids", "configured_barriers", "configured_barrier_ids")
+    merged: list[int] = []
+    for block in blocks:
+        for key in keys:
+            value = block.payload.get(key)
+            if isinstance(value, list):
+                value_list = cast(list[object], value)
+                for item in value_list:
+                    if isinstance(item, int):
+                        merged.append(item)
+    return {"barriers": sorted(set(merged)), "block_count": block_count}
+
+
+def _merge_configured_locks(blocks: list[PagedBlock], block_count: int) -> Mapping[str, Any]:
+    keys = ("locks", "lock_ids", "configured_locks", "configured_lock_ids")
+    merged: list[int] = []
+    for block in blocks:
+        for key in keys:
+            value = block.payload.get(key)
+            if isinstance(value, list):
+                value_list = cast(list[object], value)
+                for item in value_list:
+                    if isinstance(item, int):
+                        merged.append(item)
+    return {"locks": sorted(set(merged)), "block_count": block_count}
+
+
+def _merge_configured_tstats(blocks: list[PagedBlock], block_count: int) -> Mapping[str, Any]:
+    keys = ("tstats", "tstat_ids", "configured_tstats", "configured_tstat_ids")
+    merged: list[int] = []
+    for block in blocks:
+        for key in keys:
+            value = block.payload.get(key)
+            if isinstance(value, list):
+                value_list = cast(list[object], value)
+                for item in value_list:
+                    if isinstance(item, int):
+                        merged.append(item)
+    return {"tstats": sorted(set(merged)), "block_count": block_count}
 
 
 def _merge_configured_keypads(blocks: list[PagedBlock], block_count: int) -> Mapping[str, Any]:

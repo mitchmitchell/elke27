@@ -110,6 +110,47 @@ def make_output_get_status_handler(state: PanelState, emit: EmitFn, now: NowFn):
     return handler_output_get_status
 
 
+def make_output_set_status_handler(state: PanelState, emit: EmitFn, now: NowFn):
+    """
+    Handler for ("output","set_status").
+    """
+
+    def handler_output_set_status(msg: Mapping[str, Any], ctx: DispatchContext) -> bool:
+        output_obj = _as_mapping(msg.get("output"))
+        if output_obj is None:
+            return False
+        payload = _as_mapping(output_obj.get("set_status"))
+        if payload is None:
+            return False
+
+        output_id = payload.get("output_id")
+        if not isinstance(output_id, int) or output_id < 1:
+            return False
+
+        output = state.get_or_create_output(output_id)
+        changed: set[str] = set()
+        _apply_output_status_fields(output, payload, changed)
+        output.last_update_at = now()
+        state.panel.last_message_at = output.last_update_at
+        emit(
+            OutputStatusUpdated(
+                kind=OutputStatusUpdated.KIND,
+                at=UNSET_AT,
+                seq=UNSET_SEQ,
+                classification=UNSET_CLASSIFICATION,
+                route=UNSET_ROUTE,
+                session_id=UNSET_SESSION_ID,
+                output_id=output_id,
+                status=output.status,
+                on=output.on,
+            ),
+            ctx,
+        )
+        return True
+
+    return handler_output_set_status
+
+
 def make_output_get_configured_handler(state: PanelState, emit: EmitFn, now: NowFn):
     """
     Handler for ("output","get_configured").
@@ -280,6 +321,28 @@ def make_output_get_all_outputs_status_handler(state: PanelState, emit: EmitFn, 
         return True
 
     return handler_output_get_all_outputs_status
+
+
+def make_output_get_available_handler(state: PanelState, _emit: EmitFn, now: NowFn):
+    """
+    Handler for ("output","get_available").
+    """
+
+    def handler_output_get_available(msg: Mapping[str, Any], _ctx: DispatchContext) -> bool:
+        output_obj = _as_mapping(msg.get("output"))
+        if output_obj is None:
+            return False
+        payload = _as_mapping(output_obj.get("get_available"))
+        if payload is None:
+            return False
+
+        ids = _extract_configured_output_ids(payload)
+        if ids:
+            state.inventory.configured_outputs = set(ids)
+        state.panel.last_message_at = now()
+        return True
+
+    return handler_output_get_available
 
 
 def make_output_configured_merge(_state: PanelState):

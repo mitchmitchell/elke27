@@ -6,8 +6,11 @@ import pytest
 
 from elke27_lib.dispatcher import PagedTransferKey
 from elke27_lib.features import (
+    barrier,
     bus_ios,
     keypad,
+    light,
+    lock,
     log,
     network_param,
     output,
@@ -166,8 +169,10 @@ def test_output_register_and_payloads() -> None:
         kernel,
         [
             output.ROUTE_OUTPUT_GET_STATUS,
+            output.ROUTE_OUTPUT_SET_STATUS,
             output.ROUTE_OUTPUT_GET_CONFIGURED,
             output.ROUTE_OUTPUT_GET_ALL_OUTPUTS_STATUS,
+            output.ROUTE_OUTPUT_GET_AVAILABLE,
             output.ROUTE_OUTPUT_GET_ATTRIBS,
             output.ROUTE_OUTPUT_GET_TABLE_INFO,
             output.ROUTE_OUTPUT_TABLE_INFO,
@@ -177,19 +182,28 @@ def test_output_register_and_payloads() -> None:
         kernel,
         [
             output.ROUTE_OUTPUT_GET_STATUS,
+            output.ROUTE_OUTPUT_SET_STATUS,
             output.ROUTE_OUTPUT_GET_CONFIGURED,
             output.ROUTE_OUTPUT_GET_ALL_OUTPUTS_STATUS,
+            output.ROUTE_OUTPUT_GET_AVAILABLE,
             output.ROUTE_OUTPUT_GET_ATTRIBS,
             output.ROUTE_OUTPUT_GET_TABLE_INFO,
         ],
     )
     assert output.build_output_get_status_payload(output_id=2) == {"output_id": 2}
+    assert output.build_output_set_status_payload(output_id=2, status="on") == {
+        "output_id": 2,
+        "status": "ON",
+    }
+    assert output.build_output_get_available_payload() == {}
     assert output.build_output_get_attribs_payload(output_id=4) == {"output_id": 4}
     assert output.build_output_get_all_outputs_status_payload() is True
     assert output.build_output_get_table_info_payload() == {}
     assert output.build_output_get_configured_payload(block_id=2) == {"block_id": 2}
     with pytest.raises(ValueError):
         output.build_output_get_status_payload(output_id=0)
+    with pytest.raises(ValueError):
+        output.build_output_set_status_payload(output_id=2, status="bad")
     with pytest.raises(ValueError):
         output.build_output_get_attribs_payload(output_id=0)
     with pytest.raises(ValueError):
@@ -342,20 +356,144 @@ def test_tstat_register_and_payloads() -> None:
         kernel,
         [
             tstat.ROUTE_TSTAT_GET_STATUS,
+            tstat.ROUTE_TSTAT_SET_STATUS,
+            tstat.ROUTE_TSTAT_GET_CONFIGURED,
+            tstat.ROUTE_TSTAT_GET_ATTRIBS,
             tstat.ROUTE_TSTAT_GET_TABLE_INFO,
+            tstat.ROUTE_TSTAT_TABLE_INFO,
         ],
     )
     _assert_requests(
         kernel,
         [
             tstat.ROUTE_TSTAT_GET_STATUS,
+            tstat.ROUTE_TSTAT_SET_STATUS,
+            tstat.ROUTE_TSTAT_GET_CONFIGURED,
+            tstat.ROUTE_TSTAT_GET_ATTRIBS,
             tstat.ROUTE_TSTAT_GET_TABLE_INFO,
         ],
     )
     assert tstat.build_tstat_get_status_payload(tstat_id=1) == {"tstat_id": 1}
+    assert tstat.build_tstat_get_attribs_payload(tstat_id=1) == {"tstat_id": 1}
+    assert tstat.build_tstat_get_configured_payload(block_id=1) == {"block_id": 1}
+    assert tstat.build_tstat_set_status_payload(tstat_id=1, mode="HEAT") == {
+        "tstat_id": 1,
+        "mode": "HEAT",
+    }
     assert tstat.build_tstat_get_table_info_payload() == {}
     with pytest.raises(ValueError):
         tstat.build_tstat_get_status_payload(tstat_id=0)
+    with pytest.raises(ValueError):
+        tstat.build_tstat_set_status_payload(tstat_id=1)
+
+    assert kernel.paged
+    route, _merge_fn, request_block = kernel.paged[0]
+    transfer_key = PagedTransferKey(session_id=1, transfer_id=2, route=route)
+    cast(Any, request_block)(2, transfer_key)
+    assert (
+        tstat.ROUTE_TSTAT_GET_CONFIGURED,
+        {"block_id": 2, "opaque": transfer_key},
+    ) in kernel.sent
+
+
+def test_light_register_and_payloads() -> None:
+    kernel = _FakeKernel()
+    light.register(cast(Any, kernel))
+    _assert_registered(
+        kernel,
+        [
+            light.ROUTE_LIGHT_GET_STATUS,
+            light.ROUTE_LIGHT_SET_STATUS,
+            light.ROUTE_LIGHT_GET_CONFIGURED,
+            light.ROUTE_LIGHT_GET_ATTRIBS,
+            light.ROUTE_LIGHT_GET_TABLE_INFO,
+            light.ROUTE_LIGHT_TABLE_INFO,
+        ],
+    )
+    _assert_requests(
+        kernel,
+        [
+            light.ROUTE_LIGHT_GET_STATUS,
+            light.ROUTE_LIGHT_SET_STATUS,
+            light.ROUTE_LIGHT_GET_CONFIGURED,
+            light.ROUTE_LIGHT_GET_ATTRIBS,
+            light.ROUTE_LIGHT_GET_TABLE_INFO,
+        ],
+    )
+    assert light.build_light_get_status_payload(light_id=1) == {"light_id": 1}
+    assert light.build_light_get_attribs_payload(light_id=2) == {"light_id": 2}
+    assert light.build_light_get_configured_payload(block_id=2) == {"block_id": 2}
+    assert light.build_light_set_status_payload(light_id=1, status="on", level=50) == {
+        "light_id": 1,
+        "status": "ON",
+        "level": 50,
+    }
+
+
+def test_barrier_register_and_payloads() -> None:
+    kernel = _FakeKernel()
+    barrier.register(cast(Any, kernel))
+    _assert_registered(
+        kernel,
+        [
+            barrier.ROUTE_BARRIER_GET_STATUS,
+            barrier.ROUTE_BARRIER_SET_STATUS,
+            barrier.ROUTE_BARRIER_GET_CONFIGURED,
+            barrier.ROUTE_BARRIER_GET_ATTRIBS,
+            barrier.ROUTE_BARRIER_GET_TABLE_INFO,
+            barrier.ROUTE_BARRIER_TABLE_INFO,
+        ],
+    )
+    _assert_requests(
+        kernel,
+        [
+            barrier.ROUTE_BARRIER_GET_STATUS,
+            barrier.ROUTE_BARRIER_SET_STATUS,
+            barrier.ROUTE_BARRIER_GET_CONFIGURED,
+            barrier.ROUTE_BARRIER_GET_ATTRIBS,
+            barrier.ROUTE_BARRIER_GET_TABLE_INFO,
+        ],
+    )
+    assert barrier.build_barrier_get_status_payload(barrier_id=1) == {"barrier_id": 1}
+    assert barrier.build_barrier_get_attribs_payload(barrier_id=2) == {"barrier_id": 2}
+    assert barrier.build_barrier_get_configured_payload(block_id=2) == {"block_id": 2}
+    assert barrier.build_barrier_set_status_payload(barrier_id=1, status="open") == {
+        "barrier_id": 1,
+        "status": "OPEN",
+    }
+
+
+def test_lock_register_and_payloads() -> None:
+    kernel = _FakeKernel()
+    lock.register(cast(Any, kernel))
+    _assert_registered(
+        kernel,
+        [
+            lock.ROUTE_LOCK_GET_STATUS,
+            lock.ROUTE_LOCK_SET_STATUS,
+            lock.ROUTE_LOCK_GET_CONFIGURED,
+            lock.ROUTE_LOCK_GET_ATTRIBS,
+            lock.ROUTE_LOCK_GET_TABLE_INFO,
+            lock.ROUTE_LOCK_TABLE_INFO,
+        ],
+    )
+    _assert_requests(
+        kernel,
+        [
+            lock.ROUTE_LOCK_GET_STATUS,
+            lock.ROUTE_LOCK_SET_STATUS,
+            lock.ROUTE_LOCK_GET_CONFIGURED,
+            lock.ROUTE_LOCK_GET_ATTRIBS,
+            lock.ROUTE_LOCK_GET_TABLE_INFO,
+        ],
+    )
+    assert lock.build_lock_get_status_payload(lock_id=1) == {"lock_id": 1}
+    assert lock.build_lock_get_attribs_payload(lock_id=2) == {"lock_id": 2}
+    assert lock.build_lock_get_configured_payload(block_id=2) == {"block_id": 2}
+    assert lock.build_lock_set_status_payload(lock_id=1, status="on") == {
+        "lock_id": 1,
+        "status": "ON",
+    }
 
 
 def test_user_register_and_payloads() -> None:

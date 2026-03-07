@@ -43,3 +43,7 @@ def generator_output_get_all_outputs_status(
     if block_id < 1:
         raise ValueError(f"block_id must be an int >= 1 (got {block_id!r})")
     return {"block_id": block_id}, ("output", "get_all_outputs_status")
+
+
+def generator_output_get_available() -> tuple[dict[str, object], ResponseKey]:
+    return {}, ("output", "get_available")
