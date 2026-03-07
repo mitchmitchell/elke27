@@ -127,6 +127,9 @@ class TableInfo:
     areas: int | None = None
     zones: int | None = None
     outputs: int | None = None
+    lights: int | None = None
+    barriers: int | None = None
+    locks: int | None = None
     tstats: int | None = None
 
 
@@ -220,6 +223,57 @@ class OutputState:
 
 
 @dataclass(frozen=True, slots=True)
+class LightState:
+    """
+    Immutable light state snapshot.
+    """
+
+    light_id: int
+    name: str | None = None
+    state: bool | None = None
+    level: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BarrierState:
+    """
+    Immutable barrier state snapshot.
+    """
+
+    barrier_id: int
+    name: str | None = None
+    status: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class LockState:
+    """
+    Immutable lock state snapshot.
+    """
+
+    lock_id: int
+    name: str | None = None
+    status: str | None = None
+    locked: bool | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ThermostatState:
+    """
+    Immutable thermostat state snapshot.
+    """
+
+    tstat_id: int
+    name: str | None = None
+    temperature: int | None = None
+    cool_setpoint: int | None = None
+    heat_setpoint: int | None = None
+    mode: str | None = None
+    fan_mode: str | None = None
+    humidity: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class PanelSnapshot:
     """
     Immutable, atomic snapshot of panel state.
@@ -236,6 +290,10 @@ class PanelSnapshot:
     zone_definitions: Mapping[int, ZoneDefinition]
     outputs: Mapping[int, OutputState]
     output_definitions: Mapping[int, OutputDefinition]
+    lights: Mapping[int, LightState]
+    barriers: Mapping[int, BarrierState]
+    locks: Mapping[int, LockState]
+    thermostats: Mapping[int, ThermostatState]
     version: int
     updated_at: datetime
 
@@ -250,6 +308,10 @@ class PanelSnapshot:
             zone_definitions={},
             outputs={},
             output_definitions={},
+            lights={},
+            barriers={},
+            locks={},
+            thermostats={},
             version=0,
             updated_at=datetime.min.replace(tzinfo=UTC),
         )

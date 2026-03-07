@@ -10,18 +10,22 @@ from _pytest.monkeypatch import MonkeyPatch
 from elke27_lib import (
     AreaState,
     ArmMode,
+    BarrierState,
     ClientConfig,
     CsmSnapshot,
     DiscoveredPanel,
     Elke27Client,
     Elke27Event,
     EventType,
+    LightState,
     LinkKeys,
+    LockState,
     OutputDefinition,
     OutputState,
     PanelInfo,
     PanelSnapshot,
     TableInfo,
+    ThermostatState,
     ZoneDefinition,
     ZoneState,
     redact_for_diagnostics,
@@ -54,6 +58,10 @@ def test_public_api_types_are_dataclasses_or_enums() -> None:
     assert dataclasses.is_dataclass(AreaState)
     assert dataclasses.is_dataclass(ZoneState)
     assert dataclasses.is_dataclass(OutputState)
+    assert dataclasses.is_dataclass(LightState)
+    assert dataclasses.is_dataclass(BarrierState)
+    assert dataclasses.is_dataclass(LockState)
+    assert dataclasses.is_dataclass(ThermostatState)
     assert dataclasses.is_dataclass(PanelSnapshot)
     assert dataclasses.is_dataclass(ZoneDefinition)
     assert dataclasses.is_dataclass(OutputDefinition)
@@ -66,6 +74,10 @@ def test_public_api_client_instantiation_and_snapshot() -> None:
     snapshot = client.snapshot
     assert isinstance(snapshot, PanelSnapshot)
     assert snapshot.version == 0
+    assert snapshot.lights == {}
+    assert snapshot.barriers == {}
+    assert snapshot.locks == {}
+    assert snapshot.thermostats == {}
 
 
 def test_redaction_returns_json_serializable() -> None:

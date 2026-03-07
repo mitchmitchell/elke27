@@ -114,6 +114,7 @@ from .events import (
     OutputTableInfoUpdated,
     PanelVersionInfoUpdated,
     TstatConfiguredInventoryReady,
+    TstatStatusUpdated,
     TstatTableInfoUpdated,
     UserConfiguredInventoryReady,
     ZoneAttribsUpdated,
@@ -170,7 +171,19 @@ from .types import (
     ZoneDefinition,
 )
 from .types import (
+    BarrierState as V2BarrierState,
+)
+from .types import (
+    LightState as V2LightState,
+)
+from .types import (
+    LockState as V2LockState,
+)
+from .types import (
     OutputState as V2OutputState,
+)
+from .types import (
+    ThermostatState as V2ThermostatState,
 )
 from .types import (
     ZoneState as V2ZoneState,
@@ -565,6 +578,9 @@ class Elke27Client:
             areas=_table_elements_for_domain(self._kernel.state, "area"),
             zones=_table_elements_for_domain(self._kernel.state, "zone"),
             outputs=_table_elements_for_domain(self._kernel.state, "output"),
+            lights=_table_elements_for_domain(self._kernel.state, "light"),
+            barriers=_table_elements_for_domain(self._kernel.state, "barrier"),
+            locks=_table_elements_for_domain(self._kernel.state, "lock"),
             tstats=_table_elements_for_domain(self._kernel.state, "tstat"),
         )
 
@@ -639,6 +655,69 @@ class Elke27Client:
             )
         return types_mod.MappingProxyType(out)
 
+    def _build_light_map(self) -> Mapping[int, V2LightState]:
+        out: dict[int, V2LightState] = {}
+        lights = getattr(self._kernel.state, "lights", {})
+        if isinstance(lights, Mapping):
+            for light_id, light in lights.items():
+                if not isinstance(light_id, int):
+                    continue
+                out[light_id] = V2LightState(
+                    light_id=light_id,
+                    name=getattr(light, "name", None),
+                    state=getattr(light, "on", None),
+                    level=getattr(light, "level", None),
+                )
+        return types_mod.MappingProxyType(out)
+
+    def _build_barrier_map(self) -> Mapping[int, V2BarrierState]:
+        out: dict[int, V2BarrierState] = {}
+        barriers = getattr(self._kernel.state, "barriers", {})
+        if isinstance(barriers, Mapping):
+            for barrier_id, barrier in barriers.items():
+                if not isinstance(barrier_id, int):
+                    continue
+                out[barrier_id] = V2BarrierState(
+                    barrier_id=barrier_id,
+                    name=getattr(barrier, "name", None),
+                    status=getattr(barrier, "status", None),
+                )
+        return types_mod.MappingProxyType(out)
+
+    def _build_lock_map(self) -> Mapping[int, V2LockState]:
+        out: dict[int, V2LockState] = {}
+        locks = getattr(self._kernel.state, "locks", {})
+        if isinstance(locks, Mapping):
+            for lock_id, lock in locks.items():
+                if not isinstance(lock_id, int):
+                    continue
+                out[lock_id] = V2LockState(
+                    lock_id=lock_id,
+                    name=getattr(lock, "name", None),
+                    status=getattr(lock, "status", None),
+                    locked=getattr(lock, "locked", None),
+                )
+        return types_mod.MappingProxyType(out)
+
+    def _build_thermostat_map(self) -> Mapping[int, V2ThermostatState]:
+        out: dict[int, V2ThermostatState] = {}
+        tstats = getattr(self._kernel.state, "tstats", {})
+        if isinstance(tstats, Mapping):
+            for tstat_id, tstat in tstats.items():
+                if not isinstance(tstat_id, int):
+                    continue
+                out[tstat_id] = V2ThermostatState(
+                    tstat_id=tstat_id,
+                    name=getattr(tstat, "name", None),
+                    temperature=getattr(tstat, "temperature", None),
+                    cool_setpoint=getattr(tstat, "cool_setpoint", None),
+                    heat_setpoint=getattr(tstat, "heat_setpoint", None),
+                    mode=getattr(tstat, "mode", None),
+                    fan_mode=getattr(tstat, "fan_mode", None),
+                    humidity=getattr(tstat, "humidity", None),
+                )
+        return types_mod.MappingProxyType(out)
+
     def _replace_snapshot(
         self,
         *,
@@ -649,6 +728,10 @@ class Elke27Client:
         zone_definitions: Mapping[int, ZoneDefinition] | None = None,
         outputs: Mapping[int, V2OutputState] | None = None,
         output_definitions: Mapping[int, OutputDefinition] | None = None,
+        lights: Mapping[int, V2LightState] | None = None,
+        barriers: Mapping[int, V2BarrierState] | None = None,
+        locks: Mapping[int, V2LockState] | None = None,
+        thermostats: Mapping[int, V2ThermostatState] | None = None,
     ) -> None:
         self._snapshot_version += 1
         now = datetime.now(UTC)
@@ -660,6 +743,10 @@ class Elke27Client:
             zone_definitions=zone_definitions or self._snapshot.zone_definitions,
             outputs=outputs or self._snapshot.outputs,
             output_definitions=output_definitions or self._snapshot.output_definitions,
+            lights=lights or self._snapshot.lights,
+            barriers=barriers or self._snapshot.barriers,
+            locks=locks or self._snapshot.locks,
+            thermostats=thermostats or self._snapshot.thermostats,
             version=self._snapshot_version,
             updated_at=now,
         )
@@ -954,6 +1041,10 @@ class Elke27Client:
                     zone_definitions=self._build_zone_definitions(),
                     outputs=self._build_output_map(),
                     output_definitions=self._build_output_definitions(),
+                    lights=self._build_light_map(),
+                    barriers=self._build_barrier_map(),
+                    locks=self._build_lock_map(),
+                    thermostats=self._build_thermostat_map(),
                 )
             else:
                 self._log.error(
@@ -1052,6 +1143,8 @@ class Elke27Client:
             pass
         elif isinstance(evt, LockStatusUpdated):
             pass
+        elif isinstance(evt, TstatStatusUpdated):
+            pass
         elif isinstance(evt, CsmSnapshotUpdated):
             if self._awaiting_reconnect_csm_check:
                 baseline = self._reconnect_csm_snapshot
@@ -1086,6 +1179,7 @@ class Elke27Client:
             LightStatusUpdated.KIND,
             BarrierStatusUpdated.KIND,
             LockStatusUpdated.KIND,
+            TstatStatusUpdated.KIND,
             ZoneStatusUpdated.KIND,
         }:
             if evt.kind == AreaStatusUpdated.KIND and skip_snapshot_update:
@@ -1099,6 +1193,10 @@ class Elke27Client:
                     zone_definitions=self._build_zone_definitions(),
                     outputs=self._build_output_map(),
                     output_definitions=self._build_output_definitions(),
+                    lights=self._build_light_map(),
+                    barriers=self._build_barrier_map(),
+                    locks=self._build_lock_map(),
+                    thermostats=self._build_thermostat_map(),
                 )
         self._maybe_set_ready()
 
@@ -1249,6 +1347,10 @@ class Elke27Client:
                 zone_definitions=self._build_zone_definitions(),
                 outputs=self._build_output_map(),
                 output_definitions=self._build_output_definitions(),
+                lights=self._build_light_map(),
+                barriers=self._build_barrier_map(),
+                locks=self._build_lock_map(),
+                thermostats=self._build_thermostat_map(),
             )
         self._maybe_set_ready()
 
