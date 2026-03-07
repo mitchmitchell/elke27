@@ -5,6 +5,8 @@ tmp/
 trash/
 attic/
 .kash/
+.DS_Store
+**/.DS_Store
 
 # test run logs
 artifacts/test_runs/*.jsonl
