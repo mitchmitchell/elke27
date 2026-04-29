@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import json
 import logging
 import socket
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -40,6 +42,112 @@ def create_udp_socket() -> socket.socket:
     sock.bind(("", 0))
     sock.setblocking(False)
     return sock
+
+
+def _ipv4_broadcast_addresses() -> list[str]:  # pragma: no cover
+    """Return active IPv4 interface broadcast addresses when available."""
+    if sys.platform == "win32":
+        return []
+
+    if sys.platform.startswith(("darwin", "freebsd")):
+
+        class _SockaddrBsd(ctypes.Structure):
+            _fields_ = [
+                ("sa_len", ctypes.c_uint8),
+                ("sa_family", ctypes.c_uint8),
+                ("sa_data", ctypes.c_char * 14),
+            ]
+
+        class _InAddrBsd(ctypes.Structure):
+            _fields_ = [("s_addr", ctypes.c_uint32)]
+
+        class _SockaddrInBsd(ctypes.Structure):
+            _fields_ = [
+                ("sin_len", ctypes.c_uint8),
+                ("sin_family", ctypes.c_uint8),
+                ("sin_port", ctypes.c_uint16),
+                ("sin_addr", _InAddrBsd),
+                ("sin_zero", ctypes.c_char * 8),
+            ]
+
+        sockaddr_type = _SockaddrBsd
+        sockaddr_in_type = _SockaddrInBsd
+
+    else:
+
+        class _SockaddrPosix(ctypes.Structure):
+            _fields_ = [
+                ("sa_family", ctypes.c_ushort),
+                ("sa_data", ctypes.c_char * 14),
+            ]
+
+        class _InAddrPosix(ctypes.Structure):
+            _fields_ = [("s_addr", ctypes.c_uint32)]
+
+        class _SockaddrInPosix(ctypes.Structure):
+            _fields_ = [
+                ("sin_family", ctypes.c_ushort),
+                ("sin_port", ctypes.c_uint16),
+                ("sin_addr", _InAddrPosix),
+                ("sin_zero", ctypes.c_char * 8),
+            ]
+
+        sockaddr_type = _SockaddrPosix
+        sockaddr_in_type = _SockaddrInPosix
+
+    class _IfAddrs(ctypes.Structure):
+        pass
+
+    _IfAddrs._fields_ = [
+        ("ifa_next", ctypes.POINTER(_IfAddrs)),
+        ("ifa_name", ctypes.c_char_p),
+        ("ifa_flags", ctypes.c_uint),
+        ("ifa_addr", ctypes.POINTER(sockaddr_type)),
+        ("ifa_netmask", ctypes.POINTER(sockaddr_type)),
+        ("ifa_dstaddr", ctypes.POINTER(sockaddr_type)),
+        ("ifa_data", ctypes.c_void_p),
+    ]
+
+    libc = ctypes.CDLL(None)
+    getifaddrs = libc.getifaddrs
+    freeifaddrs = libc.freeifaddrs
+    getifaddrs.argtypes = [ctypes.POINTER(ctypes.POINTER(_IfAddrs))]
+    getifaddrs.restype = ctypes.c_int
+    freeifaddrs.argtypes = [ctypes.POINTER(_IfAddrs)]
+    freeifaddrs.restype = None
+
+    ifap = ctypes.POINTER(_IfAddrs)()
+    if getifaddrs(ctypes.byref(ifap)) != 0:
+        return []
+
+    broadcasts: set[str] = set()
+    IFF_UP = 0x1
+    IFF_BROADCAST = 0x2
+    cursor = ifap
+    try:
+        while cursor:
+            current = cursor.contents
+            if (
+                not current.ifa_addr
+                or not current.ifa_dstaddr
+                or (current.ifa_flags & IFF_UP) == 0
+                or (current.ifa_flags & IFF_BROADCAST) == 0
+                or current.ifa_addr.contents.sa_family != socket.AF_INET
+            ):
+                cursor = current.ifa_next
+                continue
+
+            sockaddr_in = ctypes.cast(
+                current.ifa_dstaddr,
+                ctypes.POINTER(sockaddr_in_type),
+            ).contents
+            raw = ctypes.string_at(ctypes.byref(sockaddr_in.sin_addr), 4)
+            broadcasts.add(socket.inet_ntoa(raw))
+            cursor = current.ifa_next
+    finally:
+        freeifaddrs(ifap)
+
+    return sorted(broadcasts)
 
 
 class ELKDiscovery(asyncio.DatagramProtocol):
@@ -102,16 +210,22 @@ class AIOELKDiscovery:
 
     DISCOVERY_PORT: int = 2362
     BROADCAST_FREQUENCY: int = 3
-    DISCOVER_MESSAGE: bytes = b'{ "FIND": "ELKWCID" }'
+    DISCOVER_MESSAGE: bytes = b'{"FIND":"ELKWCID"}'
     BROADCAST_ADDRESS: str = "<broadcast>"
 
     def __init__(self) -> None:
         self.found_devices: list[E27System] = []
 
-    def _destination_from_address(self, address: str | None) -> tuple[str, int]:
-        if address is None:
-            address = self.BROADCAST_ADDRESS
-        return (address, self.DISCOVERY_PORT)
+    def _destinations_from_address(self, address: str | None) -> list[tuple[str, int]]:
+        if address is not None:
+            return [(address, self.DISCOVERY_PORT)]
+
+        broadcast_addresses = _ipv4_broadcast_addresses()
+        if not broadcast_addresses:
+            return [(self.BROADCAST_ADDRESS, self.DISCOVERY_PORT)]
+        return [
+            (broadcast_address, self.DISCOVERY_PORT) for broadcast_address in broadcast_addresses
+        ]
 
     def _process_response(
         self,
@@ -139,13 +253,14 @@ class AIOELKDiscovery:
     async def _async_run_scan(
         self,
         transport: asyncio.DatagramTransport,
-        destination: tuple[str, int],
+        destinations: list[tuple[str, int]],
         timeout: int,
         found_all_future: asyncio.Future[bool],
     ) -> None:
         """Send the scans."""
-        _LOGGER.debug("discover: %s => %s", destination, self.DISCOVER_MESSAGE)
-        transport.sendto(self.DISCOVER_MESSAGE, destination)
+        for destination in destinations:
+            _LOGGER.debug("discover: %s => %s", destination, self.DISCOVER_MESSAGE)
+            transport.sendto(self.DISCOVER_MESSAGE, destination)
         quit_time = time.monotonic() + timeout
         remain_time = float(timeout)
         while True:
@@ -158,8 +273,9 @@ class AIOELKDiscovery:
                 if time.monotonic() >= quit_time:
                     return
                 # No response, send broadcast again in cast it got lost
-                _LOGGER.debug("discover: %s => %s", destination, self.DISCOVER_MESSAGE)
-                transport.sendto(self.DISCOVER_MESSAGE, destination)
+                for destination in destinations:
+                    _LOGGER.debug("discover: %s => %s", destination, self.DISCOVER_MESSAGE)
+                    transport.sendto(self.DISCOVER_MESSAGE, destination)
             else:
                 return  # found_all
             remain_time = quit_time - time.monotonic()
@@ -175,7 +291,7 @@ class AIOELKDiscovery:
         """Discover ELK devices."""
         if sock is None:
             sock = socket_factory() if socket_factory is not None else create_udp_socket()
-        destination = self._destination_from_address(address)
+        destinations = self._destinations_from_address(address)
         found_all_future: asyncio.Future[bool] = asyncio.Future()
         response_list: dict[tuple[str, int], E27System] = {}
 
@@ -186,7 +302,7 @@ class AIOELKDiscovery:
 
         transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(
             lambda: ELKDiscovery(
-                destination=destination,
+                destination=destinations[0],
                 on_response=_on_response,
             ),
             sock=sock,
@@ -194,7 +310,7 @@ class AIOELKDiscovery:
         try:
             await self._async_run_scan(
                 transport,
-                destination,
+                destinations,
                 timeout,
                 found_all_future,
             )

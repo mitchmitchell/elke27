@@ -37,6 +37,8 @@ def test_light_get_status_and_set_status_handlers() -> None:
 
     assert get_status({"nope": {}}, make_ctx()) is False
     assert get_status({"light": {}}, make_ctx()) is False
+    assert set_status({"nope": {}}, make_ctx()) is False
+    assert set_status({"light": {}}, make_ctx()) is False
 
     msg = {"light": {"get_status": {"error_code": 3}}}
     assert get_status(msg, make_ctx()) is True
@@ -57,6 +59,9 @@ def test_light_get_status_and_set_status_handlers() -> None:
     assert state.lights[1].on is False
     assert _any_event(emit, LightStatusUpdated)
 
+    assert get_status({"light": {"get_status": {"light_id": 0}}}, make_ctx()) is False
+    assert set_status({"light": {"set_status": {"light_id": 0}}}, make_ctx()) is False
+
 
 def test_light_configured_attribs_table_handlers() -> None:
     state = PanelState()
@@ -68,6 +73,12 @@ def test_light_configured_attribs_table_handlers() -> None:
     msg = {"light": {"get_configured": {"error_code": 11008}}}
     assert configured(msg, make_ctx()) is True
     assert _any_event(emit, AuthorizationRequiredEvent)
+    assert configured({"nope": {}}, make_ctx()) is False
+    assert configured({"light": {}}, make_ctx()) is False
+
+    emit.events.clear()
+    assert configured({"light": {"get_configured": {"error_code": 7}}}, make_ctx()) is True
+    assert _any_event(emit, ApiError)
 
     emit.events.clear()
     msg = {"light": {"get_configured": {"lights": [1, 2], "block_id": 1, "block_count": 1}}}
@@ -75,6 +86,12 @@ def test_light_configured_attribs_table_handlers() -> None:
     assert state.inventory.configured_lights == {1, 2}
     assert _any_event(emit, LightConfiguredUpdated)
     assert _any_event(emit, LightConfiguredInventoryReady)
+
+    emit.events.clear()
+    state.table_info_by_domain["light"] = {"table_elements": 1}
+    msg = {"light": {"get_configured": {"lights": [1, 2], "block_id": 1, "block_count": 1}}}
+    assert configured(msg, make_ctx()) is True
+    assert state.inventory.configured_lights == {1}
 
     merge = light_handler.make_light_configured_merge(state)
     merged = merge(
@@ -91,6 +108,27 @@ def test_light_configured_attribs_table_handlers() -> None:
     assert attribs(msg, make_ctx()) is True
     assert state.lights[1].name == "Porch"
     assert state.lights[1].area_id == 2
+    assert attribs({"nope": {}}, make_ctx()) is False
+    assert attribs({"light": {}}, make_ctx()) is False
+    assert attribs({"light": {"get_attribs": {"light_id": 0}}}, make_ctx()) is False
+
+    emit.events.clear()
+    assert (
+        attribs({"light": {"get_attribs": {"error_code": 11008, "light_id": 1}}}, make_ctx())
+        is True
+    )
+    assert _any_event(emit, AuthorizationRequiredEvent)
+
+    emit.events.clear()
+    assert attribs({"light": {"get_attribs": {"error_code": 4, "light_id": 1}}}, make_ctx()) is True
+    assert _any_event(emit, ApiError)
+
+    emit.events.clear()
+    assert (
+        table({"light": {"table_info": {"table_elements": 1, "increment_size": 2}}}, make_ctx())
+        is True
+    )
+    assert _any_event(emit, LightTableInfoUpdated)
 
     emit.events.clear()
     state.table_info_known.update({"area", "zone", "output", "tstat"})
@@ -100,6 +138,12 @@ def test_light_configured_attribs_table_handlers() -> None:
     assert _any_event(emit, TableCsmChanged)
     assert _any_event(emit, CsmSnapshotUpdated)
     assert _any_event(emit, BootstrapCountsReady)
+    assert table({"nope": {}}, make_ctx()) is False
+    assert table({"light": {}}, make_ctx()) is False
+
+    emit.events.clear()
+    assert table({"light": {"get_table_info": {"error_code": 5}}}, make_ctx()) is True
+    assert _any_event(emit, ApiError)
 
 
 def test_light_helpers() -> None:
@@ -114,8 +158,23 @@ def test_light_helpers() -> None:
     assert light.name == "A"
     assert light.area_id == 1
     assert light.fields["y"] == 2
+    light_handler._apply_light_status_fields(light, {"level": 5})
+    assert light.on is False or light.on is True
+    light.on = None
+    light_handler._apply_light_status_fields(light, {"level": 5})
+    assert light.on is True
+    light_handler._apply_light_status_fields(light, {"state": False})
+    assert light.status == "OFF"
+    light_handler._apply_light_attribs(light, {"name": "   "})
+    assert light.name is None
 
     assert light_handler._extract_configured_ids({"lights": [1, 2, 2, 0]}, ("lights",)) == [1, 2]
+    assert light_handler._extract_configured_ids({"none": []}, ("lights",)) == []
     assert light_handler._extract_int({"table_elements": 1}, "table_elements") == 1
     assert light_handler._extract_int({"table_elements": "x"}, "table_elements") is None
+    assert light_handler._extract_table_csm({"table_csm": 4}, domain="light") == 4
     assert light_handler._extract_table_csm({"table_csm": "4"}, domain="light") == 4
+    assert light_handler._normalize_name(None) is None
+    assert light_handler._extract_table_csm({"table_csm": True}, domain="light") is None
+    assert light_handler._extract_table_csm({"table_csm": 4.0}, domain="light") == 4
+    assert light_handler._extract_table_csm({"table_csm": "bad"}, domain="light") is None

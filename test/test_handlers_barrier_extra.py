@@ -37,6 +37,10 @@ def test_barrier_status_handlers() -> None:
 
     assert get_status({"barrier": {"get_status": {"error_code": 2}}}, make_ctx()) is True
     assert _any_event(emit, ApiError)
+    assert get_status({"nope": {}}, make_ctx()) is False
+    assert get_status({"barrier": {}}, make_ctx()) is False
+    assert set_status({"nope": {}}, make_ctx()) is False
+    assert set_status({"barrier": {}}, make_ctx()) is False
 
     emit.events.clear()
     msg = {"barrier": {"get_status": {"barrier_id": 1, "status": "opening"}}}
@@ -48,6 +52,8 @@ def test_barrier_status_handlers() -> None:
     msg = {"barrier": {"set_status": {"barrier_id": 1, "status": "close"}}}
     assert set_status(msg, make_ctx()) is True
     assert state.barriers[1].status == "CLOSE"
+    assert get_status({"barrier": {"get_status": {"barrier_id": 0}}}, make_ctx()) is False
+    assert set_status({"barrier": {"set_status": {"barrier_id": 0}}}, make_ctx()) is False
 
 
 def test_barrier_configured_attribs_table_handlers() -> None:
@@ -60,6 +66,12 @@ def test_barrier_configured_attribs_table_handlers() -> None:
     msg = {"barrier": {"get_configured": {"error_code": 11008}}}
     assert configured(msg, make_ctx()) is True
     assert _any_event(emit, AuthorizationRequiredEvent)
+    assert configured({"nope": {}}, make_ctx()) is False
+    assert configured({"barrier": {}}, make_ctx()) is False
+
+    emit.events.clear()
+    assert configured({"barrier": {"get_configured": {"error_code": 7}}}, make_ctx()) is True
+    assert _any_event(emit, ApiError)
 
     emit.events.clear()
     msg = {"barrier": {"get_configured": {"barriers": [1, 2], "block_id": 1, "block_count": 1}}}
@@ -67,6 +79,12 @@ def test_barrier_configured_attribs_table_handlers() -> None:
     assert state.inventory.configured_barriers == {1, 2}
     assert _any_event(emit, BarrierConfiguredUpdated)
     assert _any_event(emit, BarrierConfiguredInventoryReady)
+
+    emit.events.clear()
+    state.table_info_by_domain["barrier"] = {"table_elements": 1}
+    msg = {"barrier": {"get_configured": {"barriers": [1, 2], "block_id": 1, "block_count": 1}}}
+    assert configured(msg, make_ctx()) is True
+    assert state.inventory.configured_barriers == {1}
 
     merge = barrier_handler.make_barrier_configured_merge(state)
     merged = merge(
@@ -82,6 +100,36 @@ def test_barrier_configured_attribs_table_handlers() -> None:
     msg = {"barrier": {"get_attribs": {"barrier_id": 1, "name": " Garage ", "area_id": 1}}}
     assert attribs(msg, make_ctx()) is True
     assert state.barriers[1].name == "Garage"
+    assert attribs({"nope": {}}, make_ctx()) is False
+    assert attribs({"barrier": {}}, make_ctx()) is False
+    assert attribs({"barrier": {"get_attribs": {"barrier_id": 0}}}, make_ctx()) is False
+
+    emit.events.clear()
+    assert (
+        attribs(
+            {"barrier": {"get_attribs": {"error_code": 11008, "barrier_id": 1}}},
+            make_ctx(),
+        )
+        is True
+    )
+    assert _any_event(emit, AuthorizationRequiredEvent)
+
+    emit.events.clear()
+    assert (
+        attribs({"barrier": {"get_attribs": {"error_code": 4, "barrier_id": 1}}}, make_ctx())
+        is True
+    )
+    assert _any_event(emit, ApiError)
+
+    emit.events.clear()
+    assert (
+        table(
+            {"barrier": {"table_info": {"table_elements": 1, "increment_size": 2}}},
+            make_ctx(),
+        )
+        is True
+    )
+    assert _any_event(emit, BarrierTableInfoUpdated)
 
     emit.events.clear()
     state.table_info_known.update({"area", "zone", "output", "tstat"})
@@ -91,6 +139,12 @@ def test_barrier_configured_attribs_table_handlers() -> None:
     assert _any_event(emit, TableCsmChanged)
     assert _any_event(emit, CsmSnapshotUpdated)
     assert _any_event(emit, BootstrapCountsReady)
+    assert table({"nope": {}}, make_ctx()) is False
+    assert table({"barrier": {}}, make_ctx()) is False
+
+    emit.events.clear()
+    assert table({"barrier": {"get_table_info": {"error_code": 5}}}, make_ctx()) is True
+    assert _any_event(emit, ApiError)
 
 
 def test_barrier_helpers() -> None:
@@ -103,7 +157,15 @@ def test_barrier_helpers() -> None:
     assert barrier.name == "A"
     assert barrier.area_id == 1
     assert barrier.fields["y"] == 2
+    barrier_handler._apply_barrier_attribs(barrier, {"name": "   "})
+    assert barrier.name is None
 
     assert barrier_handler._extract_configured_ids({"barriers": [1, 2]}, ("barriers",)) == [1, 2]
+    assert barrier_handler._extract_configured_ids({"none": []}, ("barriers",)) == []
     assert barrier_handler._extract_int({"table_elements": 1}, "table_elements") == 1
+    assert barrier_handler._extract_table_csm({"table_csm": 3}, domain="barrier") == 3
     assert barrier_handler._extract_table_csm({"table_csm": "3"}, domain="barrier") == 3
+    assert barrier_handler._normalize_name(None) is None
+    assert barrier_handler._extract_table_csm({"table_csm": True}, domain="barrier") is None
+    assert barrier_handler._extract_table_csm({"table_csm": 3.0}, domain="barrier") == 3
+    assert barrier_handler._extract_table_csm({"table_csm": "bad"}, domain="barrier") is None

@@ -12,6 +12,7 @@ import pytest
 
 import elke27_lib.client as client_mod
 from elke27_lib.client import Elke27Client, Result
+from elke27_lib.dispatcher import PagedBlock
 from elke27_lib.errors import (
     AuthorizationRequired,
     ConnectionLost,
@@ -26,10 +27,22 @@ from elke27_lib.errors import (
     InvalidPinError,
     ProtocolError,
 )
-from elke27_lib.events import OutputsStatusBulkUpdated, ZonesStatusBulkUpdated, ZoneStatusUpdated
+from elke27_lib.events import (
+    BarrierConfiguredInventoryReady,
+    BarrierStatusUpdated,
+    LightConfiguredInventoryReady,
+    LightStatusUpdated,
+    LockConfiguredInventoryReady,
+    LockStatusUpdated,
+    OutputsStatusBulkUpdated,
+    TstatConfiguredInventoryReady,
+    TstatStatusUpdated,
+    ZonesStatusBulkUpdated,
+    ZoneStatusUpdated,
+)
 from elke27_lib.kernel import E27Kernel, KernelError
 from elke27_lib.permissions import PermissionLevel
-from elke27_lib.states import CsmSnapshot
+from elke27_lib.states import BarrierState, CsmSnapshot, LightState, LockState, TstatState
 
 
 def _patch_send_with_msg(
@@ -178,11 +191,17 @@ async def test_refresh_domain_config_and_helpers(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(client, "_refresh_zone_config", lambda: called.append("zone"))
     monkeypatch.setattr(client, "_refresh_output_config", lambda: called.append("output"))
     monkeypatch.setattr(client, "_refresh_tstat_config", lambda: called.append("tstat"))
+    monkeypatch.setattr(client, "_refresh_light_config", lambda: called.append("light"))
+    monkeypatch.setattr(client, "_refresh_barrier_config", lambda: called.append("barrier"))
+    monkeypatch.setattr(client, "_refresh_lock_config", lambda: called.append("lock"))
 
     await client.async_refresh_domain_config("zone")
     await client.async_refresh_domain_config("output")
     await client.async_refresh_domain_config("tstat")
-    assert called == ["zone", "output", "tstat"]
+    await client.async_refresh_domain_config("light")
+    await client.async_refresh_domain_config("barrier")
+    await client.async_refresh_domain_config("lock")
+    assert called == ["zone", "output", "tstat", "light", "barrier", "lock"]
 
     kernel2 = E27Kernel()
     client2 = Elke27Client(kernel=kernel2)
@@ -193,14 +212,334 @@ async def test_refresh_domain_config_and_helpers(monkeypatch: pytest.MonkeyPatch
         lambda route, **kw: requests.append((route, dict(kw))),
     )
     kernel2.state.inventory.configured_zones = {2, 1}
+    kernel2.state.inventory.configured_lights = {3}
+    kernel2.state.inventory.configured_barriers = {4}
+    kernel2.state.inventory.configured_locks = {5}
+    kernel2.state.inventory.configured_tstats = {6}
     client2._refresh_area_config()
     client2._refresh_zone_config()
     client2._refresh_output_config()
+    client2._refresh_light_config()
+    client2._refresh_barrier_config()
+    client2._refresh_lock_config()
     client2._refresh_tstat_config()
     assert ("zone", "get_table_info") in [item[0] for item in requests]
     assert ("zone", "get_configured") in [item[0] for item in requests]
     assert ("zone", "get_defs") in [item[0] for item in requests]
     assert ("zone", "get_attribs") in [item[0] for item in requests]
+    assert ("light", "get_table_info") in [item[0] for item in requests]
+    assert ("barrier", "get_configured") in [item[0] for item in requests]
+    assert ("lock", "get_configured") in [item[0] for item in requests]
+
+
+def test_build_new_domain_maps_and_filtered_properties() -> None:
+    kernel = E27Kernel()
+    kernel.state.lights = cast(
+        Any,
+        {1: LightState(light_id=1, name="L1", on=True, level=50), "x": object()},
+    )
+    kernel.state.barriers = cast(
+        Any,
+        {2: BarrierState(barrier_id=2, name="B2", status="OPEN"), "x": object()},
+    )
+    kernel.state.locks = cast(
+        Any,
+        {
+            3: LockState(lock_id=3, name="K3", status="ON", locked=True),
+            "x": object(),
+        },
+    )
+    kernel.state.tstats = cast(
+        Any,
+        {
+            4: TstatState(
+                tstat_id=4,
+                name="T4",
+                temperature=71,
+                cool_setpoint=75,
+                heat_setpoint=68,
+                mode="AUTO",
+                fan_mode="ON",
+                humidity=40,
+            ),
+            "x": object(),
+        },
+    )
+    kernel.state.inventory.configured_lights = {1}
+    kernel.state.inventory.configured_barriers = {2}
+    kernel.state.inventory.configured_locks = {3}
+    kernel.state.inventory.configured_tstats = {4}
+    kernel.state.table_info_by_domain["light"] = {"table_elements": 1}
+    kernel.state.table_info_by_domain["barrier"] = {"table_elements": 2}
+    kernel.state.table_info_by_domain["lock"] = {"table_elements": 3}
+    kernel.state.table_info_by_domain["tstat"] = {"table_elements": 4}
+    client = Elke27Client(kernel=kernel)
+
+    assert client._build_light_map()[1].level == 50
+    assert client._build_barrier_map()[2].status == "OPEN"
+    assert client._build_lock_map()[3].locked is True
+    assert client._build_thermostat_map()[4].humidity == 40
+    assert list(client.lights.keys()) == [1]
+    assert list(client.barriers.keys()) == [2]
+    assert list(client.locks.keys()) == [3]
+    assert list(client.thermostats.keys()) == [4]
+
+    client._replace_snapshot(
+        lights=client._build_light_map(),
+        barriers=client._build_barrier_map(),
+        locks=client._build_lock_map(),
+        thermostats=client._build_thermostat_map(),
+    )
+    assert client.snapshot.lights[1].name == "L1"
+    assert client.snapshot.barriers[2].name == "B2"
+    assert client.snapshot.locks[3].name == "K3"
+    assert client.snapshot.thermostats[4].name == "T4"
+
+
+def test_handle_kernel_event_new_domain_inventory_and_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    kernel = E27Kernel()
+    client = Elke27Client(kernel=kernel)
+    calls: list[tuple[str, tuple[int, ...] | None]] = []
+    monkeypatch.setattr(
+        client, "_queue_bootstrap_attribs", lambda domain: calls.append((f"attribs:{domain}", None))
+    )
+    monkeypatch.setattr(
+        client,
+        "_request_initial_statuses",
+        lambda domain, ids: calls.append((f"status:{domain}", tuple(sorted(ids)))),
+    )
+    kernel.state.inventory.configured_lights = {1}
+    kernel.state.inventory.configured_barriers = {2}
+    kernel.state.inventory.configured_locks = {3}
+    kernel.state.inventory.configured_tstats = {4}
+
+    client._handle_kernel_event(
+        LightConfiguredInventoryReady(
+            kind=LightConfiguredInventoryReady.KIND,
+            at=0.0,
+            seq=None,
+            classification="LOCAL",
+            route=("__local__", "x"),
+            session_id=1,
+        )
+    )
+    client._handle_kernel_event(
+        BarrierConfiguredInventoryReady(
+            kind=BarrierConfiguredInventoryReady.KIND,
+            at=0.0,
+            seq=None,
+            classification="LOCAL",
+            route=("__local__", "x"),
+            session_id=1,
+        )
+    )
+    client._handle_kernel_event(
+        LockConfiguredInventoryReady(
+            kind=LockConfiguredInventoryReady.KIND,
+            at=0.0,
+            seq=None,
+            classification="LOCAL",
+            route=("__local__", "x"),
+            session_id=1,
+        )
+    )
+    client._handle_kernel_event(
+        TstatConfiguredInventoryReady(
+            kind=TstatConfiguredInventoryReady.KIND,
+            at=0.0,
+            seq=None,
+            classification="LOCAL",
+            route=("__local__", "x"),
+            session_id=1,
+        )
+    )
+    client._handle_kernel_event(
+        LightStatusUpdated(
+            kind=LightStatusUpdated.KIND,
+            at=0.0,
+            seq=None,
+            classification="LOCAL",
+            route=("__local__", "x"),
+            session_id=1,
+            light_id=1,
+            status="ON",
+            on=True,
+            level=50,
+        )
+    )
+    client._handle_kernel_event(
+        LockStatusUpdated(
+            kind=LockStatusUpdated.KIND,
+            at=0.0,
+            seq=None,
+            classification="LOCAL",
+            route=("__local__", "x"),
+            session_id=1,
+            lock_id=3,
+            status="ON",
+            locked=True,
+        )
+    )
+    client._handle_kernel_event(
+        BarrierStatusUpdated(
+            kind=BarrierStatusUpdated.KIND,
+            at=0.0,
+            seq=None,
+            classification="LOCAL",
+            route=("__local__", "x"),
+            session_id=1,
+            barrier_id=2,
+            status="OPEN",
+        )
+    )
+    client._handle_kernel_event(
+        TstatStatusUpdated(
+            kind=TstatStatusUpdated.KIND,
+            at=0.0,
+            seq=None,
+            classification="LOCAL",
+            route=("__local__", "x"),
+            session_id=1,
+            tstat_id=4,
+            mode="HEAT",
+            fan_mode="AUTO",
+            temperature=72,
+        )
+    )
+    assert ("attribs:light", None) in calls
+    assert ("status:light", (1,)) in calls
+    assert ("attribs:barrier", None) in calls
+    assert ("status:barrier", (2,)) in calls
+    assert ("attribs:lock", None) in calls
+    assert ("status:lock", (3,)) in calls
+    assert ("attribs:tstat", None) in calls
+    assert ("status:tstat", (4,)) in calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command_key", "configured_key", "param_name"),
+    [
+        ("light_get_attribs", "light_get_configured", "light_id"),
+        ("barrier_get_attribs", "barrier_get_configured", "barrier_id"),
+        ("lock_get_attribs", "lock_get_configured", "lock_id"),
+        ("tstat_get_attribs", "tstat_get_configured", "tstat_id"),
+    ],
+)
+async def test_async_execute_prefetch_new_domain_failure_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    command_key: str,
+    configured_key: str,
+    param_name: str,
+) -> None:
+    kernel = E27Kernel()
+    client = Elke27Client(kernel=kernel)
+    original_async_execute = client.async_execute
+
+    async def _wrapped(command: str, /, **params: Any) -> Result[Mapping[str, Any]]:
+        if command == configured_key:
+            return Result(ok=False, data=None, error=ProtocolError("prefetch failed"))
+        return await original_async_execute(command, **params)
+
+    monkeypatch.setattr(client, "async_execute", _wrapped)
+    monkeypatch.setattr(client, "_enforce_permissions", lambda *_a, **_k: None)
+
+    result = await original_async_execute(command_key, **{param_name: 2})
+    assert result.ok is False
+    assert isinstance(result.error, ProtocolError)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command_key", "configured_key", "payload_key", "entity_id", "response_msg"),
+    [
+        (
+            "light_get_attribs",
+            "light_get_configured",
+            "lights",
+            "light_id",
+            {"light": {"get_attribs": {"light_id": 2}}},
+        ),
+        (
+            "barrier_get_attribs",
+            "barrier_get_configured",
+            "barriers",
+            "barrier_id",
+            {"barrier": {"get_attribs": {"barrier_id": 2}}},
+        ),
+        (
+            "lock_get_attribs",
+            "lock_get_configured",
+            "locks",
+            "lock_id",
+            {"lock": {"get_attribs": {"lock_id": 2}}},
+        ),
+        (
+            "tstat_get_attribs",
+            "tstat_get_configured",
+            "tstats",
+            "tstat_id",
+            {"tstat": {"get_attribs": {"tstat_id": 2}}},
+        ),
+    ],
+)
+async def test_async_execute_prefetches_new_domain_configured_inventory(
+    monkeypatch: pytest.MonkeyPatch,
+    command_key: str,
+    configured_key: str,
+    payload_key: str,
+    entity_id: str,
+    response_msg: Mapping[str, Any],
+) -> None:
+    kernel = E27Kernel()
+    client = Elke27Client(kernel=kernel)
+    original_async_execute = client.async_execute
+
+    async def _wrapped(command: str, /, **params: Any) -> Result[Mapping[str, Any]]:
+        if command == configured_key:
+            return Result(ok=True, data={payload_key: [2]}, error=None)
+        return await original_async_execute(command, **params)
+
+    monkeypatch.setattr(client, "async_execute", _wrapped)
+    monkeypatch.setattr(client, "_enforce_permissions", lambda *_a, **_k: None)
+    _patch_send_with_msg(monkeypatch, kernel, response_msg)
+
+    result = await original_async_execute(command_key, **{entity_id: 2})
+    assert result.ok is True
+    inventory = kernel.state.inventory
+    assert getattr(inventory, f"configured_{payload_key}") == {2}
+
+
+def test_merge_strategy_and_merge_helpers_for_new_domains() -> None:
+    client = Elke27Client(kernel=E27Kernel())
+    assert client._resolve_merge_strategy("light_configured") is not None
+    assert client._resolve_merge_strategy("barrier_configured") is not None
+    assert client._resolve_merge_strategy("lock_configured") is not None
+    assert client._resolve_merge_strategy("tstat_configured") is not None
+
+    blocks = [
+        PagedBlock(
+            block_id=1, payload={"lights": [1], "barriers": [2], "locks": [3], "tstats": [4]}
+        ),
+        PagedBlock(
+            block_id=2,
+            payload={
+                "configured_light_ids": [1, 5],
+                "configured_barrier_ids": [2, 6],
+                "configured_lock_ids": [3, 7],
+                "configured_tstat_ids": [4, 8],
+            },
+        ),
+    ]
+    assert client_mod._merge_configured_lights(blocks, 2) == {"lights": [1, 5], "block_count": 2}
+    assert client_mod._merge_configured_barriers(blocks, 2) == {
+        "barriers": [2, 6],
+        "block_count": 2,
+    }
+    assert client_mod._merge_configured_locks(blocks, 2) == {"locks": [3, 7], "block_count": 2}
+    assert client_mod._merge_configured_tstats(blocks, 2) == {"tstats": [4, 8], "block_count": 2}
 
 
 @pytest.mark.asyncio

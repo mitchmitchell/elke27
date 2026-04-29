@@ -72,18 +72,52 @@ async def test_async_run_scan_respects_future() -> None:
     fut: asyncio.Future[bool] = asyncio.Future()
     fut.set_result(True)
     await scanner._async_run_scan(
-        cast(asyncio.DatagramTransport, _Transport()), ("255.255.255.255", 2362), 1, fut
+        cast(asyncio.DatagramTransport, _Transport()),
+        [("255.255.255.255", 2362), ("192.0.2.255", 2362)],
+        1,
+        fut,
     )
-    assert sent
+    assert sent == [
+        (scanner.DISCOVER_MESSAGE, ("255.255.255.255", 2362)),
+        (scanner.DISCOVER_MESSAGE, ("192.0.2.255", 2362)),
+    ]
 
 
 def test_destination_from_address() -> None:
     scanner = discovery.AIOELKDiscovery()
-    assert scanner._destination_from_address(None) == (
-        scanner.BROADCAST_ADDRESS,
-        scanner.DISCOVERY_PORT,
+    assert scanner._destinations_from_address("192.0.2.1") == [
+        ("192.0.2.1", scanner.DISCOVERY_PORT)
+    ]
+
+
+def test_destinations_from_address_uses_broadcast_interfaces(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scanner = discovery.AIOELKDiscovery()
+    monkeypatch.setattr(
+        discovery,
+        "_ipv4_broadcast_addresses",
+        lambda: ["10.0.0.255", "192.0.2.255"],
     )
-    assert scanner._destination_from_address("192.0.2.1") == ("192.0.2.1", scanner.DISCOVERY_PORT)
+    assert scanner._destinations_from_address(None) == [
+        ("10.0.0.255", scanner.DISCOVERY_PORT),
+        ("192.0.2.255", scanner.DISCOVERY_PORT),
+    ]
+
+
+def test_destinations_from_address_falls_back_to_generic_broadcast(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scanner = discovery.AIOELKDiscovery()
+    monkeypatch.setattr(discovery, "_ipv4_broadcast_addresses", lambda: [])
+    assert scanner._destinations_from_address(None) == [
+        (scanner.BROADCAST_ADDRESS, scanner.DISCOVERY_PORT),
+    ]
+
+
+def test_discover_message_matches_panel_expected_wire_format() -> None:
+    scanner = discovery.AIOELKDiscovery()
+    assert scanner.DISCOVER_MESSAGE == b'{"FIND":"ELKWCID"}'
 
 
 def test_create_udp_socket_nonblocking() -> None:
@@ -142,9 +176,15 @@ async def test_async_run_scan_zero_timeout() -> None:
 
     fut: asyncio.Future[bool] = asyncio.Future()
     await scanner._async_run_scan(
-        cast(asyncio.DatagramTransport, _Transport()), ("255.255.255.255", 2362), 0, fut
+        cast(asyncio.DatagramTransport, _Transport()),
+        [("255.255.255.255", 2362), ("192.0.2.255", 2362)],
+        0,
+        fut,
     )
-    assert sent
+    assert sent == [
+        (scanner.DISCOVER_MESSAGE, ("255.255.255.255", 2362)),
+        (scanner.DISCOVER_MESSAGE, ("192.0.2.255", 2362)),
+    ]
 
 
 @pytest.mark.asyncio
@@ -168,9 +208,12 @@ async def test_async_run_scan_timeout_retry(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(discovery.time, "monotonic", _fake_monotonic)
     fut: asyncio.Future[bool] = asyncio.Future()
     await scanner._async_run_scan(
-        cast(asyncio.DatagramTransport, _Transport()), ("255.255.255.255", 2362), 1, fut
+        cast(asyncio.DatagramTransport, _Transport()),
+        [("255.255.255.255", 2362), ("192.0.2.255", 2362)],
+        1,
+        fut,
     )
-    assert len(sent) >= 2
+    assert len(sent) >= 4
 
 
 @pytest.mark.asyncio
@@ -201,6 +244,9 @@ async def test_async_scan_uses_socket_factory(monkeypatch: pytest.MonkeyPatch) -
         scanner,
         "_process_response",
         lambda *_args, **_kwargs: (created.setdefault("processed", True) or True),
+    )
+    monkeypatch.setattr(
+        scanner, "_destinations_from_address", lambda _address: [("192.0.2.255", 2362)]
     )
 
     def _socket_factory() -> socket.socket:

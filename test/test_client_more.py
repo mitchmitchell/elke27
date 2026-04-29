@@ -113,16 +113,28 @@ def test_request_initial_statuses_and_attribs_exceptions(monkeypatch: pytest.Mon
     client._request_initial_statuses("area", {1})
     client._request_initial_statuses("zone", {1})
     client._request_initial_statuses("output", {1})
+    client._request_initial_statuses("light", {1})
+    client._request_initial_statuses("barrier", {1})
+    client._request_initial_statuses("lock", {1})
+    client._request_initial_statuses("tstat", {1})
 
     inv = kernel.state.inventory
     inv.configured_areas = {1}
     inv.configured_zones = {1}
     inv.configured_outputs = {1}
+    inv.configured_lights = {1}
+    inv.configured_barriers = {1}
+    inv.configured_locks = {1}
+    inv.configured_tstats = {1}
     inv.configured_users = {1}
     inv.configured_keypads = {1}
     client._queue_bootstrap_attribs("area")
     client._queue_bootstrap_attribs("zone")
     client._queue_bootstrap_attribs("output")
+    client._queue_bootstrap_attribs("light")
+    client._queue_bootstrap_attribs("barrier")
+    client._queue_bootstrap_attribs("lock")
+    client._queue_bootstrap_attribs("tstat")
     client._queue_bootstrap_attribs("user")
     client._queue_bootstrap_attribs("keypad")
 

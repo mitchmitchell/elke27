@@ -137,6 +137,21 @@ def test_generator_tstat_validations() -> None:
         generators.tstat.generator_tstat_get_attribs(tstat_id=0)
     with pytest.raises(ValueError):
         generators.tstat.generator_tstat_set_status(tstat_id=1)
+    with pytest.raises(ValueError):
+        generators.tstat.generator_tstat_set_status(tstat_id=0, mode="HEAT")
+    payload, route = generators.tstat.generator_tstat_set_status(
+        tstat_id=1,
+        fan_mode="ON",
+        cool_setpoint=82,
+        heat_setpoint=68,
+    )
+    assert payload == {
+        "tstat_id": 1,
+        "fan_mode": "ON",
+        "cool_setpoint": 82,
+        "heat_setpoint": 68,
+    }
+    assert route == ("tstat", "set_status")
 
 
 def test_generator_light_validations() -> None:
@@ -163,6 +178,12 @@ def test_generator_light_validations() -> None:
         generators.light.generator_light_get_status(light_id=0)
     with pytest.raises(ValueError):
         generators.light.generator_light_set_status(light_id=1)
+    with pytest.raises(ValueError):
+        generators.light.generator_light_set_status(light_id=0, status="ON")
+    with pytest.raises(ValueError):
+        generators.light.generator_light_set_status(light_id=1, status="bad")
+    with pytest.raises(ValueError):
+        generators.light.generator_light_set_status(light_id=1, level=101)
 
 
 def test_generator_barrier_validations() -> None:
@@ -189,6 +210,8 @@ def test_generator_barrier_validations() -> None:
         generators.barrier.generator_barrier_get_status(barrier_id=0)
     with pytest.raises(ValueError):
         generators.barrier.generator_barrier_set_status(barrier_id=1, status="BAD")
+    with pytest.raises(ValueError):
+        generators.barrier.generator_barrier_set_status(barrier_id=0, status="OPEN")
 
 
 def test_generator_lock_validations() -> None:
@@ -215,6 +238,8 @@ def test_generator_lock_validations() -> None:
         generators.lock.generator_lock_get_status(lock_id=0)
     with pytest.raises(ValueError):
         generators.lock.generator_lock_set_status(lock_id=1, status="BAD")
+    with pytest.raises(ValueError):
+        generators.lock.generator_lock_set_status(lock_id=0, status="ON")
 
 
 def test_generator_user_validations() -> None:

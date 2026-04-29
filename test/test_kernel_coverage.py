@@ -454,6 +454,14 @@ def test_is_valid_attrib_id() -> None:
     assert kernel._is_valid_attrib_id("zone", 2) is False
     inv.configured_outputs = {1}
     assert kernel._is_valid_attrib_id("output", 2) is False
+    inv.configured_lights = {1}
+    assert kernel._is_valid_attrib_id("light", 2) is False
+    inv.configured_barriers = {1}
+    assert kernel._is_valid_attrib_id("barrier", 2) is False
+    inv.configured_locks = {1}
+    assert kernel._is_valid_attrib_id("lock", 2) is False
+    inv.configured_tstats = {1}
+    assert kernel._is_valid_attrib_id("tstat", 2) is False
     inv.configured_users = {1}
     assert kernel._is_valid_attrib_id("user", 2) is False
     inv.configured_keypads = {1}

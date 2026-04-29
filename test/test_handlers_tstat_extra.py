@@ -37,6 +37,8 @@ def test_tstat_get_status_and_set_status_handlers() -> None:
 
     assert get_status({"nope": {}}, make_ctx()) is False
     assert get_status({"tstat": {}}, make_ctx()) is False
+    assert set_status({"nope": {}}, make_ctx()) is False
+    assert set_status({"tstat": {}}, make_ctx()) is False
 
     msg = {"tstat": {"get_status": {"error_code": 3}}}
     assert get_status(msg, make_ctx()) is True
@@ -68,6 +70,13 @@ def test_tstat_get_status_and_set_status_handlers() -> None:
     assert state.tstats[1].mode == "COOL"
     assert state.tstats[1].cool_setpoint == 72
     assert _any_event(emit, TstatStatusUpdated)
+    emit.events.clear()
+    assert (
+        set_status({"tstat": {"set_status": {"error_code": 4, "tstat_id": 1}}}, make_ctx()) is True
+    )
+    assert _any_event(emit, ApiError)
+    assert get_status({"tstat": {"get_status": {"tstat_id": 0}}}, make_ctx()) is False
+    assert set_status({"tstat": {"set_status": {"tstat_id": 0}}}, make_ctx()) is False
 
 
 def test_tstat_configured_attribs_table_handlers() -> None:
@@ -80,6 +89,12 @@ def test_tstat_configured_attribs_table_handlers() -> None:
     msg = {"tstat": {"get_configured": {"error_code": 11008}}}
     assert configured(msg, make_ctx()) is True
     assert _any_event(emit, AuthorizationRequiredEvent)
+    assert configured({"nope": {}}, make_ctx()) is False
+    assert configured({"tstat": {}}, make_ctx()) is False
+
+    emit.events.clear()
+    assert configured({"tstat": {"get_configured": {"error_code": 7}}}, make_ctx()) is True
+    assert _any_event(emit, ApiError)
 
     emit.events.clear()
     msg = {"tstat": {"get_configured": {"tstats": [1, 2], "block_id": 1, "block_count": 1}}}
@@ -88,6 +103,12 @@ def test_tstat_configured_attribs_table_handlers() -> None:
     assert state.inventory.configured_tstats_complete is True
     assert _any_event(emit, TstatConfiguredUpdated)
     assert _any_event(emit, TstatConfiguredInventoryReady)
+
+    emit.events.clear()
+    state.table_info_by_domain["tstat"] = {"table_elements": 1}
+    msg = {"tstat": {"get_configured": {"tstats": [1, 2], "block_id": 1, "block_count": 1}}}
+    assert configured(msg, make_ctx()) is True
+    assert state.inventory.configured_tstats == {1}
 
     merge = tstat_handler.make_tstat_configured_merge(state)
     merged = merge(
@@ -104,6 +125,27 @@ def test_tstat_configured_attribs_table_handlers() -> None:
     assert attribs(msg, make_ctx()) is True
     assert state.tstats[1].name == "Upstairs"
     assert state.tstats[1].fields["x"] == 1
+    assert attribs({"nope": {}}, make_ctx()) is False
+    assert attribs({"tstat": {}}, make_ctx()) is False
+    assert attribs({"tstat": {"get_attribs": {"tstat_id": 0}}}, make_ctx()) is False
+
+    emit.events.clear()
+    assert (
+        attribs({"tstat": {"get_attribs": {"error_code": 11008, "tstat_id": 1}}}, make_ctx())
+        is True
+    )
+    assert _any_event(emit, AuthorizationRequiredEvent)
+
+    emit.events.clear()
+    assert attribs({"tstat": {"get_attribs": {"error_code": 4, "tstat_id": 1}}}, make_ctx()) is True
+    assert _any_event(emit, ApiError)
+
+    emit.events.clear()
+    assert (
+        table({"tstat": {"table_info": {"table_elements": 1, "increment_size": 2}}}, make_ctx())
+        is True
+    )
+    assert _any_event(emit, TstatTableInfoUpdated)
 
     emit.events.clear()
     state.table_info_known.update({"area", "zone", "output"})
@@ -113,6 +155,12 @@ def test_tstat_configured_attribs_table_handlers() -> None:
     assert _any_event(emit, TableCsmChanged)
     assert _any_event(emit, CsmSnapshotUpdated)
     assert _any_event(emit, BootstrapCountsReady)
+    assert table({"nope": {}}, make_ctx()) is False
+    assert table({"tstat": {}}, make_ctx()) is False
+
+    emit.events.clear()
+    assert table({"tstat": {"get_table_info": {"error_code": 5}}}, make_ctx()) is True
+    assert _any_event(emit, ApiError)
 
 
 def test_tstat_helpers() -> None:
@@ -140,12 +188,27 @@ def test_tstat_helpers() -> None:
     assert tstat.battery_level == 93
     assert tstat.prec == [1, 2]
     assert tstat.fields["extra"] == 1
+    assert "extra" in changed
+
+    changed.clear()
+    tstat_handler._apply_tstat_status_fields(tstat, {"prec": [1, "bad"]}, changed)
+    assert "prec" not in changed
 
     changed.clear()
     tstat_handler._apply_tstat_attribs(tstat, {"name": " Main ", "a": 1}, changed)
     assert tstat.name == "Main"
     assert tstat.fields["a"] == 1
+    changed.clear()
+    tstat_handler._apply_tstat_attribs(tstat, {"name": "   "}, changed)
+    assert tstat.name is None
+    assert "name" in changed
+    changed.clear()
+    tstat_handler._maybe_set(tstat, "mode", None, changed)
+    assert changed == set()
 
     assert tstat_handler._extract_configured_tstat_ids({"tstats": [1, 2, 2]}) == [1, 2]
     assert tstat_handler._extract_configured_tstat_ids({"none": []}) == []
     assert tstat_handler._extract_table_csm({"table_csm": "3"}, domain="tstat") == 3
+    assert tstat_handler._extract_table_csm({"table_csm": True}, domain="tstat") is None
+    assert tstat_handler._extract_table_csm({"table_csm": 3.0}, domain="tstat") == 3
+    assert tstat_handler._extract_table_csm({"table_csm": "bad"}, domain="tstat") is None

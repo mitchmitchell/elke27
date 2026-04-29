@@ -203,6 +203,8 @@ def test_output_register_and_payloads() -> None:
     with pytest.raises(ValueError):
         output.build_output_get_status_payload(output_id=0)
     with pytest.raises(ValueError):
+        output.build_output_set_status_payload(output_id=0, status="on")
+    with pytest.raises(ValueError):
         output.build_output_set_status_payload(output_id=2, status="bad")
     with pytest.raises(ValueError):
         output.build_output_get_attribs_payload(output_id=0)
@@ -380,11 +382,28 @@ def test_tstat_register_and_payloads() -> None:
         "tstat_id": 1,
         "mode": "HEAT",
     }
+    assert tstat.build_tstat_set_status_payload(
+        tstat_id=1,
+        fan_mode="ON",
+        cool_setpoint=80,
+        heat_setpoint=68,
+    ) == {
+        "tstat_id": 1,
+        "fan_mode": "ON",
+        "cool_setpoint": 80,
+        "heat_setpoint": 68,
+    }
     assert tstat.build_tstat_get_table_info_payload() == {}
     with pytest.raises(ValueError):
         tstat.build_tstat_get_status_payload(tstat_id=0)
     with pytest.raises(ValueError):
         tstat.build_tstat_set_status_payload(tstat_id=1)
+    with pytest.raises(ValueError):
+        tstat.build_tstat_set_status_payload(tstat_id=0, mode="HEAT")
+    with pytest.raises(ValueError):
+        tstat.build_tstat_get_configured_payload(block_id=0)
+    with pytest.raises(ValueError):
+        tstat.build_tstat_get_attribs_payload(tstat_id=0)
 
     assert kernel.paged
     route, _merge_fn, request_block = kernel.paged[0]
@@ -428,6 +447,30 @@ def test_light_register_and_payloads() -> None:
         "status": "ON",
         "level": 50,
     }
+    assert light.build_light_get_table_info_payload() == {}
+    with pytest.raises(ValueError):
+        light.build_light_get_status_payload(light_id=0)
+    with pytest.raises(ValueError):
+        light.build_light_set_status_payload(light_id=0, status="ON")
+    with pytest.raises(ValueError):
+        light.build_light_set_status_payload(light_id=1, status="BAD")
+    with pytest.raises(ValueError):
+        light.build_light_set_status_payload(light_id=1, level=101)
+    with pytest.raises(ValueError):
+        light.build_light_set_status_payload(light_id=1)
+    with pytest.raises(ValueError):
+        light.build_light_get_attribs_payload(light_id=0)
+    with pytest.raises(ValueError):
+        light.build_light_get_configured_payload(block_id=0)
+
+    assert kernel.paged
+    route, _merge_fn, request_block = kernel.paged[0]
+    transfer_key = PagedTransferKey(session_id=1, transfer_id=2, route=route)
+    cast(Any, request_block)(2, transfer_key)
+    assert (
+        light.ROUTE_LIGHT_GET_CONFIGURED,
+        {"block_id": 2, "opaque": transfer_key},
+    ) in kernel.sent
 
 
 def test_barrier_register_and_payloads() -> None:
@@ -461,6 +504,26 @@ def test_barrier_register_and_payloads() -> None:
         "barrier_id": 1,
         "status": "OPEN",
     }
+    assert barrier.build_barrier_get_table_info_payload() == {}
+    with pytest.raises(ValueError):
+        barrier.build_barrier_get_status_payload(barrier_id=0)
+    with pytest.raises(ValueError):
+        barrier.build_barrier_set_status_payload(barrier_id=0, status="OPEN")
+    with pytest.raises(ValueError):
+        barrier.build_barrier_set_status_payload(barrier_id=1, status="BAD")
+    with pytest.raises(ValueError):
+        barrier.build_barrier_get_attribs_payload(barrier_id=0)
+    with pytest.raises(ValueError):
+        barrier.build_barrier_get_configured_payload(block_id=0)
+
+    assert kernel.paged
+    route, _merge_fn, request_block = kernel.paged[0]
+    transfer_key = PagedTransferKey(session_id=1, transfer_id=2, route=route)
+    cast(Any, request_block)(2, transfer_key)
+    assert (
+        barrier.ROUTE_BARRIER_GET_CONFIGURED,
+        {"block_id": 2, "opaque": transfer_key},
+    ) in kernel.sent
 
 
 def test_lock_register_and_payloads() -> None:
@@ -494,6 +557,26 @@ def test_lock_register_and_payloads() -> None:
         "lock_id": 1,
         "status": "ON",
     }
+    assert lock.build_lock_get_table_info_payload() == {}
+    with pytest.raises(ValueError):
+        lock.build_lock_get_status_payload(lock_id=0)
+    with pytest.raises(ValueError):
+        lock.build_lock_set_status_payload(lock_id=0, status="ON")
+    with pytest.raises(ValueError):
+        lock.build_lock_set_status_payload(lock_id=1, status="BAD")
+    with pytest.raises(ValueError):
+        lock.build_lock_get_attribs_payload(lock_id=0)
+    with pytest.raises(ValueError):
+        lock.build_lock_get_configured_payload(block_id=0)
+
+    assert kernel.paged
+    route, _merge_fn, request_block = kernel.paged[0]
+    transfer_key = PagedTransferKey(session_id=1, transfer_id=2, route=route)
+    cast(Any, request_block)(2, transfer_key)
+    assert (
+        lock.ROUTE_LOCK_GET_CONFIGURED,
+        {"block_id": 2, "opaque": transfer_key},
+    ) in kernel.sent
 
 
 def test_user_register_and_payloads() -> None:
