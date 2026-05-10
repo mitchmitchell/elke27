@@ -490,6 +490,12 @@ class Elke27Client:
             raise Elke27InvalidArgument("client_identity requires non-empty mn and sn.")
         return linking_mod.E27Identity(mn=mn, sn=sn, fwver=fwver, hwver=hwver, osver=osver)
 
+    def set_client_identity(
+        self, client_identity: Mapping[str, str] | linking_mod.E27Identity
+    ) -> None:
+        """Set the protocol identity used for linking and future connections."""
+        self._v2_client_identity = self._coerce_identity(client_identity)
+
     @staticmethod
     def _coerce_link_keys(link_keys: LinkKeys) -> linking_mod.E27LinkKeys:
         return linking_mod.E27LinkKeys(
@@ -1283,8 +1289,9 @@ class Elke27Client:
         if client_identity is None:
             raise Elke27InvalidArgument("client_identity is required for linking.")
 
-        identity = self._coerce_identity(client_identity)
-        self._v2_client_identity = identity
+        self.set_client_identity(client_identity)
+        identity = self._v2_client_identity
+        assert identity is not None
         panel = {"host": host, "port": port}
 
         @dataclass(frozen=True)

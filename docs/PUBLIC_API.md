@@ -38,6 +38,12 @@ async def main():
         client_identity={"mn": "HA", "sn": "SN", "fwver": "0", "hwver": "0", "osver": "0"},
         timeout_s=10.0,
     )
+
+    # On later starts, after loading persisted link keys, set the same client
+    # identity before connecting so HELLO uses the original provisioned identity.
+    client.set_client_identity(
+        {"mn": "HA", "sn": "SN", "fwver": "0", "hwver": "0", "osver": "0"}
+    )
     await client.async_connect(panel.host, panel.port, link_keys)
     ready = client.wait_ready(timeout_s=10.0)
     if not ready:

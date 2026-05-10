@@ -80,6 +80,18 @@ def test_public_api_client_instantiation_and_snapshot() -> None:
     assert snapshot.thermostats == {}
 
 
+def test_set_client_identity_configures_future_connects() -> None:
+    client = Elke27Client()
+    client.set_client_identity({"mn": "222", "sn": "112233445566"})
+
+    assert client._v2_client_identity is not None
+    assert client._v2_client_identity.mn == "222"
+    assert client._v2_client_identity.sn == "112233445566"
+
+    with pytest.raises(ValueError):
+        client.set_client_identity(object())  # type: ignore[arg-type]
+
+
 def test_redaction_returns_json_serializable() -> None:
     data = {"access_code": "1234", "nested": {"token": "abc"}, "count": 1}
     redacted = redact_for_diagnostics(data)
