@@ -8,6 +8,7 @@ import pytest
 from _pytest.monkeypatch import MonkeyPatch
 
 from elke27_lib import (
+    Area,
     AreaState,
     ArmMode,
     BarrierState,
@@ -16,6 +17,7 @@ from elke27_lib import (
     DiscoveredPanel,
     Elke27Client,
     Elke27Event,
+    Elke27Hub,
     EventType,
     LightState,
     LinkKeys,
@@ -24,8 +26,10 @@ from elke27_lib import (
     OutputState,
     PanelInfo,
     PanelSnapshot,
+    Snapshot,
     TableInfo,
     ThermostatState,
+    Zone,
     ZoneDefinition,
     ZoneState,
     redact_for_diagnostics,
@@ -63,6 +67,9 @@ def test_public_api_types_are_dataclasses_or_enums() -> None:
     assert dataclasses.is_dataclass(LockState)
     assert dataclasses.is_dataclass(ThermostatState)
     assert dataclasses.is_dataclass(PanelSnapshot)
+    assert Snapshot is PanelSnapshot
+    assert Area is AreaState
+    assert Zone is ZoneState
     assert dataclasses.is_dataclass(ZoneDefinition)
     assert dataclasses.is_dataclass(OutputDefinition)
     assert issubclass(EventType, Enum)
@@ -73,6 +80,10 @@ def test_public_api_client_instantiation_and_snapshot() -> None:
     client = Elke27Client()
     snapshot = client.snapshot
     assert isinstance(snapshot, PanelSnapshot)
+    assert client.get_snapshot() is snapshot
+    assert client.get_area(1) is None
+    assert client.get_zone(1) is None
+    assert snapshot.faulted_zones == ()
     assert snapshot.version == 0
     assert snapshot.lights == {}
     assert snapshot.barriers == {}
@@ -90,6 +101,53 @@ def test_set_client_identity_configures_future_connects() -> None:
 
     with pytest.raises(ValueError):
         client.set_client_identity(object())  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_public_hub_wraps_client() -> None:
+    calls: list[object] = []
+    snapshot = PanelSnapshot.empty()
+
+    class FakeClient:
+        def set_client_identity(self, identity: dict[str, str]) -> None:
+            calls.append(("identity", identity))
+
+        async def async_connect(self, host: str, port: int, link_keys: LinkKeys) -> None:
+            calls.append(("connect", host, port, link_keys))
+
+        async def async_disconnect(self) -> None:
+            calls.append("disconnect")
+
+        def get_snapshot(self) -> PanelSnapshot:
+            return snapshot
+
+        def get_area(self, area_id: int) -> AreaState | None:
+            calls.append(("area", area_id))
+            return None
+
+        def get_zone(self, zone_id: int) -> ZoneState | None:
+            calls.append(("zone", zone_id))
+            return None
+
+        def subscribe_typed(self, callback: Callable[[object], None]) -> Callable[[], bool]:
+            calls.append(("subscribe", callback))
+            return lambda: True
+
+    keys = LinkKeys("tk", "lk", "lh")
+    client = FakeClient()
+    hub = Elke27Hub("1.2.3.4", 2101, keys, "entryclientid", client=client)  # type: ignore[arg-type]
+
+    await hub.connect()
+    assert hub.get_snapshot() is snapshot
+    assert hub.get_area(1) is None
+    assert hub.get_zone(2) is None
+    unsubscribe = hub.subscribe(lambda _event: None)
+    assert unsubscribe()
+    await hub.disconnect()
+
+    assert calls[0] == ("identity", {"mn": "222", "sn": "entryclientid"})
+    assert calls[1] == ("connect", "1.2.3.4", 2101, keys)
+    assert calls[-1] == "disconnect"
 
 
 def test_redaction_returns_json_serializable() -> None:

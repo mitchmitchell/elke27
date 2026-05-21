@@ -19,6 +19,7 @@ from .errors import (
 )
 from .redact import redact_for_diagnostics
 from .types import (
+    Area,
     AreaState,
     ArmMode,
     BarrierState,
@@ -34,8 +35,10 @@ from .types import (
     OutputState,
     PanelInfo,
     PanelSnapshot,
+    Snapshot,
     TableInfo,
     ThermostatState,
+    Zone,
     ZoneDefinition,
     ZoneState,
 )
@@ -45,6 +48,9 @@ def __getattr__(name: str) -> Any:
     if name == "Elke27Client":
         module = importlib.import_module(".client", __name__)
         return module.Elke27Client
+    if name == "Elke27Hub":
+        module = importlib.import_module(".hub", __name__)
+        return module.Elke27Hub
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -52,11 +58,14 @@ __all__ = [
     "ClientConfig",
     "DiscoveredPanel",
     "LinkKeys",
+    "Snapshot",
     "PanelSnapshot",
     "CsmSnapshot",
     "PanelInfo",
     "TableInfo",
+    "Area",
     "AreaState",
+    "Zone",
     "ZoneState",
     "OutputState",
     "LightState",
@@ -80,5 +89,6 @@ __all__ = [
     "Elke27ProtocolError",
     "Elke27CryptoError",
     "Elke27InvalidArgument",
+    "Elke27Hub",
     "redact_for_diagnostics",
 ]

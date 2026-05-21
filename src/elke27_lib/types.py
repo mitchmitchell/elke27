@@ -315,3 +315,15 @@ class PanelSnapshot:
             version=0,
             updated_at=datetime.min.replace(tzinfo=UTC),
         )
+
+    @property
+    def faulted_zones(self) -> tuple[ZoneState, ...]:
+        """Return open, non-bypassed zones."""
+        return tuple(
+            zone for zone in self.zones.values() if zone.open is True and zone.bypassed is not True
+        )
+
+
+Area = AreaState
+Zone = ZoneState
+Snapshot = PanelSnapshot

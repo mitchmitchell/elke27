@@ -1388,6 +1388,18 @@ class Elke27Client:
         """Return the latest immutable snapshot (v2 public API)."""
         return self._snapshot
 
+    def get_snapshot(self) -> PanelSnapshot:
+        """Return the latest immutable snapshot."""
+        return self._snapshot
+
+    def get_area(self, area_id: int) -> V2AreaState | None:
+        """Return the latest immutable area snapshot by id."""
+        return self._snapshot.areas.get(area_id)
+
+    def get_zone(self, zone_id: int) -> V2ZoneState | None:
+        """Return the latest immutable zone snapshot by id."""
+        return self._snapshot.zones.get(zone_id)
+
     def get_csm_snapshot(self) -> CsmSnapshot | None:
         """Return the latest CSM snapshot if available (v2 public API)."""
         return self._kernel.state.csm_snapshot
@@ -1508,6 +1520,28 @@ class Elke27Client:
                 self._raise_v2_command_error(result.error)
             raise Elke27ProtocolErrorV2("Failed to set output.")
 
+    async def async_set_zone_bypass(
+        self, zone_id: int, *, bypassed: bool, pin: str | None = None
+    ) -> None:
+        """Set a zone bypass state (v2 public API)."""
+        if zone_id < 1:
+            raise Elke27InvalidArgument("zone_id must be a positive integer.")
+        if not pin:
+            raise Elke27PinRequiredError("PIN is required to bypass zones.")
+        if not pin.isdigit():
+            raise Elke27InvalidArgument("PIN must be a non-empty digit string.")
+        result = await self.async_execute(
+            "zone_set_status",
+            zone_id=zone_id,
+            pin=pin,
+            bypassed=bypassed,
+            timeout_s=15.0,
+        )
+        if not result.ok:
+            if result.error is not None:
+                self._raise_v2_command_error(result.error)
+            raise Elke27ProtocolErrorV2("Failed to set zone bypass.")
+
     async def async_arm_area(
         self,
         area_id: int,
@@ -1530,13 +1564,11 @@ class Elke27Client:
                 exit_delay_cancel=exit_delay_cancel,
             )
             return
-        if mode is ArmMode.ARMED_NIGHT:
-            raise Elke27InvalidArgument("ARMED_NIGHT is not supported by the current protocol.")
         if not pin:
             raise Elke27InvalidArgument("PIN is required to arm.")
         if not pin.isdigit():
             raise Elke27InvalidArgument("PIN must be a non-empty digit string.")
-        arm_state = "ARMED_STAY" if mode is ArmMode.ARMED_STAY else "ARMED_AWAY"
+        arm_state = mode.value.upper()
         result = await self.async_execute(
             "area_set_arm_state",
             area_id=area_id,

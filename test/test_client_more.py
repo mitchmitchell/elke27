@@ -377,8 +377,6 @@ async def test_async_set_output_and_arm_disarm(monkeypatch: pytest.MonkeyPatch) 
     with pytest.raises(Elke27InvalidArgument):
         await client.async_arm_area(0, mode=ArmMode.ARMED_STAY, pin="1234")
     with pytest.raises(Elke27InvalidArgument):
-        await client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234")
-    with pytest.raises(Elke27InvalidArgument):
         await client.async_arm_area(1, mode=ArmMode.ARMED_STAY, pin="")
     with pytest.raises(Elke27InvalidArgument):
         await client.async_arm_area(1, mode=ArmMode.ARMED_STAY, pin="bad")

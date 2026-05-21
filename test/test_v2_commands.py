@@ -14,6 +14,7 @@ from elke27_lib.errors import (
     Elke27InvalidArgument,
     Elke27LinkRequiredError,
     Elke27PermissionError,
+    Elke27PinRequiredError,
     PermissionDeniedError,
 )
 
@@ -99,6 +100,8 @@ async def test_async_arm_disarm_calls_async_execute(monkeypatch: MonkeyPatch):
     monkeypatch.setattr(client, "async_execute", _ok_execute)
 
     await client.async_arm_area(1, mode=ArmMode.ARMED_AWAY, pin="1234")
+    await client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234")
+    await client.async_set_zone_bypass(1, bypassed=True, pin="1234")
     await client.async_disarm_area(1, pin="1234")
     assert client.snapshot is before
 
@@ -111,7 +114,11 @@ async def test_argument_validation():
     with pytest.raises(Elke27InvalidArgument):
         await client.async_arm_area(0, mode=ArmMode.ARMED_AWAY, pin="1234")
     with pytest.raises(Elke27InvalidArgument):
-        await client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234")
+        await client.async_set_zone_bypass(0, bypassed=True, pin="1234")
+    with pytest.raises(Elke27PinRequiredError):
+        await client.async_set_zone_bypass(1, bypassed=True)
+    with pytest.raises(Elke27InvalidArgument):
+        await client.async_set_zone_bypass(1, bypassed=True, pin="bad")
     with pytest.raises(Elke27InvalidArgument):
         await client.async_disarm_area(1, pin="")
 
