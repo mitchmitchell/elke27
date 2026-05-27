@@ -390,9 +390,13 @@ def test_tstat_register_and_payloads() -> None:
     ) == {
         "tstat_id": 1,
         "fan_mode": "ON",
-        "cool_setpoint": 80,
-        "heat_setpoint": 68,
+        "cool_setpoint": 800,
+        "heat_setpoint": 680,
     }
+    assert tstat.build_tstat_set_status_payload(
+        tstat_id=1,
+        heat_setpoint=70.4,
+    ) == {"tstat_id": 1, "heat_setpoint": 704}
     assert tstat.build_tstat_get_table_info_payload() == {}
     with pytest.raises(ValueError):
         tstat.build_tstat_get_status_payload(tstat_id=0)
