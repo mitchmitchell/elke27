@@ -611,6 +611,7 @@ class Elke27Client:
             out[zone_id] = V2ZoneState(
                 zone_id=zone_id,
                 name=zone.name,
+                area_id=zone.area_id,
                 open=zone.violated,
                 bypassed=zone.bypassed,
                 trouble=zone.trouble,

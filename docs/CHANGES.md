@@ -1,4 +1,11 @@
 
+  Zone Area Metadata
+
+  - Added `ZoneState.area_id` to public panel snapshots. The library already tracked
+    zone area assignments internally from `zone.get_attribs`; snapshots now expose
+    that metadata so consumers can scope zone behavior, such as bypass operations,
+    to the correct area.
+
   Runtime Domain Expansion + Arm/Disarm Flags
 
   - Added runtime domain support for:

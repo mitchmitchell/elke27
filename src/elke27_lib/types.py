@@ -203,6 +203,7 @@ class ZoneState:
 
     zone_id: int
     name: str | None = None
+    area_id: int | None = None
     open: bool | None = None
     bypassed: bool | None = None
     trouble: bool | None = None

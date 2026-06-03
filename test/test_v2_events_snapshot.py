@@ -356,6 +356,7 @@ def test_snapshot_includes_zone_definitions() -> None:
     state = client._kernel.state
     zone = state.get_or_create_zone(1)
     zone.name = "Front Door"
+    zone.area_id = 2
     zone.definition = 1
     zone.attribs["zone_type"] = "Window"
     zone.attribs["kind"] = "Door"
@@ -371,6 +372,7 @@ def test_snapshot_includes_zone_definitions() -> None:
         output_definitions=client._build_output_definitions(),
     )
     snapshot = client.snapshot
+    assert snapshot.zones[1].area_id == 2
     zone_def = snapshot.zone_definitions[1]
     assert zone_def.name == "Front Door"
     assert zone_def.definition == "BURG PERIM INST"
@@ -393,6 +395,7 @@ def test_zone_attribs_handler_updates_snapshot_definitions() -> None:
             "get_attribs": {
                 "zone_id": 1,
                 "name": "Front",
+                "area_id": 3,
                 "definition": "BURG PERIM INST",
                 "zone_type": "Window",
             }
@@ -402,6 +405,7 @@ def test_zone_attribs_handler_updates_snapshot_definitions() -> None:
     for evt in emitted:
         client._handle_kernel_event(evt)
 
+    assert client.snapshot.zones[1].area_id == 3
     zone_def = client.snapshot.zone_definitions[1]
     assert zone_def.name == "Front"
     assert zone_def.definition == "BURG PERIM INST"
