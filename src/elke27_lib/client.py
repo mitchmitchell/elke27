@@ -112,6 +112,7 @@ from .events import (
     OutputsStatusBulkUpdated,
     OutputStatusUpdated,
     OutputTableInfoUpdated,
+    PanelAttribsUpdated,
     PanelVersionInfoUpdated,
     TstatConfiguredInventoryReady,
     TstatStatusUpdated,
@@ -577,6 +578,7 @@ class Elke27Client:
             model=panel.model,
             firmware=panel.firmware,
             serial=panel.serial,
+            panel_name=getattr(panel, "panel_name", None),
         )
 
     def _build_table_info(self) -> TableInfo:
@@ -1168,6 +1170,7 @@ class Elke27Client:
 
         if evt.kind in {
             PanelVersionInfoUpdated.KIND,
+            PanelAttribsUpdated.KIND,
             AreaTableInfoUpdated.KIND,
             ZoneTableInfoUpdated.KIND,
             OutputTableInfoUpdated.KIND,

@@ -202,6 +202,20 @@ def _panel_host_port(panel: discovery.E27System | Mapping[str, Any]) -> tuple[st
     return host, port
 
 
+def _panel_display_name(panel: discovery.E27System | Mapping[str, Any] | None) -> str | None:
+    """Extract an optional panel display name from panel context."""
+    if panel is None:
+        return None
+    if isinstance(panel, discovery.E27System):
+        return panel.panel_name or None
+
+    name = panel.get("panel_name") or panel.get("name")
+    if not isinstance(name, str):
+        return None
+    name = name.strip()
+    return name or None
+
+
 class E27Kernel:
     """
     High-level facade + kernel for E27.
@@ -510,6 +524,8 @@ class E27Kernel:
             host, port = _panel_host_port(panel)
         else:
             host, port = session_config.host, session_config.port
+        if (panel_name := _panel_display_name(panel)) is not None:
+            self.state.panel.panel_name = panel_name
 
         missing_fields: list[str] = []
         for field in ("linkkey_hex", "linkhmac_hex"):

@@ -1,4 +1,11 @@
 
+  Panel Snapshot Metadata
+
+  - Added `PanelInfo.panel_name` so public runtime snapshots expose the panel
+    display name when the kernel has panel-name metadata.
+  - `system.get_attribs` now updates the panel display name in kernel state and
+    refreshes the public client snapshot when the panel name changes.
+
   Zone Area Metadata
 
   - Added `ZoneState.area_id` to public panel snapshots. The library already tracked

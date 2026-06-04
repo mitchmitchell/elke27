@@ -116,6 +116,7 @@ class PanelInfo:
     model: str | None = None
     firmware: str | None = None
     serial: str | None = None
+    panel_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

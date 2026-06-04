@@ -8,6 +8,7 @@ from elke27_lib.events import (
     ApiError,
     AuthorizationRequiredEvent,
     CsmSnapshotUpdated,
+    PanelAttribsUpdated,
     TableCsmChanged,
 )
 from elke27_lib.handlers import system as system_handler
@@ -73,6 +74,22 @@ def test_system_table_info_and_helpers() -> None:
     assert system_handler._extract_table_csm({"table_csm": "3"}, domain="system") == 3
     assert system_handler._extract_table_csm({"table_csm": "bad"}, domain="system") is None
     assert system_handler._extract_table_csm({"other": 1}, domain="system") is None
+
+
+def test_system_get_attribs_updates_panel_name() -> None:
+    state = PanelState()
+    emit = _EmitSpy()
+    handler = system_handler.make_system_get_attribs_handler(state, emit, now=lambda: 3.0)
+
+    msg = {"system": {"get_attribs": {"name": " Main Panel "}}}
+    assert handler(msg, make_ctx()) is True
+    assert state.panel.panel_name == "Main Panel"
+    assert _any_event(emit, PanelAttribsUpdated)
+
+    emit.events.clear()
+    msg = {"system": {"get_attribs": {"panel_name": "Main Panel"}}}
+    assert handler(msg, make_ctx()) is True
+    assert not _any_event(emit, PanelAttribsUpdated)
 
 
 def test_system_all_command_wrappers() -> None:

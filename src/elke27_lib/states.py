@@ -35,6 +35,7 @@ class PanelMetaState:
     last_message_at: float | None = None
 
     # Optional panel/version info (filled when handlers decode device/version payloads)
+    panel_name: str | None = None
     model: str | None = None
     firmware: str | None = None
     serial: str | None = None

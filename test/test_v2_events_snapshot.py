@@ -25,6 +25,7 @@ from elke27_lib.events import (
     CsmSnapshotUpdated,
     DomainCsmChanged,
     Event,
+    PanelAttribsUpdated,
     TableCsmChanged,
 )
 from elke27_lib.handlers.zone import (
@@ -76,6 +77,24 @@ def test_snapshot_atomic_replacement_and_version() -> None:
     assert initial.panel.model is None
     assert snap1.panel.model == "M1"
     assert snap2.panel.model == "M2"
+
+
+def test_panel_attribs_event_refreshes_snapshot_name() -> None:
+    client = Elke27Client()
+    client._kernel.state.panel.panel_name = "Renamed Panel"
+
+    evt = PanelAttribsUpdated(
+        kind=PanelAttribsUpdated.KIND,
+        at=UNSET_AT,
+        seq=UNSET_SEQ,
+        classification=UNSET_CLASSIFICATION,
+        route=UNSET_ROUTE,
+        session_id=UNSET_SESSION_ID,
+        changed_fields=("panel_name",),
+    )
+    client._handle_kernel_event(evt)
+
+    assert client.snapshot.panel.panel_name == "Renamed Panel"
 
 
 def test_event_queue_drop_oldest() -> None:

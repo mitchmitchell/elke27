@@ -468,6 +468,13 @@ class PanelVersionInfoUpdated(Event):
     changed_fields: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class PanelAttribsUpdated(Event):
+    KIND: ClassVar[str] = "panel_attribs_updated"
+
+    changed_fields: tuple[str, ...]
+
+
 # -------------------------
 # API / protocol errors
 # -------------------------

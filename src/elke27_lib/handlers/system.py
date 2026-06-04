@@ -21,6 +21,7 @@ from elke27_lib.events import (
     AuthorizationRequiredEvent,
     CsmSnapshotUpdated,
     Event,
+    PanelAttribsUpdated,
     TableCsmChanged,
 )
 from elke27_lib.states import PanelState, update_csm_snapshot
@@ -104,6 +105,8 @@ def _handle_system_command(
         troubles = payload.get("troubles")
         if isinstance(troubles, list):
             state.system_status["troubles"] = list(cast(list[object], troubles))
+    if command == "get_attribs":
+        _apply_system_attribs(state, emit, ctx, payload)
     state.panel.last_message_at = now()
     if on_payload is not None:
         on_payload(payload)
@@ -226,6 +229,33 @@ def _extract_table_csm(payload: Mapping[str, Any], *, domain: str) -> int | None
             return int(text)
     LOG.warning("%s.get_table_info table_csm has non-int value %r.", domain, value)
     return None
+
+
+def _apply_system_attribs(
+    state: PanelState,
+    emit: EmitFn,
+    ctx: DispatchContext,
+    payload: Mapping[str, Any],
+) -> None:
+    name = payload.get("panel_name", payload.get("name"))
+    if not isinstance(name, str):
+        return
+    panel_name = name.strip()
+    if not panel_name or state.panel.panel_name == panel_name:
+        return
+    state.panel.panel_name = panel_name
+    emit(
+        PanelAttribsUpdated(
+            kind=PanelAttribsUpdated.KIND,
+            at=UNSET_AT,
+            seq=UNSET_SEQ,
+            classification=UNSET_CLASSIFICATION,
+            route=UNSET_ROUTE,
+            session_id=UNSET_SESSION_ID,
+            changed_fields=("panel_name",),
+        ),
+        ctx,
+    )
 
 
 def make_system_get_attribs_handler(state: PanelState, emit: EmitFn, now: NowFn):

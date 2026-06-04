@@ -159,6 +159,7 @@ def test_arm_mode_and_block_count_helpers() -> None:
 
 def test_build_maps_and_snapshot() -> None:
     kernel = E27Kernel()
+    kernel.state.panel.panel_name = "Main Panel"
     kernel.state.areas[1] = AreaState(area_id=1, name="A", arm_state="disarmed", ready=True)
     kernel.state.zones[1] = ZoneState(
         zone_id=1,
@@ -189,6 +190,7 @@ def test_build_maps_and_snapshot() -> None:
         output_definitions=client._build_output_definitions(),
     )
     assert client.snapshot.version == 1
+    assert client.snapshot.panel.panel_name == "Main Panel"
 
 
 def test_queue_helpers() -> None:
