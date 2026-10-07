@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from elke27_lib.dispatcher import PagedTransferKey
+from elke27_lib.tstat_units import Setpoint, encode_setpoint
 
 if TYPE_CHECKING:
     from elke27_lib.kernel import E27Kernel
@@ -29,7 +30,6 @@ ROUTE_TSTAT_GET_CONFIGURED = ("tstat", "get_configured")
 ROUTE_TSTAT_GET_ATTRIBS = ("tstat", "get_attribs")
 ROUTE_TSTAT_GET_TABLE_INFO = ("tstat", "get_table_info")
 ROUTE_TSTAT_TABLE_INFO = ("tstat", "table_info")
-Setpoint = int | float
 
 
 def register(elk: E27Kernel) -> None:
@@ -118,17 +118,12 @@ def build_tstat_set_status_payload(
     if fan_mode is not None:
         payload["fan_mode"] = fan_mode
     if cool_setpoint is not None:
-        payload["cool_setpoint"] = _encode_setpoint(cool_setpoint)
+        payload["cool_setpoint"] = encode_setpoint(cool_setpoint)
     if heat_setpoint is not None:
-        payload["heat_setpoint"] = _encode_setpoint(heat_setpoint)
+        payload["heat_setpoint"] = encode_setpoint(heat_setpoint)
     if len(payload) == 1:
         raise ValueError("build_tstat_set_status_payload requires at least one status field")
     return payload
-
-
-def _encode_setpoint(value: Setpoint) -> int:
-    """Encode public Fahrenheit setpoint degrees to E27 protocol tenths."""
-    return round(value * 10)
 
 
 def build_tstat_get_configured_payload(*, block_id: int = 1, **_kwargs: Any) -> Mapping[str, Any]:

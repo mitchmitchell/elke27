@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from elke27_lib.tstat_units import Setpoint, encode_setpoint
+
 ResponseKey = tuple[str, str]
-Setpoint = int | float
 
 
 def generator_tstat_get_table_info() -> tuple[dict[str, object], ResponseKey]:
@@ -44,14 +45,9 @@ def generator_tstat_set_status(
     if fan_mode is not None:
         payload["fan_mode"] = fan_mode
     if cool_setpoint is not None:
-        payload["cool_setpoint"] = _encode_setpoint(cool_setpoint)
+        payload["cool_setpoint"] = encode_setpoint(cool_setpoint)
     if heat_setpoint is not None:
-        payload["heat_setpoint"] = _encode_setpoint(heat_setpoint)
+        payload["heat_setpoint"] = encode_setpoint(heat_setpoint)
     if len(payload) == 1:
         raise ValueError("tstat_set_status requires at least one status field")
     return payload, ("tstat", "set_status")
-
-
-def _encode_setpoint(value: Setpoint) -> int:
-    """Encode public Fahrenheit setpoint degrees to E27 protocol tenths."""
-    return round(value * 10)

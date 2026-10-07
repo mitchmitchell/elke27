@@ -390,13 +390,21 @@ def test_tstat_register_and_payloads() -> None:
     ) == {
         "tstat_id": 1,
         "fan_mode": "ON",
-        "cool_setpoint": 800,
-        "heat_setpoint": 680,
+        "cool_setpoint": 80,
+        "heat_setpoint": 68,
     }
+    # The E27 API takes whole degrees; fractional input is rounded half up.
     assert tstat.build_tstat_set_status_payload(
         tstat_id=1,
         heat_setpoint=70.4,
-    ) == {"tstat_id": 1, "heat_setpoint": 704}
+    ) == {"tstat_id": 1, "heat_setpoint": 70}
+    assert tstat.build_tstat_set_status_payload(
+        tstat_id=1,
+        cool_setpoint=70.5,
+    ) == {"tstat_id": 1, "cool_setpoint": 71}
+    # Pre-scaled tenths (the 0.3.5-0.3.7 / HACS 0.1.4 bug) are rejected.
+    with pytest.raises(ValueError):
+        tstat.build_tstat_set_status_payload(tstat_id=1, heat_setpoint=680)
     assert tstat.build_tstat_get_table_info_payload() == {}
     with pytest.raises(ValueError):
         tstat.build_tstat_get_status_payload(tstat_id=0)

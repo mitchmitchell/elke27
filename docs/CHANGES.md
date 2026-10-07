@@ -1,4 +1,13 @@
 
+  Thermostat Setpoint Units (0.3.8)
+
+  - `tstat.set_status` setpoints are sent as whole degrees, as documented in the
+    E27 Dealer API, instead of tenths (0.3.5-0.3.7 sent 68 F as 680, which the
+    panel stored and the Elk app displayed). Fractional input rounds half up;
+    values outside -40..150 raise `ValueError` to reject pre-scaled tenths.
+  - Public thermostat temperature, setpoints, and humidity are scaled by the
+    precision bits of the status `prec` array (no change for precision 0).
+
   Panel Snapshot Metadata
 
   - Added `PanelInfo.panel_name` so public runtime snapshots expose the panel

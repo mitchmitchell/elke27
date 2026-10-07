@@ -267,12 +267,14 @@ class ThermostatState:
 
     tstat_id: int
     name: str | None = None
-    temperature: int | None = None
-    cool_setpoint: int | None = None
-    heat_setpoint: int | None = None
+    # Degrees as reported by the panel, scaled by the status "prec" precision
+    # (whole numbers when precision is 0, which is the common case).
+    temperature: int | float | None = None
+    cool_setpoint: int | float | None = None
+    heat_setpoint: int | float | None = None
     mode: str | None = None
     fan_mode: str | None = None
-    humidity: int | None = None
+    humidity: int | float | None = None
 
 
 @dataclass(frozen=True, slots=True)
