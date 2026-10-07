@@ -154,6 +154,7 @@ from .session import (
     SessionProtocolError,
 )
 from .states import PanelState, update_csm_snapshot
+from .tstat_units import decode_value as decode_tstat_value
 from .types import (
     AreaState as V2AreaState,
 )
@@ -715,15 +716,20 @@ class Elke27Client:
             for tstat_id, tstat in tstats.items():
                 if not isinstance(tstat_id, int):
                     continue
+                prec = getattr(tstat, "prec", None)
                 out[tstat_id] = V2ThermostatState(
                     tstat_id=tstat_id,
                     name=getattr(tstat, "name", None),
-                    temperature=getattr(tstat, "temperature", None),
-                    cool_setpoint=getattr(tstat, "cool_setpoint", None),
-                    heat_setpoint=getattr(tstat, "heat_setpoint", None),
+                    temperature=decode_tstat_value(getattr(tstat, "temperature", None), prec, 0),
+                    cool_setpoint=decode_tstat_value(
+                        getattr(tstat, "cool_setpoint", None), prec, 1
+                    ),
+                    heat_setpoint=decode_tstat_value(
+                        getattr(tstat, "heat_setpoint", None), prec, 2
+                    ),
                     mode=getattr(tstat, "mode", None),
                     fan_mode=getattr(tstat, "fan_mode", None),
-                    humidity=getattr(tstat, "humidity", None),
+                    humidity=decode_tstat_value(getattr(tstat, "humidity", None), prec, 3),
                 )
         return types_mod.MappingProxyType(out)
 

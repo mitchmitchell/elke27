@@ -148,15 +148,17 @@ def test_generator_tstat_validations() -> None:
     assert payload == {
         "tstat_id": 1,
         "fan_mode": "ON",
-        "cool_setpoint": 820,
-        "heat_setpoint": 680,
+        "cool_setpoint": 82,
+        "heat_setpoint": 68,
     }
     assert route == ("tstat", "set_status")
     payload, route = generators.tstat.generator_tstat_set_status(
         tstat_id=1,
         cool_setpoint=70.4,
     )
-    assert payload == {"tstat_id": 1, "cool_setpoint": 704}
+    assert payload == {"tstat_id": 1, "cool_setpoint": 70}
+    with pytest.raises(ValueError):
+        generators.tstat.generator_tstat_set_status(tstat_id=1, cool_setpoint=820)
     assert route == ("tstat", "set_status")
 
 
