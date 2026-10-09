@@ -1,4 +1,19 @@
 
+  Arm/Disarm PIN Handling (0.3.9)
+
+  - Fixed `async_arm_area` / `async_disarm_area` failing with
+    `Elke27ProtocolError: Operation failed` for every string PIN. The generator
+    module uses postponed annotations, so the `pin: int` check in
+    `_coerce_pin_for_generator` never matched and the generator compared a `str`
+    to `0`. Annotations are now resolved with `typing.get_type_hints` (falling
+    back to parsing `"int"` / `"int | str"` text).
+  - `area.set_arm_state` carries `pin` as a JSON integer, so leading zeros are
+    accepted and dropped on the wire (`"0123"` is sent as `123`). All-zero PINs,
+    non-digit strings, `bool`, and non-positive ints raise `Elke27InvalidArgument`
+    before anything is sent.
+  - `async_arm_area` / `async_disarm_area` accept `str | int` PINs; int PINs keep
+    their previous behavior.
+
   Thermostat Setpoint Units (0.3.8)
 
   - `tstat.set_status` setpoints are sent as whole degrees, as documented in the
