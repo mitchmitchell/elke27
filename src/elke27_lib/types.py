@@ -194,6 +194,7 @@ class AreaState:
     ready: bool | None = None
     alarm_active: bool | None = None
     chime: bool | None = None
+    ready_status: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

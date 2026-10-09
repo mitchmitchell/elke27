@@ -632,6 +632,37 @@ class Elke27ProtocolError(Elke27Error):
         super().__init__(message, code="protocol", is_transient=False, user_message=user_message)
 
 
+class Elke27PanelError(Elke27ProtocolError):
+    """The panel answered a command with a non-zero ``error_code``.
+
+    ``panel_error_code`` is the raw E27 error code (e.g. 11037) and ``reason`` a
+    short English description (e.g. "invalid PIN"). Subclasses
+    ``Elke27ProtocolError`` so existing handlers keep working.
+    """
+
+    def __init__(
+        self,
+        panel_error_code: int,
+        reason: str,
+        *,
+        message: str | None = None,
+    ) -> None:
+        text = message or f"Panel rejected the request: {reason} (error {panel_error_code})."
+        super().__init__(text)
+        self.code = "panel_error"
+        self.panel_error_code: int = panel_error_code
+        self.reason: str = reason
+
+
+class E27PanelErrorResponse(E27Error):
+    """Internal: a command response carried a non-zero panel ``error_code``."""
+
+    def __init__(self, command_key: str, panel_error_code: int) -> None:
+        super().__init__(f"{command_key} failed with error_code={panel_error_code}")
+        self.command_key: str = command_key
+        self.panel_error_code: int = panel_error_code
+
+
 class Elke27CryptoError(Elke27Error):
     def __init__(
         self, message: str = "Cryptographic error.", *, user_message: str | None = None

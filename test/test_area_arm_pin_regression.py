@@ -181,11 +181,11 @@ def test_coerce_pin_resolves_postponed_annotations() -> None:
         area_spec, {"area_id": 1, "arm_state": "ARMED_AWAY", "pin": "0123"}
     )
     assert coerced["pin"] == 123
-    # int | str generators keep the string untouched.
+    # zone.set_status also takes an int PIN on the wire (0.3.10).
     coerced = Elke27Client._coerce_pin_for_generator(  # pyright: ignore[reportPrivateUsage]
         zone_spec, {"zone_id": 1, "pin": "0123", "bypassed": True}
     )
-    assert coerced["pin"] == "0123"
+    assert coerced["pin"] == 123
 
 
 @pytest.mark.parametrize(
