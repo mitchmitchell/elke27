@@ -52,7 +52,7 @@ def generator_area_set_arm_state(
         raise ValueError(f"area_id must be an int >= 1 (got {area_id!r})")
     if arm_state not in _ARM_STATES:
         raise ValueError(f"arm_state must be one of {_ARM_STATES!r} (got {arm_state!r})")
-    if pin <= 0:
+    if isinstance(pin, bool) or not isinstance(pin, int) or pin <= 0:
         raise ValueError(f"pin must be a positive int (got {pin!r})")
     return {
         "area_id": area_id,

@@ -21,6 +21,7 @@ import threading
 import time
 import types
 import types as types_mod
+import typing
 from collections.abc import (
     AsyncIterator,
     Callable,
@@ -38,6 +39,7 @@ from typing import (
     Generic,
     TypeVar,
     cast,
+    get_type_hints,
 )
 
 if TYPE_CHECKING:
@@ -242,6 +244,75 @@ _CLIENT_EXCEPTIONS = (
     KeyError,
     RuntimeError,
 )
+
+
+def _annotation_type_names(annotation: object) -> set[str] | None:
+    """Return the simple type names in a resolved or string annotation.
+
+    Generators use ``from __future__ import annotations``, so annotations may be
+    plain strings such as ``"int"`` or ``"int | str"``. Returns ``None`` when the
+    annotation cannot be interpreted.
+    """
+    if annotation is inspect.Parameter.empty:
+        return None
+    if isinstance(annotation, str):
+        names = {part.strip() for part in annotation.split("|")}
+        return {name for name in names if name}
+    if isinstance(annotation, type):
+        return {annotation.__name__}
+    origin = typing.get_origin(annotation)
+    if origin is typing.Union or origin is types.UnionType:
+        names: set[str] = set()
+        for arg in typing.get_args(annotation):
+            arg_names = _annotation_type_names(arg)
+            if arg_names is None:
+                return None
+            names |= arg_names
+        return names
+    return None
+
+
+def _generator_pin_wants_int(generator: Callable[..., Any], pin_param: inspect.Parameter) -> bool:
+    """Return True when a generator's ``pin`` parameter accepts only ``int``.
+
+    Resolves postponed (string) annotations with ``typing.get_type_hints`` and
+    falls back to parsing the raw annotation text.
+    """
+    annotation: object = pin_param.annotation
+    try:
+        hints = get_type_hints(generator)
+    except Exception:  # noqa: BLE001 - unresolved names fall back to raw text
+        hints = {}
+    if "pin" in hints:
+        annotation = hints["pin"]
+    names = _annotation_type_names(annotation)
+    if names is None:
+        return False
+    return "int" in names and "str" not in names
+
+
+def _normalize_area_pin(pin: object, *, action: str) -> int:
+    """Validate an arm/disarm PIN and return the integer sent on the wire.
+
+    Accepts a digit string (leading zeros allowed, e.g. ``"0123"`` -> ``123``)
+    or a positive ``int``. The panel's ``area.set_arm_state`` ``pin`` field is a
+    JSON integer, so an all-zero PIN maps to ``0``, which is rejected.
+    """
+    if pin is None or pin == "":
+        raise Elke27InvalidArgument(f"PIN is required to {action}.")
+    if isinstance(pin, bool):
+        raise Elke27InvalidArgument("PIN must be a non-empty digit string.")
+    if isinstance(pin, int):
+        pin_value = pin
+    elif isinstance(pin, str):
+        if not (pin.isascii() and pin.isdigit()):
+            raise Elke27InvalidArgument("PIN must be a non-empty digit string.")
+        pin_value = int(pin)
+    else:
+        raise Elke27InvalidArgument("PIN must be a non-empty digit string.")
+    if pin_value <= 0:
+        raise Elke27InvalidArgument("PIN must be a positive number (all-zero PINs are invalid).")
+    return pin_value
 
 
 def _iter_causes(exc: BaseException) -> Iterable[BaseException]:
@@ -1557,33 +1628,31 @@ class Elke27Client:
         area_id: int,
         *,
         mode: ArmMode,
-        pin: str | None = None,
+        pin: str | int | None = None,
         auto_stay_cancel: bool = False,
         exit_delay_cancel: bool = False,
     ) -> None:
-        """Arm an area using the requested mode (v2 public API)."""
+        """Arm an area using the requested mode (v2 public API).
+
+        ``pin`` is a digit string (leading zeros allowed) or a positive int.
+        """
         if area_id < 1:
             raise Elke27InvalidArgument("area_id must be a positive integer.")
         if mode is ArmMode.DISARMED:
-            if not pin:
-                raise Elke27InvalidArgument("PIN is required to disarm.")
             await self.async_disarm_area(
                 area_id,
-                pin=pin,
+                pin=_normalize_area_pin(pin, action="disarm"),
                 auto_stay_cancel=auto_stay_cancel,
                 exit_delay_cancel=exit_delay_cancel,
             )
             return
-        if not pin:
-            raise Elke27InvalidArgument("PIN is required to arm.")
-        if not pin.isdigit():
-            raise Elke27InvalidArgument("PIN must be a non-empty digit string.")
+        pin_value = _normalize_area_pin(pin, action="arm")
         arm_state = mode.value.upper()
         result = await self.async_execute(
             "area_set_arm_state",
             area_id=area_id,
             arm_state=arm_state,
-            pin=pin,
+            pin=pin_value,
             auto_stay_cancel=auto_stay_cancel,
             exit_delay_cancel=exit_delay_cancel,
         )
@@ -1596,22 +1665,22 @@ class Elke27Client:
         self,
         area_id: int,
         *,
-        pin: str,
+        pin: str | int,
         auto_stay_cancel: bool = False,
         exit_delay_cancel: bool = False,
     ) -> None:
-        """Disarm an area (v2 public API)."""
+        """Disarm an area (v2 public API).
+
+        ``pin`` is a digit string (leading zeros allowed) or a positive int.
+        """
         if area_id < 1:
             raise Elke27InvalidArgument("area_id must be a positive integer.")
-        if not pin:
-            raise Elke27InvalidArgument("PIN must be a non-empty digit string.")
-        if not pin.isdigit():
-            raise Elke27InvalidArgument("PIN must be a non-empty digit string.")
+        pin_value = _normalize_area_pin(pin, action="disarm")
         result = await self.async_execute(
             "area_set_arm_state",
             area_id=area_id,
             arm_state="DISARMED",
-            pin=pin,
+            pin=pin_value,
             auto_stay_cancel=auto_stay_cancel,
             exit_delay_cancel=exit_delay_cancel,
         )
@@ -2419,8 +2488,10 @@ class Elke27Client:
                 pin_param is not None
                 and isinstance(pin_value, str)
                 and pin_value.isdigit()
-                and pin_param.annotation is int
+                and _generator_pin_wants_int(spec.generator, pin_param)
             ):
+                # The wire field is a JSON integer, so leading zeros are not
+                # representable: "0123" is sent as 123.
                 coerced["pin"] = int(pin_value)
         return coerced
 
