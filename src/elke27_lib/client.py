@@ -52,6 +52,7 @@ else:
 
 from . import discovery as discovery_mod
 from . import linking as linking_mod
+from .const import E27ErrorCode as PanelErrorCode
 from .dispatcher import PagedBlock, RouteKey
 from .errors import (
     AuthorizationRequired,
@@ -63,6 +64,7 @@ from .errors import (
     E27LinkInvalid,
     E27MissingContext,
     E27NotReady,
+    E27PanelErrorResponse,
     E27ProtocolError,
     E27ProvisioningRequired,
     E27ProvisioningTimeout,
@@ -75,6 +77,7 @@ from .errors import (
     Elke27Error,
     Elke27InvalidArgument,
     Elke27LinkRequiredError,
+    Elke27PanelError,
     Elke27PermissionError,
     Elke27PinRequiredError,
     Elke27TimeoutError,
@@ -244,6 +247,62 @@ _CLIENT_EXCEPTIONS = (
     KeyError,
     RuntimeError,
 )
+
+
+# area.set_arm_state accepts only these arm states (generators/area.py). The E27
+# has Away and Stay arming; it has no Night mode.
+_SUPPORTED_ARM_MODES: frozenset[ArmMode] = frozenset({ArmMode.ARMED_AWAY, ArmMode.ARMED_STAY})
+
+_PANEL_ERROR_REASONS: dict[int, str] = {
+    PanelErrorCode.ELKERR_UNRECOGNIZED_CMD: "command not recognized",
+    PanelErrorCode.ELKERR_INVALID_PARAM: "invalid parameter",
+    PanelErrorCode.ELKERR_INVALID_ID: "invalid ID",
+    PanelErrorCode.ELKERR_TIMEOUT: "panel timed out",
+    PanelErrorCode.ELKERR_NOAUTH: "authorization required",
+    PanelErrorCode.ELKERR_NO_RESP: "no response from device",
+    PanelErrorCode.ELKERR_NOT_READY: "area not ready (open or faulted zones)",
+    PanelErrorCode.ELKERR_IN_USE: "in use",
+    PanelErrorCode.ELKERR_INVALID_MODE: "invalid mode",
+    PanelErrorCode.ELKERR_NOT_BYPASSABLE: "zone cannot be bypassed",
+    PanelErrorCode.ELKERR_IN_ALARM: "area is in alarm; disarm to clear it first",
+    PanelErrorCode.ELKERR_NOT_ALLOWED_WHEN_ARMED: "not allowed while armed",
+    PanelErrorCode.ELKERR_INVALID_AREA: "invalid area",
+    PanelErrorCode.ELKERR_NOT_ENABLE: "feature not enabled",
+    PanelErrorCode.ELKERR_INVALID_SESSION: "invalid session",
+    PanelErrorCode.ELKERR_INVALID_PIN: "invalid user code",
+    PanelErrorCode.ELKERR_DURESS_USER_NOT_ALLOWED: "duress code not allowed",
+    PanelErrorCode.ELKERR_ZWAVE_BUSY: "Z-Wave network busy",
+}
+
+
+def panel_error_reason(panel_error_code: int) -> str:
+    """Return a short English reason for an E27 panel ``error_code``."""
+    reason = _PANEL_ERROR_REASONS.get(panel_error_code)
+    if reason is not None:
+        return reason
+    try:
+        name = PanelErrorCode(panel_error_code).name
+    except ValueError:
+        return "unknown panel error"
+    return name.removeprefix("ELKERR_").replace("_", " ").lower()
+
+
+def _area_ready(ready: bool | None, ready_status: str | None) -> bool | None:
+    """Return the area ready flag, deriving it from ``ready_status`` when needed.
+
+    ``area.get_status`` reports ``ready_status`` (``RDY_AWAY``, ``RDY_STAY``,
+    ``RDY_NOT``) rather than a ``ready`` boolean.
+    """
+    if ready is not None:
+        return ready
+    if not isinstance(ready_status, str):
+        return None
+    status = ready_status.strip().upper()
+    if status == "RDY_NOT":
+        return False
+    if status.startswith("RDY_"):
+        return True
+    return None
 
 
 def _annotation_type_names(annotation: object) -> set[str] | None:
@@ -610,6 +669,15 @@ class Elke27Client:
     def _raise_v2_command_error(self, err: BaseException) -> None:
         if isinstance(err, Elke27Error):
             raise err
+        if isinstance(err, E27PanelErrorResponse):
+            reason = panel_error_reason(err.panel_error_code)
+            self._log.warning(
+                "Panel rejected %s: %s (error %s)",
+                err.command_key,
+                reason,
+                err.panel_error_code,
+            )
+            raise Elke27PanelError(err.panel_error_code, reason) from None
         if isinstance(err, E27ProvisioningRequired):
             raise Elke27LinkRequiredError("Linking required to perform this operation.") from None
         if isinstance(err, PanelNotDisarmedError):
@@ -672,10 +740,11 @@ class Elke27Client:
                 area_id=area_id,
                 name=area.name,
                 arm_mode=self._arm_mode_from_string(arm_value),
-                ready=area.ready,
+                ready=_area_ready(area.ready, area.ready_status),
                 alarm_active=area.alarm_state is not None
                 and str(area.alarm_state).lower() != "no_alarm_active",
                 chime=area.chime,
+                ready_status=area.ready_status,
             )
         return types_mod.MappingProxyType(out)
 
@@ -1646,6 +1715,11 @@ class Elke27Client:
                 exit_delay_cancel=exit_delay_cancel,
             )
             return
+        if mode not in _SUPPORTED_ARM_MODES:
+            raise Elke27InvalidArgument(
+                f"The E27 panel does not support arm mode {mode.value!r}; "
+                "use armed_away or armed_stay."
+            )
         pin_value = _normalize_area_pin(pin, action="arm")
         arm_state = mode.value.upper()
         result = await self.async_execute(
@@ -2037,7 +2111,7 @@ class Elke27Client:
                     return _err(
                         AuthorizationRequired("Authorization is required for this operation.")
                     )
-                return _err(E27Error(f"{command_key} failed with error_code={error_code}"))
+                return _err(E27PanelErrorResponse(command_key, error_code))
 
             response_payload = self._extract_response_payload(msg, expected_route)
             return _ok(response_payload)
@@ -2132,7 +2206,7 @@ class Elke27Client:
                     return _err(
                         AuthorizationRequired("Authorization is required for this operation.")
                     )
-                return _err(E27Error(f"{command_key} failed with error_code={error_code}"))
+                return _err(E27PanelErrorResponse(command_key, error_code))
 
             response_payload = self._extract_response_payload(msg, expected_route)
             response_block_count = self._coerce_block_count(

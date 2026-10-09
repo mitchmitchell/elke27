@@ -1,4 +1,18 @@
 
+  Panel Error Reasons, Area Ready, Arm Night (0.3.10)
+
+  - Commands rejected by the panel with a non-zero `error_code` now raise the new
+    `Elke27PanelError` (a subclass of `Elke27ProtocolError`) with
+    `panel_error_code` and a short `reason` (e.g. "invalid user code", "area not
+    ready (open or faulted zones)", "area is in alarm; disarm to clear it first")
+    instead of the generic "Operation failed.", and log a warning (#5).
+  - `AreaState.ready` is derived from the panel's `ready_status` (`RDY_NOT` ->
+    False, other `RDY_*` -> True) when no `ready` boolean is reported, and
+    `AreaState.ready_status` is exposed (#6).
+  - `async_arm_area(mode=ArmMode.ARMED_NIGHT)` raises `Elke27InvalidArgument`
+    before sending: the E27 has Away and Stay arming only (#4).
+  - Light status payloads are logged at debug level to diagnose #7.
+
   Arm/Disarm PIN Handling (0.3.9)
 
   - Fixed `async_arm_area` / `async_disarm_area` failing with

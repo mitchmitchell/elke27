@@ -406,6 +406,7 @@ def make_light_get_table_info_handler(state: PanelState, emit: EmitFn, now: NowF
 
 
 def _apply_light_status_fields(light: LightState, payload: Mapping[str, Any]) -> None:
+    LOG.debug("Light %s status payload: %s", light.light_id, dict(payload))
     status = payload.get("status")
     if isinstance(status, str):
         normalized = status.strip().upper()
