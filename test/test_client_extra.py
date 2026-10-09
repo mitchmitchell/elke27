@@ -883,7 +883,7 @@ async def test_async_execute_pin_validation(monkeypatch: pytest.MonkeyPatch) -> 
     result = await client.async_execute("needs_pin")
     assert isinstance(result.error, Elke27PinRequiredError)
     result = await client.async_execute("needs_pin", pin="abc")
-    assert isinstance(result.error, InvalidPinError)
+    assert isinstance(result.error, Elke27InvalidArgument)
 
 
 @pytest.mark.asyncio
