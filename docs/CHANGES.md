@@ -8,6 +8,14 @@
     ASCII digits only (`0`–`9`). Unicode numerals and other non-digit strings
     raise `Elke27InvalidArgument` before anything is sent instead of escaping
     as `ValueError`.
+  - Behavior change: the `async_execute` special case that turned panel error
+    11008 into the internal `AuthorizationRequired` is removed. A 11008 reply now
+    comes back as `Elke27PanelError` with `panel_error_code == 11008` and reason
+    "not authorized", like every other panel code.
+  - Behavior change: callers of `async_execute` (including
+    `control_authenticate`) now get `Elke27InvalidArgument` instead of the
+    internal `InvalidPinError` for a bad PIN (non-ASCII-digit string, zero,
+    negative, `bool`, or non-integer type). Nothing is sent to the panel.
 
   Panel Error Reasons, Area Ready, Arm Night, Lights, Zone Bypass (0.3.10)
 

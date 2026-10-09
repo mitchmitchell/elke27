@@ -59,6 +59,13 @@ jobs:
       - name: Install all dependencies
         run: uv sync --all-extras
 
+      # lint.py runs ruff with --fix and rewrites formatting, so it never fails on
+      # them. Check first, without changing files (same paths as lint.py).
+      - name: Check ruff lint and formatting
+        run: |
+          uv run ruff check --no-fix src test devtools
+          uv run ruff format --check src test devtools
+
       - name: Run linting
         run: uv run python devtools/lint.py
 

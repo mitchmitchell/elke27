@@ -22,7 +22,6 @@ from elke27_lib.errors import (
     Elke27PinRequiredError,
     Elke27TimeoutError,
     InvalidPin,
-    InvalidPinError,
     ProtocolError,
 )
 from elke27_lib.events import (
@@ -674,11 +673,11 @@ async def test_async_execute_control_authenticate_validation(
     result = await client.async_execute("control_authenticate")
     assert isinstance(result.error, Elke27PinRequiredError)
     result = await client.async_execute("control_authenticate", pin="1x")
-    assert isinstance(result.error, InvalidPinError)
+    assert isinstance(result.error, client_mod.Elke27InvalidArgument)
     result = await client.async_execute("control_authenticate", pin=0)
-    assert isinstance(result.error, InvalidPinError)
+    assert isinstance(result.error, client_mod.Elke27InvalidArgument)
     result = await client.async_execute("control_authenticate", pin=object())
-    assert isinstance(result.error, InvalidPinError)
+    assert isinstance(result.error, client_mod.Elke27InvalidArgument)
 
     async def _ok_auth(**_k: Any) -> Result[Mapping[str, Any]]:
         return Result(ok=True, data={"ok": True}, error=None)

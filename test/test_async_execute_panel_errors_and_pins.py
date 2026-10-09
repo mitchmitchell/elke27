@@ -211,3 +211,33 @@ async def test_async_execute_accepts_ascii_digit_pins(pin: str) -> None:
     assert result.ok is True
     sent = session.sent[0]["area"]["set_arm_state"]
     assert sent["pin"] == wire_pin
+
+
+@pytest.mark.parametrize(
+    "pin",
+    [
+        pytest.param("²", id="superscript"),
+        pytest.param("١٢٣", id="arabic-indic"),
+        pytest.param("１２３４", id="fullwidth"),
+        pytest.param("12a4", id="non-digit"),
+        pytest.param(0, id="zero"),
+        pytest.param(-5, id="negative"),
+        pytest.param(True, id="bool"),
+        pytest.param(12.0, id="float"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_control_authenticate_rejects_bad_pin_before_send(pin: object) -> None:
+    client, session = _make_client()
+    called: list[object] = []
+
+    async def _fake_auth(**kwargs: Any) -> Any:
+        called.append(kwargs)
+        raise AssertionError("authenticate must not be sent")
+
+    cast(Any, client)._async_authenticate = _fake_auth
+    result = await client.async_execute("control_authenticate", pin=pin)
+    assert result.ok is False
+    assert isinstance(result.error, Elke27InvalidArgument)
+    assert called == []
+    assert session.sent == []

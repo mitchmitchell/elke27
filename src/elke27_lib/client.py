@@ -1905,16 +1905,18 @@ class Elke27Client:
             pin_value = params.get("pin")
             if pin_value is None or (isinstance(pin_value, str) and not pin_value):
                 return _err(Elke27PinRequiredError())
+            # Bad PINs are caller errors, rejected before anything is sent, the
+            # same as the other PIN paths (Elke27InvalidArgument, not InvalidPinError).
             if isinstance(pin_value, str):
                 if not _is_ascii_digit_string(pin_value):
-                    return _err(InvalidPinError("PIN must be a non-empty digit string."))
+                    return _err(Elke27InvalidArgument("PIN must be a non-empty digit string."))
                 pin_int = int(pin_value)
-            elif isinstance(pin_value, int):
+            elif isinstance(pin_value, int) and not isinstance(pin_value, bool):
                 if pin_value <= 0:
-                    return _err(InvalidPinError("PIN must be a positive integer."))
+                    return _err(Elke27InvalidArgument("PIN must be a positive integer."))
                 pin_int = pin_value
             else:
-                return _err(InvalidPinError("PIN must be a non-empty digit string."))
+                return _err(Elke27InvalidArgument("PIN must be a non-empty digit string."))
 
             self._last_auth_pin = pin_int
             return await self._async_authenticate(pin=pin_int, timeout_s=timeout_s)
