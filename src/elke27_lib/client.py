@@ -255,10 +255,11 @@ _SUPPORTED_ARM_MODES: frozenset[ArmMode] = frozenset({ArmMode.ARMED_AWAY, ArmMod
 
 _PANEL_ERROR_REASONS: dict[int, str] = {
     PanelErrorCode.ELKERR_UNRECOGNIZED_CMD: "command not recognized",
-    PanelErrorCode.ELKERR_INVALID_PARAM: "invalid parameter",
+    # The panel answers a wrong user code on area.set_arm_state with 11004.
+    PanelErrorCode.ELKERR_INVALID_PARAM: "invalid parameter (check the user code)",
     PanelErrorCode.ELKERR_INVALID_ID: "invalid ID",
     PanelErrorCode.ELKERR_TIMEOUT: "panel timed out",
-    PanelErrorCode.ELKERR_NOAUTH: "authorization required",
+    PanelErrorCode.ELKERR_NOAUTH: "not authorized",
     PanelErrorCode.ELKERR_NO_RESP: "no response from device",
     PanelErrorCode.ELKERR_NOT_READY: "area not ready (open or faulted zones)",
     PanelErrorCode.ELKERR_IN_USE: "in use",
@@ -669,6 +670,11 @@ class Elke27Client:
     def _raise_v2_command_error(self, err: BaseException) -> None:
         if isinstance(err, Elke27Error):
             raise err
+        if isinstance(err, AuthorizationRequired):
+            code = int(PanelErrorCode.ELKERR_NOAUTH)
+            reason = panel_error_reason(code)
+            self._log.warning("Panel rejected the request: %s (error %s)", reason, code)
+            raise Elke27PanelError(code, reason) from None
         if isinstance(err, E27PanelErrorResponse):
             reason = panel_error_reason(err.panel_error_code)
             self._log.warning(
@@ -1671,19 +1677,24 @@ class Elke27Client:
             raise Elke27ProtocolErrorV2("Failed to set output.")
 
     async def async_set_zone_bypass(
-        self, zone_id: int, *, bypassed: bool, pin: str | None = None
+        self, zone_id: int, *, bypassed: bool, pin: str | int | None = None
     ) -> None:
-        """Set a zone bypass state (v2 public API)."""
+        """Set a zone bypass state (v2 public API).
+
+        ``pin`` is a digit string (leading zeros allowed) or a positive int; it is
+        sent as a JSON integer.
+        """
         if zone_id < 1:
             raise Elke27InvalidArgument("zone_id must be a positive integer.")
-        if not pin:
+        if pin is None or pin == "":
             raise Elke27PinRequiredError("PIN is required to bypass zones.")
-        if not pin.isdigit():
-            raise Elke27InvalidArgument("PIN must be a non-empty digit string.")
+        # zone.set_status takes the PIN as a JSON integer, like area.set_arm_state;
+        # a string PIN is answered with 11008 (not authorized).
+        pin_value = _normalize_area_pin(pin, action="bypass zones")
         result = await self.async_execute(
             "zone_set_status",
             zone_id=zone_id,
-            pin=pin,
+            pin=pin_value,
             bypassed=bypassed,
             timeout_s=15.0,
         )

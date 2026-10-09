@@ -116,6 +116,14 @@ def make_light_set_status_handler(state: PanelState, emit: EmitFn, now: NowFn):
         if not isinstance(light_id, int) or light_id < 1:
             return False
 
+        if not _has_light_state(payload):
+            # The panel acks set_status with only light_id/error_code. That ack
+            # says nothing about the light's state, so emitting the cached
+            # (stale) state would be misleading; callers re-read with get_status.
+            LOG.debug("Light %s set_status ack without state: %s", light_id, dict(payload))
+            state.panel.last_message_at = now()
+            return True
+
         light = state.get_or_create_light(light_id)
         _apply_light_status_fields(light, payload)
         light.last_update_at = now()
@@ -405,22 +413,30 @@ def make_light_get_table_info_handler(state: PanelState, emit: EmitFn, now: NowF
     return handler_light_get_table_info
 
 
+_LIGHT_STATE_KEYS = frozenset({"status", "level", "state"})
+
+
+def _has_light_state(payload: Mapping[str, Any]) -> bool:
+    """Return True when a light payload reports any on/off or level state."""
+    return any(key in payload for key in _LIGHT_STATE_KEYS)
+
+
 def _apply_light_status_fields(light: LightState, payload: Mapping[str, Any]) -> None:
     LOG.debug("Light %s status payload: %s", light.light_id, dict(payload))
+    # Precedence: explicit state bool > status ON/OFF > level. get_status
+    # replies carry only "level" (0 = off), so on/off is derived from it.
+    level = payload.get("level")
+    if isinstance(level, int) and not isinstance(level, bool):
+        light.level = level
+        light.on = level > 0
+        light.status = "ON" if level > 0 else "OFF"
+
     status = payload.get("status")
     if isinstance(status, str):
         normalized = status.strip().upper()
         light.status = normalized
         if normalized in {"ON", "OFF"}:
             light.on = normalized == "ON"
-
-    level = payload.get("level")
-    if isinstance(level, int):
-        light.level = level
-        if level == 0:
-            light.on = False
-        elif level > 0 and light.on is None:
-            light.on = True
 
     state_val = payload.get("state")
     if isinstance(state_val, bool):

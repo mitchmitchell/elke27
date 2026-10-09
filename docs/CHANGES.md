@@ -1,5 +1,5 @@
 
-  Panel Error Reasons, Area Ready, Arm Night (0.3.10)
+  Panel Error Reasons, Area Ready, Arm Night, Lights, Zone Bypass (0.3.10)
 
   - Commands rejected by the panel with a non-zero `error_code` now raise the new
     `Elke27PanelError` (a subclass of `Elke27ProtocolError`) with
@@ -11,7 +11,17 @@
     `AreaState.ready_status` is exposed (#6).
   - `async_arm_area(mode=ArmMode.ARMED_NIGHT)` raises `Elke27InvalidArgument`
     before sending: the E27 has Away and Stay arming only (#4).
-  - Light status payloads are logged at debug level to diagnose #7.
+  - A wrong user code on arm/disarm is answered with 11004; its reason now reads
+    "invalid parameter (check the user code)" (#5).
+  - `async_set_zone_bypass` sends the PIN as a JSON integer, like arm/disarm (a
+    string PIN was answered with 11008), and a panel 11008 reply raises
+    `Elke27PanelError` with reason "not authorized" instead of "Operation
+    failed." (#10).
+  - Light `set_status` acks (`{light_id, error_code}` with no state) no longer
+    emit a stale `LightStatusUpdated`; `on` is derived from `level > 0` whenever
+    a status reply reports a level (`get_status` sends only `level`), so the
+    follow-up `get_status` updates the light (#7). Light status payloads are
+    logged at debug level.
 
   Arm/Disarm PIN Handling (0.3.9)
 

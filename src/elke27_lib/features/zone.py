@@ -184,4 +184,9 @@ def build_zone_set_status_payload(
         raise ValueError(
             f"build_zone_set_status_payload: zone_id must be int >= 1 (got {zone_id!r})"
         )
+    # The panel expects the PIN as a JSON integer.
+    if isinstance(pin, str) and pin.isascii() and pin.isdigit():
+        pin = int(pin)
+    if isinstance(pin, bool) or not isinstance(pin, int) or pin <= 0:
+        raise ValueError("build_zone_set_status_payload: pin must be a positive int")
     return {"zone_id": zone_id, "pin": pin, "BYPASSED": bypassed}

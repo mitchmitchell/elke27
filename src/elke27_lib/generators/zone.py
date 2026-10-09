@@ -44,8 +44,11 @@ def generator_zone_get_def_flags(*, definition: str) -> tuple[dict[str, object],
 
 
 def generator_zone_set_status(
-    *, zone_id: int, pin: int | str, bypassed: bool
+    *, zone_id: int, pin: int, bypassed: bool
 ) -> tuple[dict[str, object], ResponseKey]:
     if zone_id < 1:
         raise ValueError(f"zone_id must be an int >= 1 (got {zone_id!r})")
+    # The panel expects the PIN as a JSON integer (a string PIN gets 11008).
+    if isinstance(pin, bool) or not isinstance(pin, int) or pin <= 0:
+        raise ValueError(f"pin must be a positive int (got {pin!r})")
     return {"zone_id": zone_id, "pin": pin, "BYPASSED": bypassed}, ("zone", "set_status")
