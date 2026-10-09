@@ -14,9 +14,7 @@ import elke27_lib.client as client_mod
 from elke27_lib.client import Elke27Client, Result
 from elke27_lib.dispatcher import PagedBlock
 from elke27_lib.errors import (
-    AuthorizationRequired,
     ConnectionLost,
-    E27Error,
     E27Timeout,
     E27TransportError,
     Elke27ConnectionError,
@@ -728,7 +726,8 @@ async def test_async_execute_single_error_handling(monkeypatch: pytest.MonkeyPat
 
     _patch_send_with_msg(monkeypatch, client._kernel, {"test": {"cmd": {"error_code": 11008}}})
     err = await client.async_execute("test_single")
-    assert isinstance(err.error, AuthorizationRequired)
+    assert isinstance(err.error, client_mod.Elke27PanelError)
+    assert err.error.panel_error_code == 11008
 
     _patch_send_with_msg(monkeypatch, client._kernel, {"test": {"other": 1}})
     err = await client.async_execute("test_single")
@@ -767,15 +766,16 @@ async def test_async_execute_single_error_handling(monkeypatch: pytest.MonkeyPat
     err = await client.async_execute("test_single")
     assert isinstance(err.error, Elke27PinRequiredError)
     err = await client.async_execute("test_single", pin="abc")
-    assert isinstance(err.error, InvalidPinError)
+    assert isinstance(err.error, client_mod.Elke27InvalidArgument)
     err = await client.async_execute("test_single", pin=0)
-    assert isinstance(err.error, InvalidPinError)
+    assert isinstance(err.error, client_mod.Elke27InvalidArgument)
     err = await client.async_execute("test_single", pin=object())
-    assert isinstance(err.error, InvalidPinError)
+    assert isinstance(err.error, client_mod.Elke27InvalidArgument)
 
     _patch_send_with_msg(monkeypatch, client._kernel, {"test": {"cmd": {"error_code": 7}}})
     err = await client.async_execute("test_single", pin="1234")
-    assert isinstance(err.error, E27Error)
+    assert isinstance(err.error, client_mod.Elke27PanelError)
+    assert err.error.panel_error_code == 7
 
 
 @pytest.mark.asyncio
@@ -857,7 +857,8 @@ async def test_async_execute_paged_error_handling(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr(client._kernel, "send_request_with_seq", _send_error_code)
     err = await client.async_execute("test_paged")
-    assert isinstance(err.error, AuthorizationRequired)
+    assert isinstance(err.error, client_mod.Elke27PanelError)
+    assert err.error.panel_error_code == 11008
 
     def _send_missing_block_count(*args: Any, **kwargs: Any) -> int:
         seq = args[0]
@@ -935,7 +936,8 @@ async def test_async_execute_paged_error_handling(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr(client._kernel, "send_request_with_seq", _send_error_code_other)
     err = await client.async_execute("test_paged")
-    assert isinstance(err.error, E27Error)
+    assert isinstance(err.error, client_mod.Elke27PanelError)
+    assert err.error.panel_error_code == 7
 
     def _gen_fail(**_k: Any) -> tuple[dict[str, Any], tuple[str, str]]:
         raise E27TransportError("x")

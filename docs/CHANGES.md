@@ -1,3 +1,13 @@
+  async_execute Panel Errors and ASCII PIN Validation (0.3.11) — UNRELEASED
+
+  - `async_execute` now returns `Elke27PanelError` (with `panel_error_code`,
+    `reason`, and a warning log) when the panel answers with a non-zero
+    `error_code`, including single and paged responses. Helpers that already
+    mapped panel errors via `_raise_v2_command_error` are unchanged.
+  - String PIN validation for `async_execute` and wire coercion now requires
+    ASCII digits only (`0`–`9`). Unicode numerals and other non-digit strings
+    raise `Elke27InvalidArgument` before anything is sent instead of escaping
+    as `ValueError`.
 
   Panel Error Reasons, Area Ready, Arm Night, Lights, Zone Bypass (0.3.10)
 

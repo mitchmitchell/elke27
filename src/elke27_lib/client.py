@@ -351,6 +351,11 @@ def _generator_pin_wants_int(generator: Callable[..., Any], pin_param: inspect.P
     return "int" in names and "str" not in names
 
 
+def _is_ascii_digit_string(value: str) -> bool:
+    """True when ``value`` is non-empty and contains only ASCII digits 0-9."""
+    return bool(value) and value.isascii() and value.isdigit()
+
+
 def _normalize_area_pin(pin: object, *, action: str) -> int:
     """Validate an arm/disarm PIN and return the integer sent on the wire.
 
@@ -365,7 +370,7 @@ def _normalize_area_pin(pin: object, *, action: str) -> int:
     if isinstance(pin, int):
         pin_value = pin
     elif isinstance(pin, str):
-        if not (pin.isascii() and pin.isdigit()):
+        if not _is_ascii_digit_string(pin):
             raise Elke27InvalidArgument("PIN must be a non-empty digit string.")
         pin_value = int(pin)
     else:
@@ -666,6 +671,38 @@ class Elke27Client:
                 raise Elke27ProtocolErrorV2("Protocol error.") from None
 
         raise Elke27ProtocolErrorV2("Operation failed.") from None
+
+    def _panel_error_for_async_execute(
+        self, command_key: str, panel_error_code: int
+    ) -> Elke27PanelError:
+        reason = panel_error_reason(panel_error_code)
+        self._log.warning(
+            "Panel rejected %s: %s (error %s)",
+            command_key,
+            reason,
+            panel_error_code,
+        )
+        return Elke27PanelError(panel_error_code, reason)
+
+    @staticmethod
+    def _wire_pin_string_error(
+        spec: CommandSpec, params: Mapping[str, Any]
+    ) -> Elke27InvalidArgument | None:
+        pin_value = params.get("pin")
+        if not isinstance(pin_value, str) or not pin_value:
+            return None
+        try:
+            signature = inspect.signature(spec.generator)
+        except (TypeError, ValueError):
+            return None
+        pin_param = signature.parameters.get("pin")
+        if pin_param is None:
+            return None
+        if _generator_pin_wants_int(spec.generator, pin_param) and not _is_ascii_digit_string(
+            pin_value
+        ):
+            return Elke27InvalidArgument("PIN must be a non-empty digit string.")
+        return None
 
     def _raise_v2_command_error(self, err: BaseException) -> None:
         if isinstance(err, Elke27Error):
@@ -1869,7 +1906,7 @@ class Elke27Client:
             if pin_value is None or (isinstance(pin_value, str) and not pin_value):
                 return _err(Elke27PinRequiredError())
             if isinstance(pin_value, str):
-                if not pin_value.isdigit():
+                if not _is_ascii_digit_string(pin_value):
                     return _err(InvalidPinError("PIN must be a non-empty digit string."))
                 pin_int = int(pin_value)
             elif isinstance(pin_value, int):
@@ -1904,13 +1941,13 @@ class Elke27Client:
             if pin_value is None or (isinstance(pin_value, str) and not pin_value):
                 return _err(Elke27PinRequiredError())
             if isinstance(pin_value, str):
-                if not pin_value.isdigit():
-                    return _err(InvalidPinError("PIN must be a non-empty digit string."))
+                if not _is_ascii_digit_string(pin_value):
+                    return _err(Elke27InvalidArgument("PIN must be a non-empty digit string."))
             elif isinstance(pin_value, int):
                 if pin_value <= 0:
-                    return _err(InvalidPinError("PIN must be a positive integer."))
+                    return _err(Elke27InvalidArgument("PIN must be a positive integer."))
             else:
-                return _err(InvalidPinError("PIN must be a non-empty digit string."))
+                return _err(Elke27InvalidArgument("PIN must be a non-empty digit string."))
 
         if spec.response_mode == "single":
             if spec.key == "area_get_attribs":
@@ -2047,6 +2084,9 @@ class Elke27Client:
                             item for item in keypads_list if isinstance(item, int) and item >= 1
                         }
                     inv.configured_keypads_complete = True
+            pin_error = self._wire_pin_string_error(spec, params)
+            if pin_error is not None:
+                return _err(pin_error)
             params_for_generator = self._coerce_pin_for_generator(spec, params)
             try:
                 payload, expected_route = spec.generator(**params_for_generator)
@@ -2118,11 +2158,7 @@ class Elke27Client:
 
             error_code = self._extract_error_code(msg, expected_route)
             if error_code is not None:
-                if error_code == 11008:
-                    return _err(
-                        AuthorizationRequired("Authorization is required for this operation.")
-                    )
-                return _err(E27PanelErrorResponse(command_key, error_code))
+                return _err(self._panel_error_for_async_execute(command_key, error_code))
 
             response_payload = self._extract_response_payload(msg, expected_route)
             return _ok(response_payload)
@@ -2140,6 +2176,10 @@ class Elke27Client:
         timeout_value = (
             timeout_s if timeout_s is not None else getattr(self._kernel, "_request_timeout_s", 5.0)
         )
+        pin_error = self._wire_pin_string_error(spec, params)
+        if pin_error is not None:
+            return _err(pin_error)
+
         block_id = spec.first_block
         block_count: int | None = None
         blocks: list[PagedBlock] = []
@@ -2213,11 +2253,7 @@ class Elke27Client:
 
             error_code = self._extract_error_code(msg, expected_route)
             if error_code is not None:
-                if error_code == 11008:
-                    return _err(
-                        AuthorizationRequired("Authorization is required for this operation.")
-                    )
-                return _err(E27PanelErrorResponse(command_key, error_code))
+                return _err(self._panel_error_for_async_execute(command_key, error_code))
 
             response_payload = self._extract_response_payload(msg, expected_route)
             response_block_count = self._coerce_block_count(
@@ -2258,7 +2294,7 @@ class Elke27Client:
         if not hasattr(auth_queue, "get"):
             return _err(ProtocolError("Authenticate opaque must support get()."))
         pin_value = kwargs.get("pin")
-        if isinstance(pin_value, str) and pin_value.isdigit():
+        if isinstance(pin_value, str) and _is_ascii_digit_string(pin_value):
             self._last_auth_pin = int(pin_value)
         elif isinstance(pin_value, int):
             self._last_auth_pin = pin_value
@@ -2572,7 +2608,7 @@ class Elke27Client:
             elif (
                 pin_param is not None
                 and isinstance(pin_value, str)
-                and pin_value.isdigit()
+                and _is_ascii_digit_string(pin_value)
                 and _generator_pin_wants_int(spec.generator, pin_param)
             ):
                 # The wire field is a JSON integer, so leading zeros are not
