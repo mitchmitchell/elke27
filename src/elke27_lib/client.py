@@ -2323,6 +2323,12 @@ class Elke27Client:
                 if isinstance(zone_id, int) and zone_id > 0:
                     self._record_local_zone_bypass(zone_id)
 
+            snapshot_wait_baseline: int | None = (
+                self._snapshot_version
+                if command_key in {"area_set_arm_state", "zone_set_status"}
+                else None
+            )
+
             loop = asyncio.get_running_loop()
             seq = self._kernel.next_seq()
             future = self._kernel.pending_responses.create(
@@ -2383,14 +2389,13 @@ class Elke27Client:
                 return _err(self._panel_error_for_async_execute(command_key, error_code))
 
             response_payload = self._extract_response_payload(msg, expected_route)
-            snapshot_wait_baseline = self._snapshot_version
             status_refresh_ok = await self._status_refresh_after_successful_write(
                 command_key,
                 params,
                 response_payload,
                 timeout_s=timeout_s,
             )
-            if command_key in {"area_set_arm_state", "zone_set_status"}:
+            if snapshot_wait_baseline is not None:
                 await self._await_snapshot_publication(
                     snapshot_wait_baseline,
                     timeout_s=timeout_s,

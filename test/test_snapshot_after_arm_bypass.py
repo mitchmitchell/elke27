@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from typing import Any, cast
 
 import pytest
@@ -16,7 +17,6 @@ from elke27_lib.events import (
     UNSET_SEQ,
     UNSET_SESSION_ID,
     AreaStatusUpdated,
-    Event,
     PanelAttribsUpdated,
 )
 from elke27_lib.types import EventType, PanelInfo
@@ -285,36 +285,92 @@ def test_area_arm_status_reconciliation_clears_stale_flag() -> None:
 
 
 @pytest.mark.asyncio
-async def test_async_execute_waits_for_deferred_snapshot_publication() -> None:
-    """Regression for Codex r4238451930: reply future resolves before dispatch."""
+async def test_async_execute_waits_for_receive_thread_snapshot_publication() -> None:
+    """Regression for Codex r4238451930 (receive-thread resolve before loop dispatch).
+
+    ``E27Kernel._on_message`` resolves the pending future before ``dispatch`` and
+    ``client._on_kernel_event`` schedules ``_handle_kernel_event`` with
+    ``call_soon_threadsafe``. A same-thread ``call_soon`` driver cannot reproduce
+    that gap; deliver the panel reply from a worker thread and defer
+    ``call_soon_threadsafe(_handle_kernel_event)`` so ``async_execute`` would return
+    before snapshot publication without ``_await_snapshot_publication``.
+    """
     client, session = _make_client()
     loop = asyncio.get_running_loop()
+    cast(Any, client)._connected = True
     client._event_loop = loop
     kernel = get_kernel(client)
     kernel.state.get_or_create_area(1).arm_state = "DISARMED"
+    client._replace_snapshot(areas=client._build_area_map())
 
-    def deferred_on_kernel_event(evt: Event) -> None:
-        loop.call_soon(client._handle_kernel_event, evt)
+    deferred_handles: list[tuple[Any, tuple[Any, ...]]] = []
+    real_call_soon_threadsafe = loop.call_soon_threadsafe
 
-    assert client._kernel_event_token is not None
-    client._kernel.unsubscribe(client._kernel_event_token)
-    client._kernel_event_token = client._kernel.subscribe(deferred_on_kernel_event)
+    def intercept_call_soon_threadsafe(fn: Any, /, *args: Any) -> None:
+        if (
+            getattr(fn, "__name__", None) == "_handle_kernel_event"
+            and getattr(fn, "__self__", None) is client
+        ):
+            deferred_handles.append((fn, args))
+            return
+        real_call_soon_threadsafe(fn, *args)
 
-    result = await _drive_until_done(
-        client,
-        session,
+    loop.call_soon_threadsafe = intercept_call_soon_threadsafe  # type: ignore[method-assign]
+
+    async def flush_deferred_snapshot_handles() -> None:
+        while not deferred_handles:
+            await asyncio.sleep(0)
+        await asyncio.sleep(0.02)
+        while deferred_handles:
+            fn, args = deferred_handles.pop(0)
+            fn(*args)
+
+    flush_task = asyncio.create_task(flush_deferred_snapshot_handles())
+    snapshot_version_before = client.snapshot.version
+
+    task = asyncio.create_task(
         client.async_execute(
             "area_set_arm_state",
             area_id=1,
             arm_state="ARMED_AWAY",
             pin=1234,
-        ),
-        first_reply={
-            "seq": 0,
-            "area": {"set_arm_state": {"area_id": 1, "error_code": E27ErrorCode.ELKERR_NONE}},
-        },
+        )
     )
 
+    while not session.sent:
+        await asyncio.sleep(0.01)
+
+    sent = session.sent[0]
+    on_message = get_private(kernel, "_on_message")
+    reply = {
+        "seq": sent["seq"],
+        "area": {
+            "set_arm_state": {
+                "area_id": 1,
+                "error_code": E27ErrorCode.ELKERR_NONE,
+                "arm_state": "ARMED_AWAY",
+            }
+        },
+    }
+
+    delivery_error: list[BaseException] = []
+
+    def receive_thread() -> None:
+        try:
+            on_message(reply)
+        except BaseException as exc:  # noqa: BLE001
+            delivery_error.append(exc)
+
+    threading.Thread(target=receive_thread, name="fake-receive", daemon=True).start()
+
+    result = await task
+
+    assert delivery_error == []
     assert isinstance(result, Result)
     assert result.ok is True
+    assert result.status_refresh_ok is True
+    assert client.snapshot.version > snapshot_version_before
     assert client.snapshot.areas[1].arm_mode == ArmMode.ARMED_AWAY
+
+    await flush_task
+    loop.call_soon_threadsafe = real_call_soon_threadsafe  # type: ignore[method-assign]
