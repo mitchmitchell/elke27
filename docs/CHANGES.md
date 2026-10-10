@@ -8,7 +8,8 @@
   - A request that times out with no inbound traffic since it was sent
     triggers an immediate probe. New `Elke27Client.request_link_check()` lets
     callers do the same (no-op when not connected).
-  - Connection loss logs exactly one WARNING (`Panel connection lost`); restore
+  - Connection loss logs `Panel connection lost` once at WARNING (an in-flight
+    request abort or an interrupted keepalive check may also log a WARNING); restore
     logs at INFO; a deliberate close/unload logs at DEBUG. `Session disconnect`
     and `keepalive response missing` are INFO (#19, #20).
 
