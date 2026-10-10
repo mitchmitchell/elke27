@@ -754,6 +754,42 @@ class Elke27Client:
         if delay_s > 0.0:
             await asyncio.sleep(delay_s)
 
+    def _command_transport_wait_budget_s(self, per_attempt_timeout_s: float) -> float:
+        return self._kernel.command_transport_wait_budget_s(per_attempt_timeout_s)
+
+    async def _await_kernel_command_response(
+        self,
+        *,
+        seq: int,
+        command_key: str,
+        sent_event: asyncio.Event,
+        future: asyncio.Future[Mapping[str, Any]],
+        per_attempt_timeout_s: float,
+    ) -> Result[Mapping[str, Any]]:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._command_transport_wait_budget_s(per_attempt_timeout_s)
+
+        def _remaining_s() -> float:
+            return max(0.0, deadline - loop.time())
+
+        try:
+            await asyncio.wait_for(sent_event.wait(), timeout=_remaining_s())
+            msg = await asyncio.wait_for(future, timeout=_remaining_s())
+        except TimeoutError:
+            timeout_exc = E27Timeout(f"async_execute timeout waiting for {command_key} seq={seq}")
+            self._kernel.cancel_command_transport(seq, timeout_exc)
+            return _err(timeout_exc)
+        except asyncio.CancelledError:
+            self._kernel.cancel_command_transport(
+                seq, E27Timeout(f"async_execute cancelled for {command_key} seq={seq}")
+            )
+            raise
+        except _CLIENT_EXCEPTIONS as exc:
+            detail = f"command_key={command_key} seq={seq}"
+            return _err(self._normalize_error(exc, phase="execute", detail=detail))
+
+        return _ok(msg)
+
     @staticmethod
     def _wire_pin_string_error(
         spec: CommandSpec, params: Mapping[str, Any]
@@ -2230,21 +2266,18 @@ class Elke27Client:
                     detail = f"command_key={command_key} seq={seq}"
                     return _err(self._normalize_error(exc, phase="execute", detail=detail))
 
-                try:
-                    await sent_event.wait()
-                    msg = await asyncio.wait_for(future, timeout=timeout_value)
-                except TimeoutError:
-                    self._kernel.pending_responses.drop(seq)
-                    return _err(
-                        E27Timeout(f"async_execute timeout waiting for {command_key} seq={seq}")
-                    )
-                except asyncio.CancelledError:
-                    self._kernel.pending_responses.drop(seq)
-                    raise
-                except _CLIENT_EXCEPTIONS as exc:
-                    self._kernel.pending_responses.drop(seq)
-                    detail = f"command_key={command_key} seq={seq}"
-                    return _err(self._normalize_error(exc, phase="execute", detail=detail))
+                wait_result = await self._await_kernel_command_response(
+                    seq=seq,
+                    command_key=command_key,
+                    sent_event=sent_event,
+                    future=future,
+                    per_attempt_timeout_s=timeout_value,
+                )
+                if not wait_result.ok:
+                    return wait_result
+                msg = wait_result.data
+                if msg is None:
+                    return _err(ProtocolError(f"{command_key} returned no response payload."))
 
                 if not self._has_expected_payload(msg, expected_route):
                     return _err(
@@ -2339,21 +2372,18 @@ class Elke27Client:
                     detail = f"command_key={command_key} seq={seq}"
                     return _err(self._normalize_error(exc, phase="execute", detail=detail))
 
-                try:
-                    await sent_event.wait()
-                    msg = await asyncio.wait_for(future, timeout=timeout_value)
-                except TimeoutError:
-                    self._kernel.pending_responses.drop(seq)
-                    return _err(
-                        E27Timeout(f"async_execute timeout waiting for {command_key} seq={seq}")
-                    )
-                except asyncio.CancelledError:
-                    self._kernel.pending_responses.drop(seq)
-                    raise
-                except _CLIENT_EXCEPTIONS as exc:
-                    self._kernel.pending_responses.drop(seq)
-                    detail = f"command_key={command_key} seq={seq}"
-                    return _err(self._normalize_error(exc, phase="execute", detail=detail))
+                wait_result = await self._await_kernel_command_response(
+                    seq=seq,
+                    command_key=command_key,
+                    sent_event=sent_event,
+                    future=future,
+                    per_attempt_timeout_s=timeout_value,
+                )
+                if not wait_result.ok:
+                    return wait_result
+                msg = wait_result.data
+                if msg is None:
+                    return _err(ProtocolError(f"{command_key} returned no response payload."))
 
                 if not self._has_expected_payload(msg, expected_route):
                     return _err(
@@ -2488,18 +2518,18 @@ class Elke27Client:
             detail = "route=authenticate.__root__"
             return _err(self._normalize_error(exc, phase="request", detail=detail))
 
-        try:
-            await sent_event.wait()
-            msg = await asyncio.wait_for(future, timeout=timeout_value)
-        except TimeoutError:
-            self._kernel.pending_responses.drop(seq)
-            return _err(E27Timeout("Authenticate response timed out."))
-        except asyncio.CancelledError:
-            self._kernel.pending_responses.drop(seq)
-            raise
-        except _CLIENT_EXCEPTIONS as exc:
-            self._kernel.pending_responses.drop(seq)
-            return _err(self._normalize_error(exc, phase="authenticate"))
+        wait_result = await self._await_kernel_command_response(
+            seq=seq,
+            command_key="control_authenticate",
+            sent_event=sent_event,
+            future=future,
+            per_attempt_timeout_s=timeout_value,
+        )
+        if not wait_result.ok:
+            return wait_result
+        msg = wait_result.data
+        if msg is None:
+            return _err(ProtocolError("control_authenticate returned no response payload."))
 
         if not self._has_expected_payload(msg, expected_route):
             return _err(

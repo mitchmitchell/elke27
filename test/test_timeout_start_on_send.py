@@ -125,6 +125,9 @@ class _FakeKernel:
         )
         return seq
 
+    def command_transport_wait_budget_s(self, request_timeout_s: float) -> float:
+        return E27Kernel.transport_wait_budget_s(request_timeout_s, 2, 30.0)
+
     def send_request_with_seq(
         self,
         seq: int,

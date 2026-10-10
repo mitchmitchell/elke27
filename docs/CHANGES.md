@@ -2,16 +2,19 @@
 
   - Command transport failures are retried with bounded exponential backoff using
     the existing `request_max_retries` / `request_max_backoff_s` kernel settings
-    (#12). Retries apply to reply timeouts, send failures, session disconnect
-    while a command is pending, and panel busy (`error_code` 11039) on
-    `async_execute`. Panel refusals (any other non-zero `error_code`, permission,
-    auth, or invalid argument) are never retried. Mutating commands where a
-    timeout may still have changed panel state (`area.set_arm_state` arming,
-    `zone.set_status`, `output.set_status`) are only retried when the outbound
-    frame was not confirmed sent; other routes may retry after a reply timeout.
-    Disarm uses high outbound priority, is requeued immediately on transport
-    retry (no backoff), and is not delayed behind other commands waiting to
-    retry.
+    (#12). Retries apply to reply timeouts and send failures while the session
+    stays up, and to panel busy (`ELKERR_ZWAVE_BUSY`, 11039) on `async_execute`.
+    Session loss fails queued and in-flight commands immediately (no stale resend
+    after reconnect). Each command gets an absolute deadline; `async_execute`
+    waits for the full transport budget (~16.5 s with defaults: `(retries+1) ×
+    5 s timeout + 0.5 s + 1 s backoff`) and cancels kernel retries if the
+    caller times out. Transport retries reuse the same JSON `seq` on resend.
+    Panel refusals (any other non-zero `error_code`, permission, auth, or invalid
+    argument) are never retried. After a confirmed send, only reads and disarm
+    may retry on reply timeout; arming and bypass stay at-most-once. Disarm is
+    always `OutboundPriority.HIGH`, is requeued immediately on transport retry
+    (no backoff), and is not delayed behind other commands waiting to retry.
+    `kernel.close()` cancels transport retry timers and fails queued commands.
 
   - Reconnect `async_connect` attempts while the panel is unreachable no longer
     log `Connect failed (attempt n/2)` at ERROR every few seconds (#21). After
