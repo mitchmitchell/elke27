@@ -451,6 +451,7 @@ class Elke27Client:
     ) -> None:
         self._log: logging.Logger = logger or logging.getLogger(__name__)
         self._connection_lost_logged = False
+        self._connect_failures_warning_logged = False
         self._feature_modules: Sequence[str] | None = features
         self._v2_config: ClientConfig | None = config
         self._v2_client_identity: linking_mod.E27Identity | None = None
@@ -672,6 +673,51 @@ class Elke27Client:
                 raise Elke27ProtocolErrorV2("Protocol error.") from None
 
         raise Elke27ProtocolErrorV2("Operation failed.") from None
+
+    def _is_transient_connect_error(self, exc: BaseException) -> bool:
+        for err in _iter_causes(exc):
+            if isinstance(
+                err,
+                (
+                    E27ProvisioningRequired,
+                    KernelMissingContextError,
+                    E27ProvisioningTimeout,
+                    InvalidCredentials,
+                    E27AuthFailed,
+                    InvalidPinError,
+                    E27LinkInvalid,
+                    CryptoError,
+                    E27ProtocolError,
+                    E27MissingContext,
+                    KernelInvalidPanelError,
+                    KernelNotLinkedError,
+                ),
+            ):
+                return False
+            if isinstance(
+                err,
+                (E27TransportError, OSError, ConnectionError, TimeoutError, asyncio.TimeoutError),
+            ):
+                return True
+            if isinstance(err, KernelError):
+                return True
+        return False
+
+    def _log_connect_attempt_failure(self, attempt: int, exc: BaseException) -> None:
+        message = "Connect failed (attempt %s/2): %s"
+        if not self._is_transient_connect_error(exc):
+            self._log.error(message, attempt, exc, exc_info=True)
+            return
+        if self._connection_lost_logged:
+            if self._log.isEnabledFor(logging.DEBUG):
+                self._log.debug(message, attempt, exc)
+            return
+        if not self._connect_failures_warning_logged:
+            self._log.warning(message, attempt, exc)
+            self._connect_failures_warning_logged = True
+            return
+        if self._log.isEnabledFor(logging.DEBUG):
+            self._log.debug(message, attempt, exc)
 
     def _panel_error_for_async_execute(
         self, command_key: str, panel_error_code: int
@@ -1542,14 +1588,12 @@ class Elke27Client:
                 break
             except BaseException as exc:  # noqa: BLE001
                 connect_exc = exc
-                self._log.error(
-                    "Connect failed (attempt %s/2): %s",
-                    attempt + 1,
-                    exc,
-                    exc_info=True,
-                )
+                self._log_connect_attempt_failure(attempt + 1, exc)
         if connect_exc is not None:
             self._raise_v2_error(connect_exc, phase="connect")
+        if self._connect_failures_warning_logged and not self._connection_lost_logged:
+            self._log.info("Panel connection established after connect failures")
+        self._connect_failures_warning_logged = False
         self._connected = True
         if self._snapshot.version == 0:
             self._replace_snapshot(
