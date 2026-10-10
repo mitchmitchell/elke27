@@ -23,6 +23,7 @@ Notes
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextlib
 import importlib
 import json
@@ -40,6 +41,11 @@ from typing import (
 )
 
 LOG = logging.getLogger(__name__)
+
+_CONNECT_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="e27-connect"
+)
+
 from . import discovery, linking
 from . import session as session_mod
 from .const import REDACT_DIAGNOSTICS
@@ -569,8 +575,28 @@ class E27Kernel:
         def _do_connect_sync() -> session_mod.SessionInfo:
             return s.connect()
 
+        loop = asyncio.get_running_loop()
+        connect_cf: concurrent.futures.Future[session_mod.SessionInfo] = _CONNECT_EXECUTOR.submit(
+            _do_connect_sync
+        )
         try:
-            await asyncio.to_thread(_do_connect_sync)
+            await asyncio.wrap_future(connect_cf, loop=loop)
+        except asyncio.CancelledError:
+
+            def _close_after_connect(
+                _cf: concurrent.futures.Future[session_mod.SessionInfo],
+            ) -> None:
+                def _close() -> None:
+                    with contextlib.suppress(Exception):
+                        s.close()
+
+                try:
+                    loop.call_soon_threadsafe(_close)
+                except RuntimeError:
+                    s.close()
+
+            connect_cf.add_done_callback(_close_after_connect)
+            raise
         except Exception as e:
             raise KernelError(f"Session connect failed for {host}:{port}: {e}") from e
 
