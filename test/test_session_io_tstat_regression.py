@@ -6,6 +6,7 @@ Uses faked transports only (no kernel.connect / client.async_connect).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import socket
 import threading
@@ -304,6 +305,37 @@ def test_send_all_preserves_socket_timeout_after_stalled_and_successful_send() -
     finally:
         send_sock.close()
         recv_sock.close()
+
+
+def test_send_all_on_closed_socket_raises_session_io_error() -> None:
+    send_sock, recv_sock = socket.socketpair()
+    send_sock.close()
+    recv_sock.close()
+    sess = _session_on_socketpair(send_sock, io_write_timeout_s=1.0)
+    with pytest.raises(SessionIOError, match="write failed"):
+        sess._send_all(b"data")
+
+
+def test_send_all_closed_during_select_raises_session_io_error() -> None:
+    send_sock, recv_sock = socket.socketpair()
+    try:
+        send_sock.settimeout(0.5)
+        sess = _session_on_socketpair(send_sock, io_write_timeout_s=2.0)
+        _fill_socket_send_buffer(send_sock)
+        closed = threading.Event()
+
+        def _close_while_blocked() -> None:
+            time.sleep(0.05)
+            send_sock.close()
+            closed.set()
+
+        threading.Thread(target=_close_while_blocked, name="close-sock", daemon=True).start()
+        with pytest.raises(SessionIOError):
+            sess._send_all(b"blocked" * 8192)
+        closed.wait(timeout=1.0)
+    finally:
+        with contextlib.suppress(OSError):
+            recv_sock.close()
 
 
 def test_stalled_send_does_not_disrupt_concurrent_recv() -> None:

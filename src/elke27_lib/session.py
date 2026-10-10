@@ -319,7 +319,7 @@ class Session:
                 return
             try:
                 _, writable, _ = select.select([], [sock], [], remaining)
-            except OSError as e:
+            except (OSError, ValueError) as e:
                 raise SessionIOError(
                     f"Socket write failed to {self.cfg.host}:{self.cfg.port}: {e}"
                 ) from e
@@ -437,7 +437,7 @@ class Session:
                 self._last_exchange_at = now
         except SessionIOError:
             raise
-        except OSError as e:
+        except (OSError, ValueError) as e:
             raise SessionIOError(
                 f"Socket write failed to {self.cfg.host}:{self.cfg.port}: {e}"
             ) from e
