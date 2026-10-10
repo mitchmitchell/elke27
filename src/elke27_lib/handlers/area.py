@@ -148,12 +148,18 @@ _EXIT_DELAY_PAYLOAD_KEYS: tuple[str, ...] = (
 )
 
 
+def _field_value_matches_type(value: object, expected: type | tuple[type, ...]) -> bool:
+    if isinstance(value, bool) and expected is int:
+        return False
+    return isinstance(value, expected)
+
+
 def _exit_delay_field_valid_in_payload(payload: Mapping[str, Any], key: str) -> bool:
     if key not in payload:
         return False
     expected = _EXPECTED_TYPES.get(key)
     value = payload.get(key)
-    if expected is not None and not isinstance(value, expected):
+    if expected is not None and not _field_value_matches_type(value, expected):
         return False
     return True
 
@@ -197,18 +203,28 @@ def apply_area_exit_delay_clearing_rules(
         key for key in _EXIT_DELAY_PAYLOAD_KEYS if _exit_delay_field_valid_in_payload(payload, key)
     }
 
-    is_timer_tick_only = (
+    if any(key in payload for key in _EXIT_DELAY_PAYLOAD_KEYS) and not applied_keys:
+        return
+
+    if (
         applied_keys == {"ee_timer"}
         and prev_payload_complete
         and prev_ee_timer is not None
-        and area.ee_timer is not None
-        and area.ee_timer < prev_ee_timer
-        and area.ee_timer > 0
-    )
-
-    if is_timer_tick_only:
-        area.exit_delay_payload_complete = True
-        return
+        and isinstance(area.ee_timer, int)
+        and not isinstance(area.ee_timer, bool)
+    ):
+        new_timer = area.ee_timer
+        if new_timer == 0:
+            pass
+        elif new_timer > prev_ee_timer:
+            if area.ee_timer != prev_ee_timer:
+                area.ee_timer = prev_ee_timer
+                changed.add("ee_timer")
+            area.exit_delay_payload_complete = True
+            return
+        elif 0 < new_timer <= prev_ee_timer:
+            area.exit_delay_payload_complete = True
+            return
 
     for key in _EXIT_DELAY_PAYLOAD_KEYS:
         if not _exit_delay_field_valid_in_payload(payload, key):
@@ -267,7 +283,7 @@ def _reconcile_area_state(
 
         value = payload.get(key)
         expected = _EXPECTED_TYPES.get(key)
-        if expected is not None and not isinstance(value, expected):
+        if expected is not None and not _field_value_matches_type(value, expected):
             warnings.append(
                 f"field '{key}' wrong type (expected {_type_name(expected)}, got {type(value).__name__})"
             )

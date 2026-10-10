@@ -6,8 +6,10 @@
     snapshot, `alarm_zone == ""` exactly (missing/`None` is not empty),
     `ee_timer` > 0, and the area is disarmed with a pending away/stay command.
     Partial payloads clear any of the four exit-delay fields not included, except
-    an `ee_timer`-only tick after a complete four-field payload while the timer
-    is still counting down. Reconnect and client snapshot reset clear pending
+    an `ee_timer`-only tick after a complete four-field payload: accept when
+    `0 < new <= previous` (duplicates allowed), ignore when `new > previous`,
+    and clear when `new == 0`. A restarted exit timer requires a fresh full
+    four-field payload. Reconnect and client snapshot reset clear pending
     exit-delay fields. A stay→away command change without a fresh full
     `get_status` leaves `arming` false; consumers should treat exit-delay skip
     logic only after a full four-field status read.

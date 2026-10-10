@@ -372,6 +372,95 @@ async def test_reconnect_clears_exit_delay_pending_on_kernel_connect(
     assert kernel.state.areas[1].alarm_zone is None
 
 
+def test_ee_timer_duplicate_tick_stays_arming_true() -> None:
+    state = PanelState()
+    handler = _status_handler(state)
+    assert handler({"area": {"get_status": _base_status_payload()}}, make_ctx()) is True
+    for timer in (40, 29, 29):
+        assert (
+            handler(
+                {
+                    "area": {
+                        "get_status": {
+                            "area_id": 1,
+                            "ee_timer": timer,
+                            "error_code": E27ErrorCode.ELKERR_NONE,
+                        }
+                    }
+                },
+                make_ctx(),
+            )
+            is True
+        )
+    area = state.areas[1]
+    assert area.ee_timer == 29
+    assert _snapshot_for(area).arming is True
+
+
+def test_ee_timer_late_higher_tick_ignored_keeps_previous() -> None:
+    state = PanelState()
+    handler = _status_handler(state)
+    assert handler({"area": {"get_status": _base_status_payload()}}, make_ctx()) is True
+    assert (
+        handler(
+            {
+                "area": {
+                    "get_status": {
+                        "area_id": 1,
+                        "ee_timer": 40,
+                        "error_code": E27ErrorCode.ELKERR_NONE,
+                    }
+                }
+            },
+            make_ctx(),
+        )
+        is True
+    )
+    assert (
+        handler(
+            {
+                "area": {
+                    "get_status": {
+                        "area_id": 1,
+                        "ee_timer": 50,
+                        "error_code": E27ErrorCode.ELKERR_NONE,
+                    }
+                }
+            },
+            make_ctx(),
+        )
+        is True
+    )
+    area = state.areas[1]
+    assert area.ee_timer == 40
+    assert _snapshot_for(area).arming is True
+
+
+def test_bool_ee_timer_rejected() -> None:
+    state = PanelState()
+    state.areas[1] = AreaState(
+        area_id=1,
+        arm_state="DISARMED",
+        arm_cmd_state="ARMED_AWAY",
+        ee_timer=30,
+        alarm_zone="",
+        exit_delay_payload_complete=True,
+    )
+    handler = _status_handler(state)
+    msg = {
+        "area": {
+            "get_status": {
+                "area_id": 1,
+                "ee_timer": True,
+                "error_code": E27ErrorCode.ELKERR_NONE,
+            }
+        }
+    }
+    assert handler(msg, make_ctx()) is True
+    area = state.areas[1]
+    assert area.ee_timer == 30
+
+
 def test_ee_timer_tick_after_full_payload_keeps_arming_true() -> None:
     state = PanelState()
     handler = _status_handler(state)

@@ -61,7 +61,9 @@ a breaking change.
     only when all four exit-delay fields are coherent, `alarm_zone == ""`
     exactly, `ee_timer` > 0, disarmed, and pending away/stay). Partial status
     payloads clear exit-delay fields not present (except allowed `ee_timer`-only
-    ticks after a complete four-field payload). Reconnect / snapshot reset clears
+    ticks after a complete four-field payload: `0 < new <= previous`, ignore
+    late `new > previous`, clear on `new == 0`; a restarted timer needs a full
+    status read). Reconnect / snapshot reset clears
     pending exit-delay state. Stay→away changes without a full `get_status`
     show `arming` false; use a fresh full status read before skip/entry logic.
 - `zones`
