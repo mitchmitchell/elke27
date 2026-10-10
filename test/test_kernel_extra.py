@@ -54,6 +54,7 @@ class _FakeSession:
         self.sent: list[dict[str, object]] = []
         self._outbound = None
         self.disconnected: Exception | None = None
+        self.sock: _FakeSocket | None = None
 
     def connect(self) -> session_mod.SessionInfo:
         return self.info
@@ -234,7 +235,6 @@ async def test_connect_cancellation_waits_and_closes_session(
     class _SlowSession(_FakeSession):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             super().__init__(*args, **kwargs)
-            self.sock: _FakeSocket | None = None
             sessions.append(self)
 
         def connect(self) -> session_mod.SessionInfo:  # type: ignore[override]
