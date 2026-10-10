@@ -1364,8 +1364,8 @@ class E27Kernel:
         self._signal_sent_event(seq)
         if self._log.isEnabledFor(logging.WARNING):
             self._log.warning("E27 send failed: seq=%s error=%s", seq, exc)
-        self._complete_active(reason="send_failed")
         self._disconnect_session_on_io_error(exc)
+        self._complete_active(reason="send_failed")
 
     def _disconnect_session_on_io_error(self, exc: BaseException) -> None:
         if not isinstance(exc, session_mod.SessionIOError):

@@ -341,6 +341,47 @@ async def test_kernel_send_io_error_tears_down_session() -> None:
     assert "Connection reset" in str(disconnected[0])
 
 
+@pytest.mark.asyncio
+async def test_send_io_error_disconnects_before_second_queued_send() -> None:
+    """SessionIOError teardown must run before _complete_active kicks the scheduler."""
+    kernel = E27Kernel()
+    kernel._loop = asyncio.get_running_loop()
+    kernel.state.panel.session_id = 9
+    kernel.requests.register(("tstat", "get_status"), lambda **_k: {"tstat_id": 1})
+
+    loop = asyncio.get_running_loop()
+
+    class _Session:
+        def __init__(self) -> None:
+            self.state = SessionState.ACTIVE
+            self.send_count = 0
+
+        def handle_disconnect(self, _err: Exception) -> None:
+            self.state = SessionState.DISCONNECTED
+
+        def send_json(
+            self,
+            _msg: dict[str, object],
+            *,
+            priority: object,
+            on_sent: Callable[[float], None] | None,
+            on_fail: Callable[[BaseException], None] | None,
+        ) -> None:
+            del priority, on_sent
+            self.send_count += 1
+            assert on_fail is not None
+            err = SessionIOError("Socket write failed to panel:2101: [Errno 32] Broken pipe")
+            loop.call_soon(on_fail, err)
+
+    sess = _Session()
+    cast(Any, kernel)._session = sess
+    kernel.request(("tstat", "get_status"), tstat_id=1)
+    kernel.request(("tstat", "get_status"), tstat_id=2)
+    await asyncio.sleep(0.05)
+    assert sess.send_count == 1
+    assert sess.state is SessionState.DISCONNECTED
+
+
 def test_disconnect_log_includes_exception_message(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
