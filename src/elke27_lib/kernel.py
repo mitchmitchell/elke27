@@ -1357,13 +1357,23 @@ class E27Kernel:
     def _handle_send_failure(self, seq: int, exc: BaseException) -> None:
         if self._active_seq != seq:
             self._mark_send_failed(seq, exc)
+            self._disconnect_session_on_io_error(exc)
             return
         self.dispatcher.drop_pending(seq)
         self._pending_responses.fail(seq, exc)
         self._signal_sent_event(seq)
         if self._log.isEnabledFor(logging.WARNING):
             self._log.warning("E27 send failed: seq=%s error=%s", seq, exc)
+        self._disconnect_session_on_io_error(exc)
         self._complete_active(reason="send_failed")
+
+    def _disconnect_session_on_io_error(self, exc: BaseException) -> None:
+        if not isinstance(exc, session_mod.SessionIOError):
+            return
+        session = self._session
+        if session is None or session.state is not session_mod.SessionState.ACTIVE:
+            return
+        session.handle_disconnect(exc)
 
     def _complete_active(self, *, reason: str) -> None:
         _ = reason
@@ -1532,10 +1542,10 @@ class E27Kernel:
                     msg,
                     priority=priority,
                     on_sent=lambda _: self._mark_request_sent(seq),
-                    on_fail=lambda exc: self._mark_send_failed(seq, exc),
+                    on_fail=lambda exc: self._handle_send_failure(seq, exc),
                 )
             except Exception as exc:
-                self._mark_send_failed(seq, exc)
+                self._handle_send_failure(seq, exc)
                 raise KernelError(
                     f"Failed to send request {domain}.{name} seq={seq}: {exc}"
                 ) from exc

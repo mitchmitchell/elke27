@@ -1,5 +1,13 @@
   UNRELEASED
 
+  - Session transport: serialize outbound `send()` with a send-only lock (recv
+    stays unlocked on its worker thread), enforce write deadlines with a
+    monotonic `io_write_timeout_s` without changing socket `settimeout` (so
+    read cadence stays at `io_timeout_s`), log partial sends, tear down the
+    session on kernel outbound `SessionIOError` (including no-reply sends), and
+    emit a single disconnect when both teardown and the recv thread observe a
+    dead socket (#8).
+
   - Behavior change: commands sent while not connected (no session / encryption
     key) now raise `Elke27DisconnectedError` (transient) from v2 command helpers
     instead of `Elke27PermissionError`. `ConnectionLost` during a command now
