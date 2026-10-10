@@ -1,5 +1,12 @@
   UNRELEASED
 
+  - Session transport: serialize outbound `send()` with a send-only lock (recv
+    stays unlocked on its worker thread), use a longer write timeout than the
+    0.5 s read cadence, log partial sends, tear down the session on kernel
+    outbound `SessionIOError` (including no-reply sends), and emit a single
+    disconnect when both teardown and the recv thread observe a dead socket
+    (#8).
+
   - Reconnect `async_connect` attempts while the panel is unreachable no longer
     log `Connect failed (attempt n/2)` at ERROR every few seconds (#21). After
     `Panel connection lost`, further transient failures log at DEBUG; the first

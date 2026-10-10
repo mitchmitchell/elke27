@@ -45,6 +45,7 @@ class SessionConfig:
     port: int = 2101  # Mitch preference: non-TLS port 2101
     connect_timeout_s: float = 5.0
     io_timeout_s: float = 0.5  # socket read timeout (pump cadence)
+    io_write_timeout_s: float = 5.0  # socket send timeout (longer than read cadence)
     hello_timeout_s: float = 5.0  # overall HELLO timeout
     recv_max_bytes: int = 4096  # per socket recv() call
     protocol_default: int = 0x80  # default protocol byte for schema-0 encrypted frames
@@ -115,7 +116,8 @@ class Session:
     _last_exchange_at: float
     _rx_count: int
     _recv_lock: threading.Lock
-    _io_lock: threading.Lock
+    _send_lock: threading.Lock
+    _disconnect_handled: bool
 
     def __init__(
         self,
@@ -137,6 +139,7 @@ class Session:
         self.state: SessionState = SessionState.DISCONNECTED
         self.last_error: Exception | None = None
         self._closing = False
+        self._disconnect_handled = False
 
         self._tx_envelope_seq = 1
         self._last_rx_envelope_seq: int | None = None
@@ -154,7 +157,7 @@ class Session:
         self._recv_thread: threading.Thread | None = None
         self._recv_stop: threading.Event | None = None
         self._recv_lock = threading.Lock()
-        self._io_lock = threading.Lock()
+        self._send_lock = threading.Lock()
         self._recv_task: asyncio.Task[None] | None = None
         self._recv_loop_ref: asyncio.AbstractEventLoop | None = None
         self._outbound: OutboundQueue | None = None
@@ -178,6 +181,7 @@ class Session:
             self.close()
 
         self.last_error = None
+        self._disconnect_handled = False
         self.state = SessionState.CONNECTING
 
         logger.info("E27 Session connecting to %s:%s", self.cfg.host, self.cfg.port)
@@ -283,33 +287,67 @@ class Session:
         self._require_ready()
         assert self.sock is not None
 
-        with self._io_lock:
-            try:
-                data = self.sock.recv(max_bytes)
-            except TimeoutError as e:
-                raise TimeoutError("Timed out waiting for data from the panel.") from e
-            except OSError as e:
-                raise SessionIOError(
-                    f"Socket read failed from {self.cfg.host}:{self.cfg.port}: {e}"
-                ) from e
+        try:
+            data = self.sock.recv(max_bytes)
+        except TimeoutError as e:
+            raise TimeoutError("Timed out waiting for data from the panel.") from e
+        except OSError as e:
+            raise SessionIOError(
+                f"Socket read failed from {self.cfg.host}:{self.cfg.port}: {e}"
+            ) from e
 
-            if not data:
-                raise SessionIOError(
-                    f"Connection closed by the panel ({self.cfg.host}:{self.cfg.port})."
-                )
+        if not data:
+            raise SessionIOError(
+                f"Connection closed by the panel ({self.cfg.host}:{self.cfg.port})."
+            )
 
-            return data
+        return data
 
     def _send_all(self, data: bytes) -> None:
         self._require_ready()
         assert self.sock is not None
+        sock = self.sock
+        total = len(data)
         try:
-            with self._io_lock:
-                self.sock.sendall(data)
+            with self._send_lock:
+                write_timeout = float(self.cfg.io_write_timeout_s)
+                read_timeout = float(self.cfg.io_timeout_s)
+                if write_timeout > 0:
+                    sock.settimeout(write_timeout)
+                send_fn = getattr(sock, "send", None)
+                if callable(send_fn):
+                    sent = 0
+                    view = memoryview(data)
+                    while sent < total:
+                        chunk = send_fn(view[sent:])
+                        if chunk == 0:
+                            raise SessionIOError(
+                                f"Socket write stalled to {self.cfg.host}:{self.cfg.port} "
+                                f"after {sent} of {total} bytes."
+                            )
+                        if chunk < total - sent and logger.isEnabledFor(logging.DEBUG):
+                            logger.debug(
+                                "Partial socket send to %s:%s: sent %d of %d bytes this "
+                                "call (%d of %d total so far)",
+                                self.cfg.host,
+                                self.cfg.port,
+                                chunk,
+                                total - sent,
+                                sent + chunk,
+                                total,
+                            )
+                        sent += chunk
+                else:
+                    sock.sendall(data)
                 now = time.monotonic()
                 self._last_tx_at = now
                 self._last_exchange_at = now
+                if read_timeout > 0:
+                    sock.settimeout(read_timeout)
         except OSError as e:
+            with contextlib.suppress(OSError):
+                if float(self.cfg.io_timeout_s) > 0:
+                    sock.settimeout(float(self.cfg.io_timeout_s))
             raise SessionIOError(
                 f"Socket write failed to {self.cfg.host}:{self.cfg.port}: {e}"
             ) from e
@@ -623,11 +661,25 @@ class Session:
             return
         self._start_receiver()
 
+    def _join_recv_thread(self, thread: threading.Thread) -> None:
+        if thread is threading.current_thread():
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            thread.join(timeout=1.0)
+            return
+        threading.Thread(
+            target=lambda: thread.join(timeout=1.0),
+            name="e27-recv-join",
+            daemon=True,
+        ).start()
+
     def _stop_receiver(self) -> None:
         if self._recv_stop is not None:
             self._recv_stop.set()
         if self._recv_thread is not None and self._recv_thread is not threading.current_thread():
-            self._recv_thread.join(timeout=1.0)
+            self._join_recv_thread(self._recv_thread)
         if self._recv_task is not None:
             # Let the to_thread worker exit via stop_event; no hard cancel needed.
             self._recv_task = None
@@ -637,6 +689,8 @@ class Session:
 
     def _recv_loop(self, stop_event: threading.Event) -> None:
         while not stop_event.is_set():
+            if self._disconnect_handled:
+                break
             if self.state is not SessionState.ACTIVE:
                 stop_event.wait(0.1)
                 continue
@@ -650,9 +704,13 @@ class Session:
             except SessionNotReadyError:
                 break
             except (SessionIOError, SessionProtocolError) as e:
+                if stop_event.is_set() or self._disconnect_handled or self._closing:
+                    break
                 self._handle_disconnect(e)
                 break
             except Exception as e:
+                if stop_event.is_set() or self._disconnect_handled or self._closing:
+                    break
                 self._handle_disconnect(e)
                 logger.warning("Session receive loop error: %s", e, exc_info=True)
                 break
@@ -661,6 +719,9 @@ class Session:
                 self.on_message(obj)
 
     def _handle_disconnect(self, err: Exception | None) -> None:
+        if self._disconnect_handled:
+            return
+        self._disconnect_handled = True
         now = time.monotonic()
         rx_age = now - self._last_rx_at
         tx_age = now - self._last_tx_at

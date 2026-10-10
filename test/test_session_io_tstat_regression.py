@@ -30,46 +30,54 @@ def _identity() -> session_mod.linking.E27Identity:
     return session_mod.linking.E27Identity("mn", "sn", "fw", "hw", "os")
 
 
-class _OverlapTrackingSocket:
-    """Detects overlapping sendall/recv calls (unsafe on a single TCP socket)."""
+class _SendTrackingSocket:
+    """Tracks concurrent send() calls (outbound queue must serialize via _send_lock)."""
 
     def __init__(self) -> None:
+        self._send_active = 0
+        self._send_overlap = 0
         self._guard = threading.Lock()
-        self._active: str | None = None
-        self.overlaps = 0
         self.sent: list[bytes] = []
-
-    def _enter(self, op: str) -> None:
-        with self._guard:
-            if self._active is not None and self._active != op:
-                self.overlaps += 1
-            self._active = op
-
-    def _leave(self) -> None:
-        with self._guard:
-            self._active = None
 
     def settimeout(self, _value: float) -> None:
         return None
 
-    def sendall(self, data: bytes) -> None:
-        self._enter("send")
+    def send(self, data: bytes) -> int:
+        with self._guard:
+            if self._send_active:
+                self._send_overlap += 1
+            self._send_active += 1
         try:
-            time.sleep(0.03)
-            self.sent.append(data)
+            time.sleep(0.02)
+            self.sent.append(bytes(data))
+            return len(data)
         finally:
-            self._leave()
-
-    def recv(self, _max_bytes: int) -> bytes:
-        self._enter("recv")
-        try:
-            time.sleep(0.03)
-            raise TimeoutError("wait")
-        finally:
-            self._leave()
+            with self._guard:
+                self._send_active -= 1
 
     def close(self) -> None:
         return None
+
+
+class _DualFailureSocket:
+    """recv returns EOF after the socket is closed during deliberate teardown."""
+
+    def __init__(self) -> None:
+        self.closed = False
+        self.timeout: float | None = None
+        self._recv_blocked = threading.Event()
+
+    def settimeout(self, value: float) -> None:
+        self.timeout = value
+
+    def recv(self, _max_bytes: int) -> bytes:
+        self._recv_blocked.set()
+        if self.closed:
+            return b""
+        raise TimeoutError("wait")
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def _ready_session(*, sock: object) -> Session:
@@ -85,53 +93,58 @@ def _ready_session(*, sock: object) -> Session:
 
 
 @pytest.mark.asyncio
-async def test_send_and_recv_do_not_overlap_on_socket() -> None:
-    """DDR-0036: serialize socket I/O while recv pump and outbound queue run."""
-    sock = _OverlapTrackingSocket()
+async def test_outbound_sends_are_serialized_by_send_lock() -> None:
+    sock = _SendTrackingSocket()
     sess = _ready_session(sock=sock)
-    stop = threading.Event()
-
-    def _recv_loop() -> None:
-        while not stop.is_set():
-            try:
-                sess._recv_some(max_bytes=64)
-            except TimeoutError:
-                time.sleep(0.005)
-                continue
-            except SessionIOError:
-                break
-
-    recv_thread = threading.Thread(target=_recv_loop, name="test-recv", daemon=True)
-    recv_thread.start()
-
-    try:
-        loop = asyncio.get_running_loop()
-        queue = OutboundQueue(
-            loop=loop,
-            send_fn=sess._send_all,
-            min_interval_s=0.0,
-            max_burst=4,
-        )
-        queue.start()
-        for _ in range(12):
-            queue.enqueue(
-                OutboundItem(
-                    payload=b"tstat-chunk",
-                    seq=1,
-                    kind="request",
-                    priority=OutboundPriority.NORMAL,
-                    enqueued_at=time.monotonic(),
-                )
+    loop = asyncio.get_running_loop()
+    queue = OutboundQueue(
+        loop=loop,
+        send_fn=sess._send_all,
+        min_interval_s=0.0,
+        max_burst=4,
+    )
+    queue.start()
+    for i in range(8):
+        queue.enqueue(
+            OutboundItem(
+                payload=bytes([i]),
+                seq=i,
+                kind="request",
+                priority=OutboundPriority.NORMAL,
+                enqueued_at=time.monotonic(),
             )
-        await asyncio.sleep(0.01)
-        await asyncio.wait_for(queue.wait_idle(), timeout=3.0)
-        await asyncio.sleep(0.05)
-    finally:
-        stop.set()
-        recv_thread.join(timeout=2.0)
+        )
+    await asyncio.sleep(0.01)
+    await asyncio.wait_for(queue.wait_idle(), timeout=3.0)
+    await asyncio.sleep(0.05)
+    assert sock._send_overlap == 0
+    assert len(sock.sent) == 8
 
-    assert sock.overlaps == 0
-    assert len(sock.sent) == 12
+
+def test_real_recv_thread_emits_single_disconnect_on_teardown() -> None:
+    sock = _DualFailureSocket()
+    cfg = SessionConfig(host="panel", auto_receive=True, auto_receive_thread_fallback=True)
+    sess = Session(cfg, client_identity=_identity(), link_key_hex="00")
+    sess.state = SessionState.ACTIVE
+    cast(Any, sess).sock = sock
+    sess._deframe_state = DeframeState()
+    sess.info = session_mod.SessionInfo(
+        session_id=1, session_key_hex="00" * 16, session_hmac_hex="11" * 16
+    )
+    disconnects: list[Exception | None] = []
+    sess.on_disconnected = lambda err: disconnects.append(err)
+    sess.on_message = lambda _msg: None
+    sess._start_receiver()
+    assert sock._recv_blocked.wait(timeout=2.0)
+
+    sess.handle_disconnect(SessionIOError("deliberate teardown"))
+    deadline = time.monotonic() + 2.0
+    while len(disconnects) < 1 and time.monotonic() < deadline:
+        time.sleep(0.02)
+
+    assert len(disconnects) == 1
+    assert isinstance(disconnects[0], SessionIOError)
+    sess._stop_receiver()
 
 
 @pytest.mark.asyncio

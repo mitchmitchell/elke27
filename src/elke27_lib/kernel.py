@@ -1542,10 +1542,10 @@ class E27Kernel:
                     msg,
                     priority=priority,
                     on_sent=lambda _: self._mark_request_sent(seq),
-                    on_fail=lambda exc: self._mark_send_failed(seq, exc),
+                    on_fail=lambda exc: self._handle_send_failure(seq, exc),
                 )
             except Exception as exc:
-                self._mark_send_failed(seq, exc)
+                self._handle_send_failure(seq, exc)
                 raise KernelError(
                     f"Failed to send request {domain}.{name} seq={seq}: {exc}"
                 ) from exc
