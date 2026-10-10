@@ -14,6 +14,12 @@
     `get_status` leaves `arming` false; consumers should treat exit-delay skip
     logic only after a full four-field status read.
 
+  - Behavior change: commands sent while not connected (no session / encryption
+    key) now raise `Elke27DisconnectedError` (transient) from v2 command helpers
+    instead of `Elke27PermissionError`. `ConnectionLost` during a command now
+    raises `Elke27DisconnectedError` instead of `Elke27TimeoutError`. Callers
+    that catch those errors for these cases must update (#13).
+
   - Reconnect `async_connect` attempts while the panel is unreachable no longer
     log `Connect failed (attempt n/2)` at ERROR every few seconds (#21). After
     `Panel connection lost`, further transient failures log at DEBUG; the first

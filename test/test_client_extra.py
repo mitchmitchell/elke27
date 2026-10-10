@@ -12,6 +12,7 @@ from elke27_lib import client as client_mod
 from elke27_lib import discovery, linking
 from elke27_lib.client import Elke27Client, Result
 from elke27_lib.errors import (
+    ConnectionLost,
     CryptoError,
     E27AuthFailed,
     E27Error,
@@ -24,6 +25,7 @@ from elke27_lib.errors import (
     Elke27AuthError,
     Elke27ConnectionError,
     Elke27CryptoError,
+    Elke27DisconnectedError,
     Elke27InvalidArgument,
     Elke27LinkRequiredError,
     Elke27PermissionError,
@@ -129,10 +131,15 @@ def test_raise_v2_command_error_mapping() -> None:
         client._raise_v2_command_error(E27ProvisioningRequired("x"))
     with pytest.raises(Elke27PermissionError):
         client._raise_v2_command_error(PanelNotDisarmedError("x"))
-    with pytest.raises(Elke27PermissionError):
+    with pytest.raises(Elke27DisconnectedError):
         client._raise_v2_command_error(NotAuthenticatedError("x"))
     with pytest.raises(Elke27AuthError):
         client._raise_v2_command_error(InvalidPinError("x"))
+    with pytest.raises(Elke27DisconnectedError) as exc_info:
+        client._raise_v2_command_error(ConnectionLost("Session disconnected."))
+    assert exc_info.value.is_transient is True
+    assert "Connection lost during the command." in str(exc_info.value)
+
     with pytest.raises(Elke27TimeoutError):
         client._raise_v2_command_error(E27Timeout("x"))
     with pytest.raises(Elke27ConnectionError):

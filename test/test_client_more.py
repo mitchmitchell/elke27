@@ -28,7 +28,6 @@ from elke27_lib.errors import (
     Elke27ConnectionError,
     Elke27DisconnectedError,
     Elke27InvalidArgument,
-    Elke27PermissionError,
     InvalidCredentials,
     InvalidLinkKeys,
     InvalidPin,
@@ -394,7 +393,7 @@ async def test_async_set_output_and_arm_disarm(monkeypatch: pytest.MonkeyPatch) 
         return Result(ok=False, data=None, error=NotAuthenticatedError("x"))
 
     monkeypatch.setattr(client, "async_execute", _exec_err_perm)
-    with pytest.raises(Elke27PermissionError):
+    with pytest.raises(Elke27DisconnectedError):
         await client.async_arm_area(1, mode=ArmMode.ARMED_STAY, pin="1234")
 
     client2 = Elke27Client(kernel=E27Kernel())
@@ -408,7 +407,7 @@ async def test_async_set_output_and_arm_disarm(monkeypatch: pytest.MonkeyPatch) 
     with pytest.raises(Elke27InvalidArgument):
         await client2.async_disarm_area(1, pin="bad")
 
-    with pytest.raises(Elke27PermissionError):
+    with pytest.raises(Elke27DisconnectedError):
         await client2.async_disarm_area(1, pin="1234")
 
 
