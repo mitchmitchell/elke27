@@ -731,6 +731,73 @@ class Elke27Client:
         )
         return Elke27PanelError(panel_error_code, reason)
 
+    def _request_max_transport_retries(self) -> int:
+        return int(getattr(self._kernel, "_request_max_retries", 0))
+
+    def _client_transport_backoff_s(self, attempt: int) -> float:
+        if attempt <= 0:
+            return 0.0
+        max_backoff = float(getattr(self._kernel, "_request_max_backoff_s", 30.0))
+        delay = 0.5 * (2 ** (attempt - 1))
+        return min(delay, max_backoff)
+
+    @staticmethod
+    def _is_panel_busy_error_code(error_code: int) -> bool:
+        return int(error_code) == int(PanelErrorCode.ELKERR_ZWAVE_BUSY)
+
+    async def _sleep_transport_backoff(
+        self, attempt: int, *, skip_for_disarm: bool = False
+    ) -> None:
+        if skip_for_disarm:
+            return
+        delay_s = self._client_transport_backoff_s(attempt)
+        if delay_s > 0.0:
+            await asyncio.sleep(delay_s)
+
+    def _command_transport_wait_budget_s(self, per_attempt_timeout_s: float) -> float:
+        return self._kernel.command_transport_wait_budget_s(per_attempt_timeout_s)
+
+    @staticmethod
+    def _asyncio_cancellation_pending() -> bool:
+        task = asyncio.current_task()
+        if task is None:
+            return False
+        return task.cancelling() > 0
+
+    async def _await_kernel_command_response(
+        self,
+        *,
+        seq: int,
+        command_key: str,
+        sent_event: asyncio.Event,
+        future: asyncio.Future[Mapping[str, Any]],
+        per_attempt_timeout_s: float,
+    ) -> Result[Mapping[str, Any]]:
+        budget_s = self._command_transport_wait_budget_s(per_attempt_timeout_s)
+        try:
+            async with asyncio.timeout(budget_s):
+                await sent_event.wait()
+                msg = await future
+        except TimeoutError as timeout_exc:
+            if self._asyncio_cancellation_pending():
+                self._kernel.cancel_command_transport(
+                    seq, E27Timeout(f"async_execute cancelled for {command_key} seq={seq}")
+                )
+                raise asyncio.CancelledError() from timeout_exc
+            timeout_error = E27Timeout(f"async_execute timeout waiting for {command_key} seq={seq}")
+            self._kernel.cancel_command_transport(seq, timeout_error)
+            return _err(timeout_error)
+        except asyncio.CancelledError:
+            self._kernel.cancel_command_transport(
+                seq, E27Timeout(f"async_execute cancelled for {command_key} seq={seq}")
+            )
+            raise
+        except _CLIENT_EXCEPTIONS as exc:
+            detail = f"command_key={command_key} seq={seq}"
+            return _err(self._normalize_error(exc, phase="execute", detail=detail))
+
+        return _ok(msg)
+
     @staticmethod
     def _wire_pin_string_error(
         spec: CommandSpec, params: Mapping[str, Any]
@@ -2159,81 +2226,100 @@ class Elke27Client:
             pin_error = self._wire_pin_string_error(spec, params)
             if pin_error is not None:
                 return _err(pin_error)
-            params_for_generator = self._coerce_pin_for_generator(spec, params)
-            try:
-                payload, expected_route = spec.generator(**params_for_generator)
-            except NotImplementedError as exc:
-                return _err(exc)
-            except _CLIENT_EXCEPTIONS as exc:
-                detail = f"command_key={command_key}"
-                return _err(self._normalize_error(exc, phase="execute", detail=detail))
 
             if spec.key == "zone_set_status":
                 zone_id = params.get("zone_id")
                 if isinstance(zone_id, int) and zone_id > 0:
                     self._record_local_zone_bypass(zone_id)
 
-            loop = asyncio.get_running_loop()
-            seq = self._kernel.next_seq()
-            future = self._kernel.pending_responses.create(
-                seq,
-                command_key=command_key,
-                expected_route=expected_route,
-                loop=loop,
+            skip_busy_backoff = (
+                spec.key == "area_set_arm_state" and params.get("arm_state") == "DISARMED"
             )
-            sent_event = asyncio.Event()
-            self._kernel.register_sent_event(seq, sent_event)
+            panel_busy_attempt = 0
             timeout_value = (
                 timeout_s
                 if timeout_s is not None
                 else getattr(self._kernel, "_request_timeout_s", 5.0)
             )
+            while True:
+                params_for_generator = self._coerce_pin_for_generator(spec, params)
+                try:
+                    payload, expected_route = spec.generator(**params_for_generator)
+                except NotImplementedError as exc:
+                    return _err(exc)
+                except _CLIENT_EXCEPTIONS as exc:
+                    detail = f"command_key={command_key}"
+                    return _err(self._normalize_error(exc, phase="execute", detail=detail))
 
-            try:
-                self._kernel.send_request_with_seq(
+                loop = asyncio.get_running_loop()
+                seq = self._kernel.next_seq()
+                future = self._kernel.pending_responses.create(
                     seq,
-                    spec.domain,
-                    spec.command,
-                    payload,
-                    pending=False,
-                    opaque=None,
+                    command_key=command_key,
                     expected_route=expected_route,
-                    timeout_s=timeout_value,
+                    loop=loop,
                 )
-            except _CLIENT_EXCEPTIONS as exc:
-                self._kernel.pending_responses.drop(seq)
-                detail = f"command_key={command_key} seq={seq}"
-                return _err(self._normalize_error(exc, phase="execute", detail=detail))
+                sent_event = asyncio.Event()
+                self._kernel.register_sent_event(seq, sent_event)
 
-            try:
-                await sent_event.wait()
-                msg = await asyncio.wait_for(future, timeout=timeout_value)
-            except TimeoutError:
-                self._kernel.pending_responses.drop(seq)
-                return _err(
-                    E27Timeout(f"async_execute timeout waiting for {command_key} seq={seq}")
-                )
-            except asyncio.CancelledError:
-                self._kernel.pending_responses.drop(seq)
-                raise
-            except _CLIENT_EXCEPTIONS as exc:
-                self._kernel.pending_responses.drop(seq)
-                detail = f"command_key={command_key} seq={seq}"
-                return _err(self._normalize_error(exc, phase="execute", detail=detail))
-
-            if not self._has_expected_payload(msg, expected_route):
-                return _err(
-                    ProtocolError(
-                        f"{command_key} missing response payload for {expected_route[0]}.{expected_route[1]}"
+                try:
+                    self._kernel.send_request_with_seq(
+                        seq,
+                        spec.domain,
+                        spec.command,
+                        payload,
+                        pending=False,
+                        opaque=None,
+                        expected_route=expected_route,
+                        timeout_s=timeout_value,
                     )
+                except _CLIENT_EXCEPTIONS as exc:
+                    self._kernel.pending_responses.drop(seq)
+                    detail = f"command_key={command_key} seq={seq}"
+                    return _err(self._normalize_error(exc, phase="execute", detail=detail))
+
+                wait_result = await self._await_kernel_command_response(
+                    seq=seq,
+                    command_key=command_key,
+                    sent_event=sent_event,
+                    future=future,
+                    per_attempt_timeout_s=timeout_value,
                 )
+                if not wait_result.ok:
+                    return wait_result
+                msg = wait_result.data
+                if msg is None:
+                    return _err(ProtocolError(f"{command_key} returned no response payload."))
 
-            error_code = self._extract_error_code(msg, expected_route)
-            if error_code is not None:
-                return _err(self._panel_error_for_async_execute(command_key, error_code))
+                if not self._has_expected_payload(msg, expected_route):
+                    return _err(
+                        ProtocolError(
+                            f"{command_key} missing response payload for {expected_route[0]}.{expected_route[1]}"
+                        )
+                    )
 
-            response_payload = self._extract_response_payload(msg, expected_route)
-            return _ok(response_payload)
+                error_code = self._extract_error_code(msg, expected_route)
+                if error_code is not None:
+                    if (
+                        self._is_panel_busy_error_code(error_code)
+                        and panel_busy_attempt < self._request_max_transport_retries()
+                    ):
+                        panel_busy_attempt += 1
+                        if self._log.isEnabledFor(logging.DEBUG):
+                            self._log.debug(
+                                "Panel busy (11039) on %s; retry %s/%s",
+                                command_key,
+                                panel_busy_attempt,
+                                self._request_max_transport_retries(),
+                            )
+                        await self._sleep_transport_backoff(
+                            panel_busy_attempt, skip_for_disarm=skip_busy_backoff
+                        )
+                        continue
+                    return _err(self._panel_error_for_async_execute(command_key, error_code))
+
+                response_payload = self._extract_response_payload(msg, expected_route)
+                return _ok(response_payload)
 
         if spec.response_mode != "paged_blocks":
             return _err(ProtocolError(f"Command {command_key!r} has unsupported response_mode."))
@@ -2257,77 +2343,91 @@ class Elke27Client:
         blocks: list[PagedBlock] = []
 
         while True:
-            params_with_block = dict(params)
-            params_with_block[spec.block_field] = block_id
-            params_for_generator = self._coerce_pin_for_generator(spec, params_with_block)
+            panel_busy_attempt = 0
+            response_payload: Mapping[str, Any] | None = None
+            while True:
+                params_with_block = dict(params)
+                params_with_block[spec.block_field] = block_id
+                params_for_generator = self._coerce_pin_for_generator(spec, params_with_block)
 
-            try:
-                payload, expected_route = spec.generator(**params_for_generator)
-            except NotImplementedError as exc:
-                return _err(exc)
-            except _CLIENT_EXCEPTIONS as exc:
-                detail = f"command_key={command_key}"
-                return _err(self._normalize_error(exc, phase="execute", detail=detail))
+                try:
+                    payload, expected_route = spec.generator(**params_for_generator)
+                except NotImplementedError as exc:
+                    return _err(exc)
+                except _CLIENT_EXCEPTIONS as exc:
+                    detail = f"command_key={command_key}"
+                    return _err(self._normalize_error(exc, phase="execute", detail=detail))
 
-            loop = asyncio.get_running_loop()
-            seq = self._kernel.next_seq()
-            future = self._kernel.pending_responses.create(
-                seq,
-                command_key=command_key,
-                expected_route=expected_route,
-                loop=loop,
-            )
-            sent_event = asyncio.Event()
-            self._kernel.register_sent_event(seq, sent_event)
-            timeout_value = (
-                timeout_s
-                if timeout_s is not None
-                else getattr(self._kernel, "_request_timeout_s", 5.0)
-            )
-            try:
-                self._kernel.send_request_with_seq(
+                loop = asyncio.get_running_loop()
+                seq = self._kernel.next_seq()
+                future = self._kernel.pending_responses.create(
                     seq,
-                    spec.domain,
-                    spec.command,
-                    payload,
-                    pending=False,
-                    opaque=None,
+                    command_key=command_key,
                     expected_route=expected_route,
-                    timeout_s=timeout_value,
+                    loop=loop,
                 )
-            except _CLIENT_EXCEPTIONS as exc:
-                self._kernel.pending_responses.drop(seq)
-                detail = f"command_key={command_key} seq={seq}"
-                return _err(self._normalize_error(exc, phase="execute", detail=detail))
-
-            try:
-                await sent_event.wait()
-                msg = await asyncio.wait_for(future, timeout=timeout_value)
-            except TimeoutError:
-                self._kernel.pending_responses.drop(seq)
-                return _err(
-                    E27Timeout(f"async_execute timeout waiting for {command_key} seq={seq}")
-                )
-            except asyncio.CancelledError:
-                self._kernel.pending_responses.drop(seq)
-                raise
-            except _CLIENT_EXCEPTIONS as exc:
-                self._kernel.pending_responses.drop(seq)
-                detail = f"command_key={command_key} seq={seq}"
-                return _err(self._normalize_error(exc, phase="execute", detail=detail))
-
-            if not self._has_expected_payload(msg, expected_route):
-                return _err(
-                    ProtocolError(
-                        f"{command_key} missing response payload for {expected_route[0]}.{expected_route[1]}"
+                sent_event = asyncio.Event()
+                self._kernel.register_sent_event(seq, sent_event)
+                try:
+                    self._kernel.send_request_with_seq(
+                        seq,
+                        spec.domain,
+                        spec.command,
+                        payload,
+                        pending=False,
+                        opaque=None,
+                        expected_route=expected_route,
+                        timeout_s=timeout_value,
                     )
+                except _CLIENT_EXCEPTIONS as exc:
+                    self._kernel.pending_responses.drop(seq)
+                    detail = f"command_key={command_key} seq={seq}"
+                    return _err(self._normalize_error(exc, phase="execute", detail=detail))
+
+                wait_result = await self._await_kernel_command_response(
+                    seq=seq,
+                    command_key=command_key,
+                    sent_event=sent_event,
+                    future=future,
+                    per_attempt_timeout_s=timeout_value,
                 )
+                if not wait_result.ok:
+                    return wait_result
+                msg = wait_result.data
+                if msg is None:
+                    return _err(ProtocolError(f"{command_key} returned no response payload."))
 
-            error_code = self._extract_error_code(msg, expected_route)
-            if error_code is not None:
-                return _err(self._panel_error_for_async_execute(command_key, error_code))
+                if not self._has_expected_payload(msg, expected_route):
+                    return _err(
+                        ProtocolError(
+                            f"{command_key} missing response payload for {expected_route[0]}.{expected_route[1]}"
+                        )
+                    )
 
-            response_payload = self._extract_response_payload(msg, expected_route)
+                error_code = self._extract_error_code(msg, expected_route)
+                if error_code is not None:
+                    if (
+                        self._is_panel_busy_error_code(error_code)
+                        and panel_busy_attempt < self._request_max_transport_retries()
+                    ):
+                        panel_busy_attempt += 1
+                        if self._log.isEnabledFor(logging.DEBUG):
+                            self._log.debug(
+                                "Panel busy (11039) on %s block=%s; retry %s/%s",
+                                command_key,
+                                block_id,
+                                panel_busy_attempt,
+                                self._request_max_transport_retries(),
+                            )
+                        await self._sleep_transport_backoff(panel_busy_attempt)
+                        continue
+                    return _err(self._panel_error_for_async_execute(command_key, error_code))
+
+                response_payload = self._extract_response_payload(msg, expected_route)
+                break
+
+            if response_payload is None:
+                return _err(ProtocolError(f"{command_key} missing block response payload."))
             response_block_count = self._coerce_block_count(
                 response_payload.get(spec.block_count_field)
             )
@@ -2430,18 +2530,18 @@ class Elke27Client:
             detail = "route=authenticate.__root__"
             return _err(self._normalize_error(exc, phase="request", detail=detail))
 
-        try:
-            await sent_event.wait()
-            msg = await asyncio.wait_for(future, timeout=timeout_value)
-        except TimeoutError:
-            self._kernel.pending_responses.drop(seq)
-            return _err(E27Timeout("Authenticate response timed out."))
-        except asyncio.CancelledError:
-            self._kernel.pending_responses.drop(seq)
-            raise
-        except _CLIENT_EXCEPTIONS as exc:
-            self._kernel.pending_responses.drop(seq)
-            return _err(self._normalize_error(exc, phase="authenticate"))
+        wait_result = await self._await_kernel_command_response(
+            seq=seq,
+            command_key="control_authenticate",
+            sent_event=sent_event,
+            future=future,
+            per_attempt_timeout_s=timeout_value,
+        )
+        if not wait_result.ok:
+            return wait_result
+        msg = wait_result.data
+        if msg is None:
+            return _err(ProtocolError("control_authenticate returned no response payload."))
 
         if not self._has_expected_payload(msg, expected_route):
             return _err(

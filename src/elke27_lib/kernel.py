@@ -134,6 +134,40 @@ class _QueuedRequest:
     expected_route: RouteKey | None
     priority: OutboundPriority
     timeout_s: float
+    attempt: int = 0
+    deadline_at: float = 0.0
+
+
+def _queued_request_is_keepalive(item: _QueuedRequest) -> bool:
+    if item.domain == "system" and item.name == "r_u_alive":
+        return True
+    return item.expected_route == ("system", "r_u_alive")
+
+
+def _queued_request_is_disarm(item: _QueuedRequest) -> bool:
+    if item.domain != "area" or item.name != "set_arm_state":
+        return False
+    payload = _as_mapping(item.payload)
+    return payload is not None and payload.get("arm_state") == "DISARMED"
+
+
+def _queued_request_uncertain_after_send(item: _QueuedRequest) -> bool:
+    """True when a reply timeout may still have applied a mutating command on the panel."""
+    route = item.expected_route
+    if route is None:
+        return False
+    domain, name = route
+    if domain == "area" and name == "set_arm_state":
+        payload = _as_mapping(item.payload)
+        if payload is None:
+            return False
+        arm_state = payload.get("arm_state")
+        return arm_state in ("ARMED_AWAY", "ARMED_STAY")
+    if domain == "zone" and name == "set_status":
+        return True
+    if domain == "output" and name == "set_status":
+        return True
+    return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -369,6 +403,9 @@ class E27Kernel:
         self._active_request = None
         self._request_queue_high = deque()
         self._request_queue_normal = deque()
+        self._transport_retry_timers: set[asyncio.TimerHandle] = set()
+        self._transport_retry_timer_by_seq: dict[int, asyncio.TimerHandle] = {}
+        self._transport_retry_item_by_seq: dict[int, _QueuedRequest] = {}
         self._keepalive_task = None
         self._keepalive_enabled = False
         self._keepalive_interval_s = 30.0
@@ -635,8 +672,13 @@ class E27Kernel:
     async def close(self) -> None:
         """Close any active session. Idempotent."""
         if self._session is None:
+            self._cancel_all_transport_retry_timers()
+            self._fail_all_pending_commands(KernelError("Kernel closed with no active session."))
             return
         self._stop_keepalive()
+        self._cancel_all_transport_retry_timers()
+        close_exc = KernelError("Kernel closed.")
+        self._fail_all_pending_commands(close_exc)
 
         s = self._session
         self._session = None
@@ -1074,6 +1116,7 @@ class E27Kernel:
                             msg["session_id"] = auth_sid
         if isinstance(seq_val, int) and seq_val > 0:
             self._pending_responses.resolve(seq_val, msg)
+            self._clear_pending_transport_retry_for_seq(seq_val)
 
         sid = msg.get("session_id")
         if isinstance(sid, int):
@@ -1248,6 +1291,12 @@ class E27Kernel:
             if self._request_queue_high
             else self._request_queue_normal.popleft()
         )
+        if self._is_past_deadline(item):
+            self._fail_queued_command(
+                item, E27Timeout(f"Command deadline expired for seq={item.seq}")
+            )
+            self._kick_scheduler()
+            return
         self._request_state = _RequestState.IN_FLIGHT
         self._active_seq = item.seq
         self._active_released = False
@@ -1323,6 +1372,230 @@ class E27Kernel:
         self._active_timeout_handle.cancel()
         self._active_timeout_handle = None
 
+    @staticmethod
+    def transport_wait_budget_s(
+        request_timeout_s: float,
+        request_max_retries: int,
+        request_max_backoff_s: float,
+    ) -> float:
+        """Worst-case wait for all transport attempts (timeouts + backoff between tries)."""
+        attempts = max(1, int(request_max_retries) + 1)
+        backoff_total = 0.0
+        for attempt in range(1, int(request_max_retries) + 1):
+            backoff_total += min(0.5 * (2 ** (attempt - 1)), float(request_max_backoff_s))
+        return attempts * float(request_timeout_s) + backoff_total
+
+    def command_transport_wait_budget_s(self, request_timeout_s: float) -> float:
+        return self.transport_wait_budget_s(
+            request_timeout_s,
+            self._request_max_retries,
+            self._request_max_backoff_s,
+        )
+
+    def _transport_backoff_s(self, attempt: int) -> float:
+        """Backoff after attempt N (1-based); disarm retries skip this delay."""
+        if attempt <= 0:
+            return 0.0
+        delay = 0.5 * (2 ** (attempt - 1))
+        return min(delay, self._request_max_backoff_s)
+
+    def _is_past_deadline(self, item: _QueuedRequest) -> bool:
+        return item.deadline_at > 0.0 and self.now() >= item.deadline_at
+
+    def _transport_retries_exhausted(self, item: _QueuedRequest) -> bool:
+        return item.attempt >= self._request_max_retries
+
+    def _transport_retry_allowed(self, item: _QueuedRequest, *, sent: bool) -> bool:
+        if _queued_request_is_keepalive(item):
+            return False
+        if self._is_past_deadline(item):
+            return False
+        route = item.expected_route
+        if route is not None and route in self._disable_retries_for_routes:
+            return False
+        if self._transport_retries_exhausted(item):
+            return False
+        if sent and _queued_request_uncertain_after_send(item):
+            return False
+        return True
+
+    def _drain_transport_retry_waiters(self) -> list[_QueuedRequest]:
+        for handle in list(self._transport_retry_timers):
+            handle.cancel()
+        self._transport_retry_timers.clear()
+        self._transport_retry_timer_by_seq.clear()
+        waiting = list(self._transport_retry_item_by_seq.values())
+        self._transport_retry_item_by_seq.clear()
+        return waiting
+
+    def _cancel_all_transport_retry_timers(self) -> None:
+        self._drain_transport_retry_waiters()
+
+    def _cancel_transport_retry_timer_for_seq(self, seq: int) -> None:
+        handle = self._transport_retry_timer_by_seq.pop(seq, None)
+        self._transport_retry_item_by_seq.pop(seq, None)
+        if handle is None:
+            return
+        handle.cancel()
+        self._transport_retry_timers.discard(handle)
+
+    def _clear_pending_transport_retry_for_seq(self, seq: int) -> None:
+        """Drop queued/backoff resends for seq after a reply arrives (including late)."""
+        self._cancel_transport_retry_timer_for_seq(seq)
+        self._remove_queued_seq(seq)
+
+    def _remove_queued_seq(self, seq: int) -> None:
+        for queue in (self._request_queue_high, self._request_queue_normal):
+            kept: deque[_QueuedRequest] = deque()
+            while queue:
+                item = queue.popleft()
+                if item.seq == seq:
+                    continue
+                kept.append(item)
+            queue.extend(kept)
+
+    def cancel_command_transport(self, seq: int, exc: BaseException) -> None:
+        """Stop transport retries for a command and fail its pending future."""
+        self._cancel_transport_retry_timer_for_seq(seq)
+        self._remove_queued_seq(seq)
+        if (
+            self._request_state is _RequestState.IN_FLIGHT
+            and self._active_seq == seq
+            and not self._active_released
+        ):
+            self.dispatcher.drop_pending(seq)
+            if not self._pending_responses.fail(seq, exc):
+                self._pending_responses.drop(seq)
+            self._signal_sent_event(seq)
+            self._complete_active(reason="cancelled")
+            return
+        self.dispatcher.drop_pending(seq)
+        if not self._pending_responses.fail(seq, exc):
+            self._pending_responses.drop(seq)
+        self._signal_sent_event(seq)
+
+    def _fail_queued_command(self, item: _QueuedRequest, exc: BaseException) -> None:
+        self._cancel_transport_retry_timer_for_seq(item.seq)
+        self.dispatcher.drop_pending(item.seq)
+        self._pending_responses.fail(item.seq, exc)
+        self._signal_sent_event(item.seq)
+
+    def _fail_all_pending_commands(self, exc: BaseException) -> None:
+        queued_items: list[_QueuedRequest] = self._drain_transport_retry_waiters()
+        for queue in (self._request_queue_high, self._request_queue_normal):
+            while queue:
+                queued_items.append(queue.popleft())
+        active_seq = self._active_seq
+        if (
+            self._request_state is _RequestState.IN_FLIGHT
+            and active_seq is not None
+            and not self._active_released
+        ):
+            self.dispatcher.drop_pending(active_seq)
+            self._pending_responses.fail(active_seq, exc)
+            self._signal_sent_event(active_seq)
+            self._complete_active(reason="closed", kick=False)
+        for item in queued_items:
+            self._fail_queued_command(item, exc)
+        self._pending_responses.fail_all(exc)
+
+    def _schedule_transport_requeue(self, item: _QueuedRequest) -> None:
+        if self._is_past_deadline(item):
+            self._fail_queued_command(
+                item, E27Timeout(f"Command deadline expired for seq={item.seq}")
+            )
+            return
+        self._cancel_transport_retry_timer_for_seq(item.seq)
+        if _queued_request_is_disarm(item):
+            if item.priority is not OutboundPriority.HIGH:
+                item = replace(item, priority=OutboundPriority.HIGH)
+            self._request_queue_high.appendleft(item)
+            self._kick_scheduler()
+            return
+        delay_s = self._transport_backoff_s(item.attempt)
+        if delay_s <= 0.0:
+            self._enqueue_request(item)
+            return
+        self._set_loop_if_needed()
+        if self._loop is None:
+            self._enqueue_request(item)
+            return
+
+        self._transport_retry_item_by_seq[item.seq] = item
+
+        def _release() -> None:
+            self._transport_retry_timers.discard(handle)
+            self._transport_retry_timer_by_seq.pop(item.seq, None)
+            self._transport_retry_item_by_seq.pop(item.seq, None)
+            if self._is_past_deadline(item):
+                self._fail_queued_command(
+                    item, E27Timeout(f"Command deadline expired for seq={item.seq}")
+                )
+                return
+            self._enqueue_request(item)
+
+        handle = self._loop.call_later(delay_s, _release)
+        self._transport_retry_timers.add(handle)
+        self._transport_retry_timer_by_seq[item.seq] = handle
+
+    def _handle_transport_failure(
+        self,
+        item: _QueuedRequest,
+        exc: BaseException,
+        *,
+        sent: bool,
+        was_active: bool,
+        log_final_warning: bool,
+    ) -> None:
+        route = item.expected_route
+        if self._transport_retry_allowed(item, sent=sent):
+            if self._log.isEnabledFor(logging.DEBUG):
+                if route is not None:
+                    self._log.debug(
+                        "E27 transport failure; retrying route=%s.%s seq=%s attempt=%s/%s error=%s",
+                        route[0],
+                        route[1],
+                        item.seq,
+                        item.attempt + 1,
+                        self._request_max_retries,
+                        exc,
+                    )
+                else:
+                    self._log.debug(
+                        "E27 transport failure; retrying seq=%s attempt=%s/%s error=%s",
+                        item.seq,
+                        item.attempt + 1,
+                        self._request_max_retries,
+                        exc,
+                    )
+            self.dispatcher.drop_pending(item.seq)
+            retry_item = replace(item, attempt=item.attempt + 1)
+            if was_active:
+                self._complete_active(reason="transport_retry")
+            self._schedule_transport_requeue(retry_item)
+            return
+
+        self.dispatcher.drop_pending(item.seq)
+        self._pending_responses.fail(item.seq, exc)
+        self._signal_sent_event(item.seq)
+        if log_final_warning and self._log.isEnabledFor(logging.WARNING):
+            if route is not None:
+                self._log.warning(
+                    "E27 transport failure (final): route=%s.%s seq=%s error=%s",
+                    route[0],
+                    route[1],
+                    item.seq,
+                    exc,
+                )
+            else:
+                self._log.warning(
+                    "E27 transport failure (final): seq=%s error=%s",
+                    item.seq,
+                    exc,
+                )
+        if was_active:
+            self._complete_active(reason="transport_failed")
+
     def _on_reply_timeout(self, seq: int) -> None:
         if self._request_state is not _RequestState.IN_FLIGHT:
             return
@@ -1331,32 +1604,58 @@ class E27Kernel:
         route = None
         if self._active_request is not None:
             route = self._active_request.expected_route
-        if route is not None:
-            self.dispatcher.drop_pending(seq)
         sent_at = self._active_sent_at
         silent = sent_at is not None and self._last_rx_at <= sent_at
-        self._pending_responses.fail(seq, E27Timeout(f"Response timed out for seq={seq}"))
+        timeout_exc = E27Timeout(f"Response timed out for seq={seq}")
+        active_item = self._active_request
+        if active_item is not None and isinstance(active_item, _QueuedRequest):
+            log_final = route != ("system", "r_u_alive")
+            self._handle_transport_failure(
+                active_item,
+                timeout_exc,
+                sent=sent_at is not None,
+                was_active=True,
+                log_final_warning=log_final,
+            )
+        else:
+            if route is not None:
+                self.dispatcher.drop_pending(seq)
+            self._pending_responses.fail(seq, timeout_exc)
+            if route == ("system", "r_u_alive"):
+                self._log.debug("E27 keepalive reply timeout: seq=%s", seq)
+            elif self._log.isEnabledFor(logging.WARNING):
+                if route is not None:
+                    self._log.warning(
+                        "E27 reply timeout: route=%s.%s seq=%s",
+                        route[0],
+                        route[1],
+                        seq,
+                    )
+                else:
+                    self._log.warning("E27 reply timeout: seq=%s", seq)
+            self._complete_active(reason="timeout")
         if silent and route != ("system", "r_u_alive"):
             # Nothing at all came back from the panel since this request was
             # sent: treat it as evidence of a dead link and probe right away.
             self.request_link_check()
         if route == ("system", "r_u_alive"):
             self._log.debug("E27 keepalive reply timeout: seq=%s", seq)
-        elif self._log.isEnabledFor(logging.WARNING):
-            if route is not None:
-                self._log.warning(
-                    "E27 reply timeout: route=%s.%s seq=%s",
-                    route[0],
-                    route[1],
-                    seq,
-                )
-            else:
-                self._log.warning("E27 reply timeout: seq=%s", seq)
-        self._complete_active(reason="timeout")
 
     def _handle_send_failure(self, seq: int, exc: BaseException) -> None:
         if self._active_seq != seq:
             self._mark_send_failed(seq, exc)
+            self._disconnect_session_on_io_error(exc)
+            return
+        active_item = self._active_request
+        if active_item is not None and isinstance(active_item, _QueuedRequest):
+            self._handle_transport_failure(
+                active_item,
+                exc,
+                sent=False,
+                was_active=True,
+                log_final_warning=True,
+            )
+            self._disconnect_session_on_io_error(exc)
             return
         self.dispatcher.drop_pending(seq)
         self._pending_responses.fail(seq, exc)
@@ -1364,8 +1663,20 @@ class E27Kernel:
         if self._log.isEnabledFor(logging.WARNING):
             self._log.warning("E27 send failed: seq=%s error=%s", seq, exc)
         self._complete_active(reason="send_failed")
+        self._disconnect_session_on_io_error(exc)
 
-    def _complete_active(self, *, reason: str) -> None:
+    def _disconnect_session_on_io_error(self, exc: BaseException) -> None:
+        if not isinstance(exc, session_mod.SessionIOError):
+            return
+        session = self._session
+        if session is None:
+            return
+        session_state = getattr(session, "state", session_mod.SessionState.ACTIVE)
+        if session_state is not session_mod.SessionState.ACTIVE:
+            return
+        session.handle_disconnect(exc)
+
+    def _complete_active(self, *, reason: str, kick: bool = True) -> None:
         _ = reason
         if self._active_released:
             return
@@ -1375,9 +1686,16 @@ class E27Kernel:
         self._active_sent_at = None
         self._active_request = None
         self._request_state = _RequestState.IDLE
-        self._kick_scheduler()
+        if kick:
+            self._kick_scheduler()
 
     def _abort_requests(self, exc: BaseException) -> None:
+        """Fail queued and in-flight commands on session loss (no transport retry)."""
+        queued_items: list[_QueuedRequest] = self._drain_transport_retry_waiters()
+        for queue in (self._request_queue_high, self._request_queue_normal):
+            while queue:
+                queued_items.append(queue.popleft())
+
         active_seq = self._active_seq
         if (
             self._request_state is _RequestState.IN_FLIGHT
@@ -1389,14 +1707,14 @@ class E27Kernel:
             self._signal_sent_event(active_seq)
             if self._log.isEnabledFor(logging.WARNING):
                 self._log.warning("E27 in-flight request aborted: seq=%s error=%s", active_seq, exc)
-            self._complete_active(reason="abort")
+            self._complete_active(reason="abort", kick=False)
 
-        for queue in (self._request_queue_high, self._request_queue_normal):
-            while queue:
-                item = queue.popleft()
-                self.dispatcher.drop_pending(item.seq)
-                self._pending_responses.fail(item.seq, exc)
-                self._signal_sent_event(item.seq)
+        for item in queued_items:
+            self.dispatcher.drop_pending(item.seq)
+            self._pending_responses.fail(item.seq, exc)
+            self._signal_sent_event(item.seq)
+
+        self._pending_responses.fail_all(exc)
 
     def _mark_request_sent(self, seq: int) -> None:
         now = self.now()
@@ -1544,6 +1862,26 @@ class E27Kernel:
         timeout_value = (
             float(timeout_s) if timeout_s is not None else float(self._request_timeout_s)
         )
+        effective_priority = priority
+        if _queued_request_is_disarm(
+            _QueuedRequest(
+                seq=seq,
+                domain=domain,
+                name=name,
+                payload=payload,
+                pending=pending,
+                opaque=opaque,
+                expected_route=expected_route,
+                priority=priority,
+                timeout_s=timeout_value,
+            )
+        ):
+            effective_priority = OutboundPriority.HIGH
+        if domain == "system" and name == "r_u_alive":
+            deadline_at = self.now() + timeout_value
+        else:
+            budget_s = self.command_transport_wait_budget_s(timeout_value)
+            deadline_at = self.now() + budget_s
         queued = _QueuedRequest(
             seq=seq,
             domain=domain,
@@ -1552,8 +1890,9 @@ class E27Kernel:
             pending=pending,
             opaque=opaque,
             expected_route=expected_route,
-            priority=priority,
+            priority=effective_priority,
             timeout_s=timeout_value,
+            deadline_at=deadline_at,
         )
         self._enqueue_request(queued)
         return seq

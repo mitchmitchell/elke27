@@ -35,7 +35,7 @@ class KernelRequestStateTests(unittest.IsolatedAsyncioTestCase):
 
     @override
     async def asyncSetUp(self) -> None:
-        self.kernel = E27Kernel(request_timeout_s=0.05)
+        self.kernel = E27Kernel(request_timeout_s=0.05, request_max_retries=0)
         self.fake_session = FakeSession()
         kernel_any = cast(Any, self.kernel)
         kernel_any._session = self.fake_session
