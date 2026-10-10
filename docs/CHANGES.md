@@ -1,5 +1,10 @@
   UNRELEASED
 
+  - Behavior change: commands sent while not connected (no session / encryption
+    key) now raise `Elke27DisconnectedError` (transient) from v2 command helpers
+    instead of `Elke27PermissionError`. `ConnectionLost` during a command now
+    raises `Elke27DisconnectedError` instead of `Elke27TimeoutError`. Callers
+    that catch those errors for these cases must update (#13).
   - `async_connect` no longer retries panel auth or link refusals (wrong
     credentials, invalid link keys, and related non-transient errors); those fail
     on the first attempt (#14). Transport-class failures may still be retried

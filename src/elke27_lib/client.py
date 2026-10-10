@@ -809,10 +809,14 @@ class Elke27Client:
             raise Elke27LinkRequiredError("Linking required to perform this operation.") from None
         if isinstance(err, PanelNotDisarmedError):
             raise Elke27PermissionError("This action requires all areas to be disarmed.") from None
-        if isinstance(err, (NotAuthenticatedError, PermissionDeniedError)):
+        if isinstance(err, NotAuthenticatedError):
+            raise Elke27DisconnectedError("Client is not connected.") from err
+        if isinstance(err, PermissionDeniedError):
             raise Elke27PermissionError("Permission denied for this operation.") from None
         if isinstance(err, (E27AuthFailed, InvalidPinError, InvalidCredentials)):
             raise Elke27AuthError("Authentication failed for this operation.") from None
+        if isinstance(err, ConnectionLost):
+            raise Elke27DisconnectedError("Connection lost during the command.") from err
         if isinstance(err, (E27Timeout, E27TransportError, TimeoutError, asyncio.TimeoutError)):
             raise Elke27TimeoutError("Operation timed out.") from None
         if isinstance(err, E27NotReady):
