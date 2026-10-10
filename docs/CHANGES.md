@@ -12,8 +12,12 @@
     5 s timeout + 0.5 s + 1 s backoff`) and cancels kernel retries if the
     caller times out. Transport retries reuse the same JSON `seq` on resend.
     Panel refusals (any other non-zero `error_code`, permission, auth, or invalid
-    argument) are never retried. After a confirmed send, only reads and disarm
-    may retry on reply timeout; arming and bypass stay at-most-once. Disarm is
+    argument) are never retried. After a confirmed send (`on_sent`), only
+    `get_*` read routes and `area.set_arm_state` with `arm_state=DISARMED` may
+    retry on reply timeout; every other command (locks, lights, thermostats,
+    barriers, other arm states, all `set_*` writes, system mutations, etc.) is
+    at-most-once and fails with the timeout without resend. Pre-send transport
+    failures keep the normal retry policy. Disarm is
     always `OutboundPriority.HIGH`, is requeued immediately on transport retry
     (no backoff), and is not delayed behind other commands waiting to retry.
     `kernel.close()` cancels transport retry timers and fails queued commands.

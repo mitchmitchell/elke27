@@ -157,23 +157,15 @@ def _queued_request_is_disarm(item: _QueuedRequest) -> bool:
     return payload is not None and payload.get("arm_state") == "DISARMED"
 
 
-def _queued_request_uncertain_after_send(item: _QueuedRequest) -> bool:
-    """True when a reply timeout may still have applied a mutating command on the panel."""
+def _queued_request_retry_after_send_allowed(item: _QueuedRequest) -> bool:
+    """True when a confirmed send may be resent after a reply timeout (allowlist)."""
+    if _queued_request_is_disarm(item):
+        return True
     route = item.expected_route
     if route is None:
         return False
-    domain, name = route
-    if domain == "area" and name == "set_arm_state":
-        payload = _as_mapping(item.payload)
-        if payload is None:
-            return False
-        arm_state = payload.get("arm_state")
-        return arm_state in ("ARMED_AWAY", "ARMED_STAY")
-    if domain == "zone" and name == "set_status":
-        return True
-    if domain == "output" and name == "set_status":
-        return True
-    return False
+    _domain, name = route
+    return name.startswith("get_")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1441,7 +1433,7 @@ class E27Kernel:
             return False
         if self._transport_retries_exhausted(item):
             return False
-        if sent and _queued_request_uncertain_after_send(item):
+        if sent and not _queued_request_retry_after_send_allowed(item):
             return False
         return True
 

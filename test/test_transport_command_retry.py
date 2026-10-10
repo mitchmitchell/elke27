@@ -272,6 +272,98 @@ async def test_kernel_arm_not_retried_after_sent_timeout() -> None:
 
 
 @pytest.mark.asyncio
+async def test_kernel_lock_set_status_not_retried_after_sent_timeout() -> None:
+    kernel = E27Kernel(request_timeout_s=0.02, request_max_retries=2, request_max_backoff_s=0.0)
+    session = _FakeSession()
+    _wire_kernel(kernel, session)
+
+    seq = 52
+    future = kernel.pending_responses.create(
+        seq,
+        command_key="lock_set_status",
+        expected_route=("lock", "set_status"),
+        loop=asyncio.get_running_loop(),
+    )
+    kernel.send_request_with_seq(
+        seq,
+        "lock",
+        "set_status",
+        {"lock_id": 1, "status": "UNLOCKED"},
+        pending=False,
+        opaque=None,
+        expected_route=("lock", "set_status"),
+        timeout_s=0.02,
+    )
+    await asyncio.sleep(0)
+    on_reply_timeout = get_private(kernel, "_on_reply_timeout")
+    on_reply_timeout(seq)
+    with pytest.raises(E27Timeout):
+        await asyncio.wait_for(future, timeout=0.2)
+    assert len(session.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_kernel_system_set_not_retried_after_sent_timeout() -> None:
+    kernel = E27Kernel(request_timeout_s=0.02, request_max_retries=2, request_max_backoff_s=0.0)
+    session = _FakeSession()
+    _wire_kernel(kernel, session)
+
+    seq = 54
+    future = kernel.pending_responses.create(
+        seq,
+        command_key="system_set_attribs",
+        expected_route=("system", "set_attribs"),
+        loop=asyncio.get_running_loop(),
+    )
+    kernel.send_request_with_seq(
+        seq,
+        "system",
+        "set_attribs",
+        {"attrib_id": 1, "value": "x"},
+        pending=False,
+        opaque=None,
+        expected_route=("system", "set_attribs"),
+        timeout_s=0.02,
+    )
+    await asyncio.sleep(0)
+    on_reply_timeout = get_private(kernel, "_on_reply_timeout")
+    on_reply_timeout(seq)
+    with pytest.raises(E27Timeout):
+        await asyncio.wait_for(future, timeout=0.2)
+    assert len(session.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_kernel_lock_set_status_retried_on_pre_send_failure() -> None:
+    kernel = E27Kernel(request_timeout_s=0.5, request_max_retries=2, request_max_backoff_s=0.0)
+    session = _FakeSession(fail_send_count=1)
+    _wire_kernel(kernel, session)
+
+    seq = 55
+    future = kernel.pending_responses.create(
+        seq,
+        command_key="lock_set_status",
+        expected_route=("lock", "set_status"),
+        loop=asyncio.get_running_loop(),
+    )
+    kernel.send_request_with_seq(
+        seq,
+        "lock",
+        "set_status",
+        {"lock_id": 1, "status": "LOCKED"},
+        pending=False,
+        opaque=None,
+        expected_route=("lock", "set_status"),
+        timeout_s=0.5,
+    )
+    await asyncio.sleep(0)
+    assert len(session.sent) == 1
+    on_message = get_private(kernel, "_on_message")
+    on_message({"seq": seq, "lock": {"set_status": {"lock_id": 1, "error_code": 0}}})
+    await asyncio.wait_for(future, timeout=0.2)
+
+
+@pytest.mark.asyncio
 async def test_kernel_disarm_retried_immediately_without_backoff() -> None:
     kernel = E27Kernel(request_timeout_s=0.02, request_max_retries=2, request_max_backoff_s=30.0)
     session = _FakeSession()

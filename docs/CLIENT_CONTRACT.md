@@ -145,6 +145,11 @@ Public methods:
 
 - While the session stays up, the kernel retries transient transport failures
   (reply timeout, send failure, panel busy 11039) within `request_max_retries`.
+- After the frame is confirmed sent (`on_sent`), reply-timeout retries are
+  allowlisted only: `get_*` read routes and disarm (`area.set_arm_state` with
+  `arm_state=DISARMED`). All other commands are at-most-once on reply timeout
+  (fail with `Elke27TimeoutError` / `E27Timeout`, no resend). Pre-send transport
+  failures use the normal retry policy for every route.
 - Panel refusals and session loss are never retried; session loss fails fast for
   every pending command and is not resent after reconnect (`Elke27DisconnectedError`
   on v2 exception paths).
