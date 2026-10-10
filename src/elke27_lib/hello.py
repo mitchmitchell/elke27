@@ -154,7 +154,7 @@ def perform_hello(
 
     if not any("hello" in o for o in objs):
         raw_preview = json.dumps(objs, separators=(",", ":"), ensure_ascii=True)
-        LOG.warning("HELLO response missing 'hello': %s", raw_preview)
+        LOG.debug("HELLO response missing 'hello': %s", raw_preview)
         raise E27HelloTimeout(
             "Hello response not found in cleartext JSON stream.",
             context=E27ErrorContext(phase="hello_recv", detail=f"objs={raw_preview}"),

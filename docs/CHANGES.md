@@ -26,6 +26,8 @@
     kernel during connect now map to `Elke27ConnectionError`,
     `Elke27TimeoutError`, `Elke27AuthError`, or `Elke27CryptoError` when the
     underlying cause matches (previously `Elke27ProtocolError`).
+  - A HELLO deadline timeout is now retried as transient (`E27HelloTimeout`); a
+    malformed HELLO is still permanent.
 
   Fast Dead-Link Detection, Quieter Connection Logs, async_execute Panel Errors (0.3.11)
 
