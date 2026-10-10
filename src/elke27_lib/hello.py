@@ -27,6 +27,7 @@ from typing import cast
 
 from .errors import (
     E27ErrorContext,
+    E27HelloTimeout,
     E27ProtocolError,
     E27ProvisioningTimeout,
     E27Timeout,
@@ -100,7 +101,8 @@ def perform_hello(
     Execute hello sequence for a single TCP connection.
 
     Raises:
-      - E27Timeout on recv timeout
+      - E27HelloTimeout when the HELLO deadline expires with no hello object
+      - E27Timeout on recv timeout during other hello reads
       - E27TransportError on socket failure
       - E27ProtocolError on malformed JSON or decrypt failure
     """
@@ -108,18 +110,22 @@ def perform_hello(
 
     # Check for any pre-hello bytes already queued by the panel.
     pre_objs: list[Mapping[str, object]] = []
+    prev_timeout = sock.gettimeout()
     try:
         sock.settimeout(0.05)
-        predata = sock.recv(4096)
-        if predata:
-            LOG.warning("Pre-HELLO bytes received: %s", predata.hex())
-            try:
-                pre_batch = recv_cleartext_json_objects_from_bytes(predata)
-                pre_objs = [cast(Mapping[str, object], obj) for obj in pre_batch]
-            except (ValueError, json.JSONDecodeError) as e:
-                LOG.warning("Pre-HELLO JSON parse failed: %s", e)
-    except (TimeoutError, BlockingIOError):
-        pass
+        try:
+            predata = sock.recv(4096)
+            if predata:
+                LOG.debug("Pre-HELLO bytes received: %s", predata.hex())
+                try:
+                    pre_batch = recv_cleartext_json_objects_from_bytes(predata)
+                    pre_objs = [cast(Mapping[str, object], obj) for obj in pre_batch]
+                except (ValueError, json.JSONDecodeError) as e:
+                    LOG.warning("Pre-HELLO JSON parse failed: %s", e)
+        except (TimeoutError, BlockingIOError):
+            pass
+    finally:
+        sock.settimeout(prev_timeout)
 
     # Send clear, UNFRAMED JSON
     LOG.debug("Hello request payload: %s", req)
@@ -152,8 +158,8 @@ def perform_hello(
 
     if not any("hello" in o for o in objs):
         raw_preview = json.dumps(objs, separators=(",", ":"), ensure_ascii=True)
-        LOG.warning("HELLO response missing 'hello': %s", raw_preview)
-        raise E27ProtocolError(
+        LOG.debug("HELLO response missing 'hello': %s", raw_preview)
+        raise E27HelloTimeout(
             "Hello response not found in cleartext JSON stream.",
             context=E27ErrorContext(phase="hello_recv", detail=f"objs={raw_preview}"),
         )

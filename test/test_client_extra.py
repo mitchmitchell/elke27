@@ -16,6 +16,8 @@ from elke27_lib.errors import (
     CryptoError,
     E27AuthFailed,
     E27Error,
+    E27ErrorContext,
+    E27HelloTimeout,
     E27LinkInvalid,
     E27NotReady,
     E27ProtocolError,
@@ -1059,8 +1061,8 @@ async def test_connect_failures_log_warning_then_debug(
             await client.async_connect("h", 1, keys)
     msgs = _connect_fail_msgs(caplog)
     assert msgs == [
-        (logging.WARNING, msgs[0][1]),
-        (logging.DEBUG, msgs[1][1]),
+        (logging.DEBUG, msgs[0][1]),
+        (logging.WARNING, msgs[1][1]),
         (logging.DEBUG, msgs[2][1]),
         (logging.DEBUG, msgs[3][1]),
     ]
@@ -1109,7 +1111,7 @@ async def test_connect_non_transient_failure_stays_error(
         with pytest.raises(Elke27CryptoError):
             await client.async_connect("h", 1, keys)
     msgs = _connect_fail_msgs(caplog)
-    assert len(msgs) == 2
+    assert len(msgs) == 1
     assert all(level == logging.ERROR for level, _ in msgs)
 
 
@@ -1128,9 +1130,166 @@ async def test_connect_unknown_error_logs_error(
         with pytest.raises(Elke27ProtocolErrorV2):
             await client.async_connect("h", 1, keys)
     msgs = _connect_fail_msgs(caplog)
-    assert len(msgs) == 2
+    assert len(msgs) == 1
     assert all(level == logging.ERROR for level, _ in msgs)
     assert all(r.exc_info is not None for r in caplog.records if r.levelno == logging.ERROR)
+
+
+@pytest.mark.asyncio
+async def test_async_connect_auth_failure_single_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = Elke27Client(kernel=E27Kernel())
+    attempts = {"count": 0}
+
+    async def _connect(*_a: Any, **_k: Any) -> None:
+        attempts["count"] += 1
+        raise E27AuthFailed("bad credentials")
+
+    monkeypatch.setattr(client._kernel, "connect", _connect)
+    keys = LinkKeys("aa", "bb", "cc")
+    with pytest.raises(Elke27AuthError):
+        await client.async_connect("h", 1, keys)
+    assert attempts["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_async_connect_transport_then_success(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    client = Elke27Client(kernel=E27Kernel())
+    attempts = {"count": 0}
+
+    async def _connect(*_a: Any, **_k: Any) -> None:
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise E27TransportError("transient")
+
+    monkeypatch.setattr(client._kernel, "connect", _connect)
+    keys = LinkKeys("aa", "bb", "cc")
+    with caplog.at_level(logging.DEBUG, logger=client._log.name):
+        await client.async_connect("h", 1, keys)
+    assert attempts["count"] == 2
+    assert client._connected is True
+    connect_msgs = _connect_fail_msgs(caplog)
+    assert connect_msgs == [(logging.DEBUG, connect_msgs[0][1])]
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+@pytest.mark.asyncio
+async def test_async_connect_hello_timeout_then_success(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    client = Elke27Client(kernel=E27Kernel())
+    attempts = {"count": 0}
+
+    async def _connect(*_a: Any, **_k: Any) -> None:
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            hello_timeout = E27HelloTimeout(
+                "Hello response not found in cleartext JSON stream.",
+                context=E27ErrorContext(phase="hello_recv"),
+            )
+            hello_failed = SessionProtocolError(
+                "HELLO failed for h:1: Hello response not found in cleartext JSON stream."
+            )
+            hello_failed.__cause__ = hello_timeout
+            raise KernelError("Session connect failed") from hello_failed
+
+    monkeypatch.setattr(client._kernel, "connect", _connect)
+    keys = LinkKeys("aa", "bb", "cc")
+    with caplog.at_level(logging.DEBUG, logger=client._log.name):
+        await client.async_connect("h", 1, keys)
+    assert attempts["count"] == 2
+    assert client._connected is True
+    connect_msgs = _connect_fail_msgs(caplog)
+    assert connect_msgs == [(logging.DEBUG, connect_msgs[0][1])]
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+@pytest.mark.asyncio
+async def test_async_connect_malformed_hello_single_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = Elke27Client(kernel=E27Kernel())
+    attempts = {"count": 0}
+
+    async def _connect(*_a: Any, **_k: Any) -> None:
+        attempts["count"] += 1
+        malformed = E27ProtocolError(
+            "Hello response not found in cleartext JSON stream.",
+            context=E27ErrorContext(phase="hello_recv"),
+        )
+        hello_failed = SessionProtocolError(
+            "HELLO failed for h:1: Hello response not found in cleartext JSON stream."
+        )
+        hello_failed.__cause__ = malformed
+        raise KernelError("Session connect failed") from hello_failed
+
+    monkeypatch.setattr(client._kernel, "connect", _connect)
+    keys = LinkKeys("aa", "bb", "cc")
+    with pytest.raises(Elke27ProtocolErrorV2):
+        await client.async_connect("h", 1, keys)
+    assert attempts["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_async_connect_kernel_error_link_invalid_single_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = Elke27Client(kernel=E27Kernel())
+    attempts = {"count": 0}
+
+    async def _connect(*_a: Any, **_k: Any) -> None:
+        attempts["count"] += 1
+        try:
+            raise E27LinkInvalid("bad keys")
+        except E27LinkInvalid as exc:
+            raise KernelError("Session connect failed") from exc
+
+    monkeypatch.setattr(client._kernel, "connect", _connect)
+    keys = LinkKeys("aa", "bb", "cc")
+    with pytest.raises(Elke27CryptoError):
+        await client.async_connect("h", 1, keys)
+    assert attempts["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_async_connect_timeout_maps_to_timeout_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = Elke27Client(kernel=E27Kernel())
+
+    async def _connect(*_a: Any, **_k: Any) -> None:
+        raise E27Timeout("connect timed out")
+
+    monkeypatch.setattr(client._kernel, "connect", _connect)
+    keys = LinkKeys("aa", "bb", "cc")
+    with pytest.raises(Elke27TimeoutError):
+        await client.async_connect("h", 1, keys)
+
+
+@pytest.mark.asyncio
+async def test_async_connect_propagates_cancellation(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    client = Elke27Client(kernel=E27Kernel())
+    attempts = {"count": 0}
+
+    async def _connect(*_a: Any, **_k: Any) -> None:
+        attempts["count"] += 1
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(client._kernel, "connect", _connect)
+    keys = LinkKeys("aa", "bb", "cc")
+    with caplog.at_level(logging.DEBUG, logger=client._log.name):
+        task = asyncio.create_task(client.async_connect("h", 1, keys))
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert attempts["count"] == 1
+    assert _connect_fail_msgs(caplog) == []
 
 
 @pytest.mark.asyncio
@@ -1186,6 +1345,6 @@ async def test_connect_success_after_failures_resets_warning_cycle(
             await client.async_connect("h", 1, keys)
     msgs = _connect_fail_msgs(caplog)
     assert msgs == [
-        (logging.WARNING, msgs[0][1]),
-        (logging.DEBUG, msgs[1][1]),
+        (logging.DEBUG, msgs[0][1]),
+        (logging.WARNING, msgs[1][1]),
     ]

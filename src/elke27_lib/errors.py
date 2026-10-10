@@ -268,6 +268,10 @@ class E27Timeout(E27Error):
         )
 
 
+class E27HelloTimeout(E27Timeout):
+    """Raised when the HELLO deadline expires before any hello object arrives."""
+
+
 class E27NotReady(E27Error):
     """
     Raised when an operation is attempted before the session is ready.
