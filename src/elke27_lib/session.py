@@ -115,6 +115,7 @@ class Session:
     _last_exchange_at: float
     _rx_count: int
     _recv_lock: threading.Lock
+    _io_lock: threading.Lock
 
     def __init__(
         self,
@@ -153,6 +154,7 @@ class Session:
         self._recv_thread: threading.Thread | None = None
         self._recv_stop: threading.Event | None = None
         self._recv_lock = threading.Lock()
+        self._io_lock = threading.Lock()
         self._recv_task: asyncio.Task[None] | None = None
         self._recv_loop_ref: asyncio.AbstractEventLoop | None = None
         self._outbound: OutboundQueue | None = None
@@ -281,30 +283,32 @@ class Session:
         self._require_ready()
         assert self.sock is not None
 
-        try:
-            data = self.sock.recv(max_bytes)
-        except TimeoutError as e:
-            raise TimeoutError("Timed out waiting for data from the panel.") from e
-        except OSError as e:
-            raise SessionIOError(
-                f"Socket read failed from {self.cfg.host}:{self.cfg.port}: {e}"
-            ) from e
+        with self._io_lock:
+            try:
+                data = self.sock.recv(max_bytes)
+            except TimeoutError as e:
+                raise TimeoutError("Timed out waiting for data from the panel.") from e
+            except OSError as e:
+                raise SessionIOError(
+                    f"Socket read failed from {self.cfg.host}:{self.cfg.port}: {e}"
+                ) from e
 
-        if not data:
-            raise SessionIOError(
-                f"Connection closed by the panel ({self.cfg.host}:{self.cfg.port})."
-            )
+            if not data:
+                raise SessionIOError(
+                    f"Connection closed by the panel ({self.cfg.host}:{self.cfg.port})."
+                )
 
-        return data
+            return data
 
     def _send_all(self, data: bytes) -> None:
         self._require_ready()
         assert self.sock is not None
         try:
-            self.sock.sendall(data)
-            now = time.monotonic()
-            self._last_tx_at = now
-            self._last_exchange_at = now
+            with self._io_lock:
+                self.sock.sendall(data)
+                now = time.monotonic()
+                self._last_tx_at = now
+                self._last_exchange_at = now
         except OSError as e:
             raise SessionIOError(
                 f"Socket write failed to {self.cfg.host}:{self.cfg.port}: {e}"
@@ -662,15 +666,17 @@ class Session:
         tx_age = now - self._last_tx_at
         exchange_age = now - self._last_exchange_at
         err_name = type(err).__name__ if err is not None else "None"
+        err_msg = str(err) if err is not None else ""
         # A deliberate close is expected: debug. A real link loss: info, because
         # the client logs the single user-facing "Panel connection lost" warning.
         level = logging.DEBUG if getattr(self, "_closing", False) else logging.INFO
         logger.log(
             level,
-            "Session disconnect: err=%s state=%s host=%s port=%s rx_age=%.3fs tx_age=%.3fs "
-            "exchange_age=%.3fs rx_count=%s last_rx_seq=%s last_rx_domain=%s last_tx_seq=%s "
-            "last_tx_domain=%s",
+            "Session disconnect: err=%s err_msg=%s state=%s host=%s port=%s rx_age=%.3fs "
+            "tx_age=%.3fs exchange_age=%.3fs rx_count=%s last_rx_seq=%s last_rx_domain=%s "
+            "last_tx_seq=%s last_tx_domain=%s",
             err_name,
+            err_msg,
             self.state.value,
             self.cfg.host,
             self.cfg.port,

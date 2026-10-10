@@ -1357,6 +1357,7 @@ class E27Kernel:
     def _handle_send_failure(self, seq: int, exc: BaseException) -> None:
         if self._active_seq != seq:
             self._mark_send_failed(seq, exc)
+            self._disconnect_session_on_io_error(exc)
             return
         self.dispatcher.drop_pending(seq)
         self._pending_responses.fail(seq, exc)
@@ -1364,6 +1365,15 @@ class E27Kernel:
         if self._log.isEnabledFor(logging.WARNING):
             self._log.warning("E27 send failed: seq=%s error=%s", seq, exc)
         self._complete_active(reason="send_failed")
+        self._disconnect_session_on_io_error(exc)
+
+    def _disconnect_session_on_io_error(self, exc: BaseException) -> None:
+        if not isinstance(exc, session_mod.SessionIOError):
+            return
+        session = self._session
+        if session is None or session.state is not session_mod.SessionState.ACTIVE:
+            return
+        session.handle_disconnect(exc)
 
     def _complete_active(self, *, reason: str) -> None:
         _ = reason
