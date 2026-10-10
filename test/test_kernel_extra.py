@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
+import time
+from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -53,6 +56,8 @@ class _FakeSession:
         self.sent: list[dict[str, object]] = []
         self._outbound = None
         self.disconnected: Exception | None = None
+        self.sock: _FakeSocket | None = None
+        self.close_count = 0
 
     def connect(self) -> session_mod.SessionInfo:
         return self.info
@@ -217,6 +222,139 @@ async def test_connect_validations(monkeypatch: pytest.MonkeyPatch) -> None:
             panel={"host": "h", "port": 1},
             client_identity=_identity(),
         )
+
+
+@pytest.mark.asyncio
+async def test_connect_cancellation_closes_session_when_thread_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    kernel = E27Kernel()
+    monkeypatch.setattr(kernel, "load_features_blocking", lambda _modules=None: None)
+
+    allow_connect = threading.Event()
+    connect_started = threading.Event()
+    sessions: list[_FakeSession] = []
+
+    class _SlowSession(_FakeSession):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            sessions.append(self)
+
+        def connect(self) -> session_mod.SessionInfo:  # type: ignore[override]
+            connect_started.set()
+            allow_connect.wait()
+            sock = _FakeSocket()
+            sock.connected = True
+            self.sock = sock
+            return self.info
+
+        def close(self) -> None:  # type: ignore[override]
+            self.close_count += 1
+            if self.sock is not None:
+                self.sock.close()
+            super().close()
+
+    monkeypatch.setattr(session_mod, "Session", _SlowSession)
+
+    task = asyncio.create_task(
+        kernel.connect(
+            linking.E27LinkKeys("aa", "bb", "cc"),
+            panel={"host": "h", "port": 1},
+            client_identity=_identity(),
+        )
+    )
+    try:
+        await asyncio.sleep(0.05)
+        assert connect_started.is_set()
+        task.cancel()
+        cancel_started = time.monotonic()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert time.monotonic() - cancel_started < 1.0
+        assert kernel._session is None
+        assert len(sessions) == 1
+        assert sessions[0].close_count == 0
+
+        allow_connect.set()
+        for _ in range(50):
+            if sessions[0].close_count == 1:
+                break
+            await asyncio.sleep(0.02)
+        assert sessions[0].close_count == 1
+        assert sessions[0].sock is not None
+        assert cast(_FakeSocket, sessions[0].sock).closed is True
+    finally:
+        allow_connect.set()
+
+
+@pytest.mark.asyncio
+async def test_connect_cancellation_closes_session_when_loop_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    kernel = E27Kernel()
+    monkeypatch.setattr(kernel, "load_features_blocking", lambda _modules=None: None)
+
+    allow_connect = threading.Event()
+    connect_started = threading.Event()
+    sessions: list[_FakeSession] = []
+
+    class _SlowSession(_FakeSession):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            sessions.append(self)
+
+        def connect(self) -> session_mod.SessionInfo:  # type: ignore[override]
+            connect_started.set()
+            allow_connect.wait()
+            sock = _FakeSocket()
+            sock.connected = True
+            self.sock = sock
+            return self.info
+
+        def close(self) -> None:  # type: ignore[override]
+            self.close_count += 1
+            if self.sock is not None:
+                self.sock.close()
+            super().close()
+
+    monkeypatch.setattr(session_mod, "Session", _SlowSession)
+
+    loop = asyncio.get_running_loop()
+
+    task = asyncio.create_task(
+        kernel.connect(
+            linking.E27LinkKeys("aa", "bb", "cc"),
+            panel={"host": "h", "port": 1},
+            client_identity=_identity(),
+        )
+    )
+    try:
+        await asyncio.sleep(0.05)
+        assert connect_started.is_set()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert sessions[0].close_count == 0
+
+        real_call_soon_threadsafe = loop.call_soon_threadsafe
+
+        def _selective_call_soon_threadsafe(fn: Callable[[], None], *args: Any) -> Any:
+            if fn.__name__ == "_close":
+                raise RuntimeError("Event loop is closed")
+            return real_call_soon_threadsafe(fn, *args)
+
+        monkeypatch.setattr(loop, "call_soon_threadsafe", _selective_call_soon_threadsafe)
+
+        allow_connect.set()
+        for _ in range(50):
+            if sessions[0].close_count == 1:
+                break
+            await asyncio.sleep(0.02)
+        assert sessions[0].close_count == 1
+        assert sessions[0].sock is not None
+        assert cast(_FakeSocket, sessions[0].sock).closed is True
+    finally:
+        allow_connect.set()
 
 
 @pytest.mark.asyncio
