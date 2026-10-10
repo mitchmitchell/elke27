@@ -9,12 +9,14 @@ from _pytest.monkeypatch import MonkeyPatch
 from elke27_lib import ArmMode, ClientConfig, Elke27Client
 from elke27_lib.client import Result
 from elke27_lib.errors import (
+    ConnectionLost,
     E27ProvisioningRequired,
     Elke27DisconnectedError,
     Elke27InvalidArgument,
     Elke27LinkRequiredError,
     Elke27PermissionError,
     Elke27PinRequiredError,
+    NotAuthenticatedError,
     PermissionDeniedError,
 )
 
@@ -143,3 +145,35 @@ async def test_error_mapping_for_arm_disarm(monkeypatch: MonkeyPatch):
     with pytest.raises(Elke27PermissionError) as exc_info:
         await client.async_disarm_area(1, pin="1234")
     assert exc_info.value.is_transient is False
+
+
+@pytest.mark.asyncio
+async def test_disconnected_commands_raise_disconnected_not_permission() -> None:
+    """Regression for #13: missing session is transport/disconnect, not panel refusal."""
+    client = Elke27Client()
+
+    with pytest.raises(Elke27DisconnectedError) as exc_info:
+        await client.async_arm_area(1, mode=ArmMode.ARMED_AWAY, pin="1234")
+    assert exc_info.value.is_transient is True
+    assert "Client is not connected." in str(exc_info.value)
+
+    with pytest.raises(Elke27DisconnectedError):
+        await client.async_set_zone_bypass(1, bypassed=True, pin="1234")
+
+    result = await client.async_execute("light_get_status", light_id=1)
+    assert result.ok is False
+    assert isinstance(result.error, NotAuthenticatedError)
+
+
+@pytest.mark.asyncio
+async def test_connection_lost_maps_to_disconnected(monkeypatch: MonkeyPatch) -> None:
+    client = Elke27Client()
+
+    async def _connection_lost(*_args: object, **_kwargs: object) -> Result[dict[str, object]]:
+        return _err(ConnectionLost("Session disconnected."))
+
+    monkeypatch.setattr(client, "async_execute", _connection_lost)
+    with pytest.raises(Elke27DisconnectedError) as exc_info:
+        await client.async_arm_area(1, mode=ArmMode.ARMED_STAY, pin="1234")
+    assert exc_info.value.is_transient is True
+    assert "Connection lost during the command." in str(exc_info.value)
