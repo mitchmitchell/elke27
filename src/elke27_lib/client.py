@@ -1303,6 +1303,31 @@ class Elke27Client:
         self._mark_snapshot_stale()
         return False
 
+    async def _await_snapshot_publication(
+        self,
+        baseline_version: int,
+        *,
+        timeout_s: float | None,
+    ) -> None:
+        """Wait until kernel-event snapshot rebuild bumps ``baseline_version``."""
+        if self._snapshot_version > baseline_version:
+            return
+        loop = asyncio.get_running_loop()
+        timeout_value = (
+            timeout_s if timeout_s is not None else getattr(self._kernel, "_request_timeout_s", 5.0)
+        )
+        deadline = loop.time() + timeout_value
+        while self._snapshot_version <= baseline_version:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                self._log.warning(
+                    "Timed out waiting for snapshot publication (baseline=%s current=%s)",
+                    baseline_version,
+                    self._snapshot_version,
+                )
+                return
+            await asyncio.sleep(min(0.01, remaining))
+
     def _record_local_zone_bypass(self, zone_id: int) -> None:
         zone = self._kernel.state.zones.get(zone_id)
         if zone is None or zone.area_id is None:
@@ -2358,12 +2383,18 @@ class Elke27Client:
                 return _err(self._panel_error_for_async_execute(command_key, error_code))
 
             response_payload = self._extract_response_payload(msg, expected_route)
+            snapshot_wait_baseline = self._snapshot_version
             status_refresh_ok = await self._status_refresh_after_successful_write(
                 command_key,
                 params,
                 response_payload,
                 timeout_s=timeout_s,
             )
+            if command_key in {"area_set_arm_state", "zone_set_status"}:
+                await self._await_snapshot_publication(
+                    snapshot_wait_baseline,
+                    timeout_s=timeout_s,
+                )
             return _ok(response_payload, status_refresh_ok=status_refresh_ok)
 
         if spec.response_mode != "paged_blocks":

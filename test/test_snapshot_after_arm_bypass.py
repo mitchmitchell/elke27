@@ -16,6 +16,7 @@ from elke27_lib.events import (
     UNSET_SEQ,
     UNSET_SESSION_ID,
     AreaStatusUpdated,
+    Event,
     PanelAttribsUpdated,
 )
 from elke27_lib.types import EventType, PanelInfo
@@ -224,6 +225,7 @@ async def test_arm_ok_when_status_read_returns_panel_error() -> None:
 
 
 def test_unrelated_snapshot_update_preserves_stale_flag() -> None:
+    """Regression for Bugbot r4238451936 / commit 9728ee1."""
     client = Elke27Client()
     client._replace_snapshot(panel_info=PanelInfo(model="M1"))
     client._mark_snapshot_stale()
@@ -280,3 +282,39 @@ def test_area_arm_status_reconciliation_clears_stale_flag() -> None:
     )
 
     assert client.snapshot.stale is False
+
+
+@pytest.mark.asyncio
+async def test_async_execute_waits_for_deferred_snapshot_publication() -> None:
+    """Regression for Codex r4238451930: reply future resolves before dispatch."""
+    client, session = _make_client()
+    loop = asyncio.get_running_loop()
+    client._event_loop = loop
+    kernel = get_kernel(client)
+    kernel.state.get_or_create_area(1).arm_state = "DISARMED"
+
+    def deferred_on_kernel_event(evt: Event) -> None:
+        loop.call_soon(client._handle_kernel_event, evt)
+
+    assert client._kernel_event_token is not None
+    client._kernel.unsubscribe(client._kernel_event_token)
+    client._kernel_event_token = client._kernel.subscribe(deferred_on_kernel_event)
+
+    result = await _drive_until_done(
+        client,
+        session,
+        client.async_execute(
+            "area_set_arm_state",
+            area_id=1,
+            arm_state="ARMED_AWAY",
+            pin=1234,
+        ),
+        first_reply={
+            "seq": 0,
+            "area": {"set_arm_state": {"area_id": 1, "error_code": E27ErrorCode.ELKERR_NONE}},
+        },
+    )
+
+    assert isinstance(result, Result)
+    assert result.ok is True
+    assert client.snapshot.areas[1].arm_mode == ArmMode.ARMED_AWAY
