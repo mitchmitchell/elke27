@@ -475,20 +475,19 @@ def make_zone_get_status_handler(state: PanelState, emit: EmitFn, now: NowFn):
                 zone_id,
                 sorted(changed),
             )
-        if changed:
-            emit(
-                ZoneStatusUpdated(
-                    kind=ZoneStatusUpdated.KIND,
-                    at=UNSET_AT,
-                    seq=UNSET_SEQ,
-                    classification=UNSET_CLASSIFICATION,
-                    route=UNSET_ROUTE,
-                    session_id=UNSET_SESSION_ID,
-                    zone_id=zone_id,
-                    changed_fields=tuple(sorted(changed)),
-                ),
-                ctx,
-            )
+        emit(
+            ZoneStatusUpdated(
+                kind=ZoneStatusUpdated.KIND,
+                at=UNSET_AT,
+                seq=UNSET_SEQ,
+                classification=UNSET_CLASSIFICATION,
+                route=UNSET_ROUTE,
+                session_id=UNSET_SESSION_ID,
+                zone_id=zone_id,
+                changed_fields=tuple(sorted(changed)),
+            ),
+            ctx,
+        )
         return True
 
     return handler_zone_get_status

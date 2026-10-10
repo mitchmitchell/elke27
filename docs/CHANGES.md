@@ -1,5 +1,12 @@
   UNRELEASED
 
+  - After a successful `area_set_arm_state` or `zone_set_status`, the client issues
+    a follow-up `area_get_status` / `zone_get_status` (unless the command reply
+    already included confirmed arm or bypass fields) so `get_snapshot()` reflects
+    panel state when the command returns. The write still succeeds if that read
+    fails; `Result.status_refresh_ok` is `False` and the affected area or zone id
+    is tracked in `PanelSnapshot.stale_area_ids` / `stale_zone_ids` (with
+    `PanelSnapshot.stale` true when any id is stale) (#15).
   - Behavior change: commands sent while not connected (no session / encryption
     key) now raise `Elke27DisconnectedError` (transient) from v2 command helpers
     instead of `Elke27PermissionError`. `ConnectionLost` during a command now

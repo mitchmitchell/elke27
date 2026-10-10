@@ -204,14 +204,15 @@ class Result(Generic[T]):
     ok: bool
     data: T | None = None
     error: BaseException | None = None
+    status_refresh_ok: bool | None = None
 
     @classmethod
     def success(cls: type[Result[T]], value: T) -> Result[T]:
-        return cls(ok=True, data=value, error=None)
+        return cls(ok=True, data=value, error=None, status_refresh_ok=None)
 
     @classmethod
     def failure(cls: type[Result[T]], error: BaseException) -> Result[T]:
-        return cls(ok=False, data=None, error=error)
+        return cls(ok=False, data=None, error=error, status_refresh_ok=None)
 
     def unwrap(self) -> T:
         if self.ok:
@@ -223,12 +224,12 @@ class Result(Generic[T]):
         raise E27Error("Unknown error.")
 
 
-def _ok(value: T) -> Result[T]:
-    return Result(ok=True, data=value, error=None)
+def _ok(value: T, *, status_refresh_ok: bool | None = None) -> Result[T]:
+    return Result(ok=True, data=value, error=None, status_refresh_ok=status_refresh_ok)
 
 
 def _err(error: BaseException) -> Result[T]:
-    return Result(ok=False, data=None, error=error)
+    return Result(ok=False, data=None, error=error, status_refresh_ok=None)
 
 
 __all__ = ["Elke27Client", "Result", "E27Identity", "E27LinkKeys"]
@@ -469,6 +470,8 @@ class Elke27Client:
         self._now_monotonic: Callable[[], float] = now_monotonic or time.monotonic
         self._snapshot: PanelSnapshot = PanelSnapshot.empty()
         self._snapshot_version: int = 0
+        self._stale_area_ids: set[int] = set()
+        self._stale_zone_ids: set[int] = set()
         self._last_auth_pin: int | None = None
         self._pending_bypass_by_area: dict[int, float] = {}
         self._last_disconnect_at: float | None = None
@@ -967,6 +970,58 @@ class Elke27Client:
                 )
         return types_mod.MappingProxyType(out)
 
+    def _snapshot_stale_view(self) -> tuple[bool, frozenset[int], frozenset[int]]:
+        stale_area_ids = frozenset(self._stale_area_ids)
+        stale_zone_ids = frozenset(self._stale_zone_ids)
+        return bool(stale_area_ids or stale_zone_ids), stale_area_ids, stale_zone_ids
+
+    def _apply_stale_clears_from_event(self, evt: Event) -> bool:
+        """Clear per-entity stale ids from successful status coverage events.
+
+        Uses only the entity id on ``AreaStatusUpdated`` / ``ZoneStatusUpdated``
+        (and ``ZonesStatusBulkUpdated.updated_ids``). ``changed_fields`` is never
+        consulted; handlers emit these events on every successful ``get_status``
+        reply, including when reconcile made no state changes.
+        """
+        before_areas = frozenset(self._stale_area_ids)
+        before_zones = frozenset(self._stale_zone_ids)
+        if isinstance(evt, AreaStatusUpdated):
+            self._stale_area_ids.discard(evt.area_id)
+        elif isinstance(evt, ZoneStatusUpdated):
+            self._stale_zone_ids.discard(evt.zone_id)
+        elif isinstance(evt, ZonesStatusBulkUpdated):
+            self._stale_zone_ids.difference_update(evt.updated_ids)
+        return (before_areas, before_zones) != (
+            frozenset(self._stale_area_ids),
+            frozenset(self._stale_zone_ids),
+        )
+
+    def _clear_all_entity_stale(self) -> None:
+        self._stale_area_ids.clear()
+        self._stale_zone_ids.clear()
+
+    def _notify_snapshot_listeners(self) -> None:
+        snap = self._snapshot
+        timestamp = datetime.now(UTC)
+        v2_evt = Elke27Event(
+            event_type=EventType.PANEL,
+            data={"snapshot_version": snap.version, "stale": snap.stale},
+            seq=snap.version,
+            timestamp=timestamp,
+            raw_type="snapshot_updated",
+        )
+        self._enqueue_event(v2_evt)
+        with self._subscriber_lock:
+            callbacks = list(self._subscriber_callbacks)
+        for cb in callbacks:
+            try:
+                cb(v2_evt)
+            except Exception as exc:  # noqa: BLE001
+                exc_type = type(exc)
+                if exc_type not in self._subscriber_error_types:
+                    self._subscriber_error_types.add(exc_type)
+                    self._log.warning("Subscriber callback failed: %s", exc_type.__name__)
+
     def _replace_snapshot(
         self,
         *,
@@ -984,6 +1039,7 @@ class Elke27Client:
     ) -> None:
         self._snapshot_version += 1
         now = datetime.now(UTC)
+        stale_flag, stale_area_ids, stale_zone_ids = self._snapshot_stale_view()
         self._snapshot = PanelSnapshot(
             panel=panel_info or self._snapshot.panel,
             table_info=table_info or self._snapshot.table_info,
@@ -998,8 +1054,49 @@ class Elke27Client:
             thermostats=thermostats or self._snapshot.thermostats,
             version=self._snapshot_version,
             updated_at=now,
+            stale=stale_flag,
+            stale_area_ids=stale_area_ids,
+            stale_zone_ids=stale_zone_ids,
         )
         self._maybe_set_ready()
+
+    def _mark_area_stale(self, area_id: int) -> None:
+        if area_id in self._stale_area_ids:
+            return
+        self._stale_area_ids.add(area_id)
+        self._replace_snapshot(
+            panel_info=self._snapshot.panel,
+            table_info=self._snapshot.table_info,
+            areas=self._snapshot.areas,
+            zones=self._snapshot.zones,
+            zone_definitions=self._snapshot.zone_definitions,
+            outputs=self._snapshot.outputs,
+            output_definitions=self._snapshot.output_definitions,
+            lights=self._snapshot.lights,
+            barriers=self._snapshot.barriers,
+            locks=self._snapshot.locks,
+            thermostats=self._snapshot.thermostats,
+        )
+        self._notify_snapshot_listeners()
+
+    def _mark_zone_stale(self, zone_id: int) -> None:
+        if zone_id in self._stale_zone_ids:
+            return
+        self._stale_zone_ids.add(zone_id)
+        self._replace_snapshot(
+            panel_info=self._snapshot.panel,
+            table_info=self._snapshot.table_info,
+            areas=self._snapshot.areas,
+            zones=self._snapshot.zones,
+            zone_definitions=self._snapshot.zone_definitions,
+            outputs=self._snapshot.outputs,
+            output_definitions=self._snapshot.output_definitions,
+            lights=self._snapshot.lights,
+            barriers=self._snapshot.barriers,
+            locks=self._snapshot.locks,
+            thermostats=self._snapshot.thermostats,
+        )
+        self._notify_snapshot_listeners()
 
     def _bootstrap_ready(self) -> bool:
         return all(self._inventory_ready.values()) and all(self._status_ready.values())
@@ -1182,6 +1279,99 @@ class Elke27Client:
             return
         self._safe_request(("zone", "get_all_zones_status"))
 
+    @staticmethod
+    def _command_reply_includes_confirmed_status(
+        command_key: str, response_payload: Mapping[str, Any] | None
+    ) -> bool:
+        if response_payload is None:
+            return False
+        if command_key == "area_set_arm_state":
+            return "arm_state" in response_payload or "armed_state" in response_payload
+        if command_key == "zone_set_status":
+            return "BYPASSED" in response_payload or "bypassed" in response_payload
+        return False
+
+    async def _refresh_snapshot_from_panel_status(
+        self,
+        command_key: str,
+        params: Mapping[str, Any],
+        *,
+        timeout_s: float | None,
+    ) -> Result[Mapping[str, Any]] | None:
+        """Pull a fresh entity status from the panel after a successful write."""
+        if command_key == "area_set_arm_state":
+            area_id = params.get("area_id")
+            if not isinstance(area_id, int) or area_id < 1:
+                return None
+            return await self.async_execute("area_get_status", area_id=area_id, timeout_s=timeout_s)
+        if command_key == "zone_set_status":
+            zone_id = params.get("zone_id")
+            if not isinstance(zone_id, int) or zone_id < 1:
+                return None
+            return await self.async_execute("zone_get_status", zone_id=zone_id, timeout_s=timeout_s)
+        return None
+
+    async def _status_refresh_after_successful_write(
+        self,
+        command_key: str,
+        params: Mapping[str, Any],
+        response_payload: Mapping[str, Any] | None,
+        *,
+        timeout_s: float | None,
+    ) -> bool | None:
+        """Return refresh outcome: None if not applicable, else whether refresh succeeded."""
+        if command_key not in {"area_set_arm_state", "zone_set_status"}:
+            return None
+        if self._command_reply_includes_confirmed_status(command_key, response_payload):
+            return True
+        refresh_result = await self._refresh_snapshot_from_panel_status(
+            command_key, params, timeout_s=timeout_s
+        )
+        if refresh_result is None:
+            return None
+        if refresh_result.ok:
+            return True
+        err = refresh_result.error
+        self._log.warning(
+            "Panel accepted %s but follow-up status read failed: %s",
+            command_key,
+            type(err).__name__ if err is not None else "unknown",
+        )
+        if command_key == "area_set_arm_state":
+            area_id = params.get("area_id")
+            if isinstance(area_id, int) and area_id > 0:
+                self._mark_area_stale(area_id)
+        elif command_key == "zone_set_status":
+            zone_id = params.get("zone_id")
+            if isinstance(zone_id, int) and zone_id > 0:
+                self._mark_zone_stale(zone_id)
+        return False
+
+    async def _await_snapshot_publication(
+        self,
+        baseline_version: int,
+        *,
+        timeout_s: float | None,
+    ) -> None:
+        """Wait until kernel-event snapshot rebuild bumps ``baseline_version``."""
+        if self._snapshot_version > baseline_version:
+            return
+        loop = asyncio.get_running_loop()
+        timeout_value = (
+            timeout_s if timeout_s is not None else getattr(self._kernel, "_request_timeout_s", 5.0)
+        )
+        deadline = loop.time() + timeout_value
+        while self._snapshot_version <= baseline_version:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                self._log.warning(
+                    "Timed out waiting for snapshot publication (baseline=%s current=%s)",
+                    baseline_version,
+                    self._snapshot_version,
+                )
+                return
+            await asyncio.sleep(min(0.01, remaining))
+
     def _record_local_zone_bypass(self, zone_id: int) -> None:
         zone = self._kernel.state.zones.get(zone_id)
         if zone is None or zone.area_id is None:
@@ -1256,6 +1446,7 @@ class Elke27Client:
 
         if isinstance(evt, ConnectionStateChanged):
             if evt.connected:
+                self._clear_all_entity_stale()
                 if self._connection_lost_logged:
                     self._log.info(
                         "Panel connection restored (reason=%s error_type=%s)",
@@ -1444,7 +1635,14 @@ class Elke27Client:
             TstatStatusUpdated.KIND,
             ZoneStatusUpdated.KIND,
         }:
-            if evt.kind == AreaStatusUpdated.KIND and skip_snapshot_update:
+            stale_tracking_changed = False
+            if isinstance(evt, (AreaStatusUpdated, ZoneStatusUpdated, ZonesStatusBulkUpdated)):
+                stale_tracking_changed = self._apply_stale_clears_from_event(evt)
+            if (
+                evt.kind == AreaStatusUpdated.KIND
+                and skip_snapshot_update
+                and not stale_tracking_changed
+            ):
                 self._maybe_set_ready()
             else:
                 self._replace_snapshot(
@@ -1599,6 +1797,7 @@ class Elke27Client:
             self._log.info("Panel connection established after connect failures")
         self._connect_failures_warning_logged = False
         self._connected = True
+        self._clear_all_entity_stale()
         if self._snapshot.version == 0:
             self._replace_snapshot(
                 panel_info=self._build_panel_info(),
@@ -2173,6 +2372,12 @@ class Elke27Client:
                 if isinstance(zone_id, int) and zone_id > 0:
                     self._record_local_zone_bypass(zone_id)
 
+            snapshot_wait_baseline: int | None = (
+                self._snapshot_version
+                if command_key in {"area_set_arm_state", "zone_set_status"}
+                else None
+            )
+
             loop = asyncio.get_running_loop()
             seq = self._kernel.next_seq()
             future = self._kernel.pending_responses.create(
@@ -2233,7 +2438,18 @@ class Elke27Client:
                 return _err(self._panel_error_for_async_execute(command_key, error_code))
 
             response_payload = self._extract_response_payload(msg, expected_route)
-            return _ok(response_payload)
+            status_refresh_ok = await self._status_refresh_after_successful_write(
+                command_key,
+                params,
+                response_payload,
+                timeout_s=timeout_s,
+            )
+            if snapshot_wait_baseline is not None:
+                await self._await_snapshot_publication(
+                    snapshot_wait_baseline,
+                    timeout_s=timeout_s,
+                )
+            return _ok(response_payload, status_refresh_ok=status_refresh_ok)
 
         if spec.response_mode != "paged_blocks":
             return _err(ProtocolError(f"Command {command_key!r} has unsupported response_mode."))

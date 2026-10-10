@@ -163,6 +163,14 @@ The library returns:
 - success results, or
 - typed failures
 
+For `area_set_arm_state` and `zone_set_status`, a successful write may include
+`Result.status_refresh_ok == False` when a follow-up status read failed; the
+mutation still applied on the panel but the affected entity id appears in
+`PanelSnapshot.stale_area_ids` or `stale_zone_ids` (`stale` is true when any
+id is stale) until a successful status read or broadcast covering that id. HA
+should not treat that as a failed service call, but should avoid chaining
+further mutations on stale entities without re-reading.
+
 Home Assistant:
 - does not retry mutating commands automatically
 - may retry read-only commands
