@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -222,7 +223,7 @@ async def test_connect_validations(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_connect_cancellation_waits_and_closes_session(
+async def test_connect_cancellation_closes_session_when_thread_finishes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     kernel = E27Kernel()
@@ -235,17 +236,19 @@ async def test_connect_cancellation_waits_and_closes_session(
     class _SlowSession(_FakeSession):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             super().__init__(*args, **kwargs)
+            self.close_count = 0
             sessions.append(self)
 
         def connect(self) -> session_mod.SessionInfo:  # type: ignore[override]
             connect_started.set()
-            allow_connect.wait(timeout=5.0)
+            allow_connect.wait()
             sock = _FakeSocket()
             sock.connected = True
             self.sock = sock
             return self.info
 
         def close(self) -> None:  # type: ignore[override]
+            self.close_count += 1
             if self.sock is not None:
                 self.sock.close()
             super().close()
@@ -259,22 +262,26 @@ async def test_connect_cancellation_waits_and_closes_session(
             client_identity=_identity(),
         )
     )
-    await asyncio.sleep(0.05)
-    assert connect_started.is_set()
-    task.cancel()
+    try:
+        await asyncio.sleep(0.05)
+        assert connect_started.is_set()
+        task.cancel()
+        cancel_started = time.monotonic()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert time.monotonic() - cancel_started < 1.0
+        assert kernel._session is None
+        assert len(sessions) == 1
+        assert sessions[0].close_count == 0
 
-    async def _release_connect() -> None:
-        await asyncio.sleep(0.01)
         allow_connect.set()
-
-    release = asyncio.create_task(_release_connect())
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    await release
-    assert kernel._session is None
-    assert len(sessions) == 1
-    assert sessions[0].sock is not None
-    assert cast(_FakeSocket, sessions[0].sock).closed is True
+        for _ in range(50):
+            if sessions[0].close_count == 1:
+                break
+            await asyncio.sleep(0.02)
+        assert sessions[0].close_count == 1
+    finally:
+        allow_connect.set()
 
 
 @pytest.mark.asyncio

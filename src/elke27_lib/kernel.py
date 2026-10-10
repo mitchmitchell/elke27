@@ -23,6 +23,7 @@ Notes
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextlib
 import importlib
 import json
@@ -569,34 +570,32 @@ class E27Kernel:
         def _do_connect_sync() -> session_mod.SessionInfo:
             return s.connect()
 
-        connect_done = threading.Event()
-        connect_error: list[BaseException] = []
-
-        def _run_connect() -> None:
-            try:
-                _do_connect_sync()
-            except BaseException as exc:
-                connect_error.append(exc)
-            finally:
-                connect_done.set()
-
-        connect_thread = threading.Thread(
-            target=_run_connect, name="e27-session-connect", daemon=True
+        loop = self._loop
+        assert loop is not None
+        if loop._default_executor is None:
+            loop.set_default_executor(concurrent.futures.ThreadPoolExecutor())
+        executor = loop._default_executor
+        assert executor is not None
+        connect_cf: concurrent.futures.Future[session_mod.SessionInfo] = executor.submit(
+            _do_connect_sync
         )
-        connect_thread.start()
         try:
-            while not connect_done.is_set():
-                await asyncio.sleep(0)
+            await asyncio.wrap_future(connect_cf, loop=loop)
         except asyncio.CancelledError:
-            connect_done.wait()
-            connect_thread.join()
-            with contextlib.suppress(Exception):
-                s.close()
+
+            def _close_after_connect(
+                _cf: concurrent.futures.Future[session_mod.SessionInfo],
+            ) -> None:
+                def _close() -> None:
+                    with contextlib.suppress(Exception):
+                        s.close()
+
+                loop.call_soon_threadsafe(_close)
+
+            connect_cf.add_done_callback(_close_after_connect)
             raise
-        connect_thread.join()
-        if connect_error:
-            err = connect_error[0]
-            raise KernelError(f"Session connect failed for {host}:{port}: {err}") from err
+        except Exception as e:
+            raise KernelError(f"Session connect failed for {host}:{port}: {e}") from e
 
         self._session = s
 

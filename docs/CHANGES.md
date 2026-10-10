@@ -17,7 +17,10 @@
     See ADR-0013 keepalive / connection logging notes.
   - Connect error mapping: `E27Timeout` during connect now raises
     `Elke27TimeoutError` (previously `Elke27ProtocolError`). `E27NotReady`
-    during connect now raises `Elke27ConnectionError`.
+    during connect now raises `Elke27ConnectionError`. Failures wrapped by the
+    kernel during connect now map to `Elke27ConnectionError`,
+    `Elke27TimeoutError`, `Elke27AuthError`, or `Elke27CryptoError` when the
+    underlying cause matches (previously `Elke27ProtocolError`).
 
   Fast Dead-Link Detection, Quieter Connection Logs, async_execute Panel Errors (0.3.11)
 
