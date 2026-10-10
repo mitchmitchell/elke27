@@ -22,6 +22,7 @@ import time
 import types
 import types as types_mod
 import typing
+from collections import defaultdict
 from collections.abc import (
     AsyncIterator,
     Callable,
@@ -37,6 +38,7 @@ from typing import (
     TYPE_CHECKING,
     Any,
     Generic,
+    Literal,
     TypeVar,
     cast,
     get_type_hints,
@@ -472,6 +474,10 @@ class Elke27Client:
         self._snapshot_version: int = 0
         self._stale_area_ids: set[int] = set()
         self._stale_zone_ids: set[int] = set()
+        self._area_status_seq: dict[int, int] = {}
+        self._zone_status_seq: dict[int, int] = {}
+        self._area_status_waiters: dict[int, list[asyncio.Future[None]]] = defaultdict(list)
+        self._zone_status_waiters: dict[int, list[asyncio.Future[None]]] = defaultdict(list)
         self._last_auth_pin: int | None = None
         self._pending_bypass_by_area: dict[int, float] = {}
         self._last_disconnect_at: float | None = None
@@ -1347,30 +1353,59 @@ class Elke27Client:
                 self._mark_zone_stale(zone_id)
         return False
 
-    async def _await_snapshot_publication(
-        self,
-        baseline_version: int,
-        *,
-        timeout_s: float | None,
+    def _notify_entity_status_publication(
+        self, domain: Literal["area", "zone"], entity_id: int
     ) -> None:
-        """Wait until kernel-event snapshot rebuild bumps ``baseline_version``."""
-        if self._snapshot_version > baseline_version:
+        seq_map = self._area_status_seq if domain == "area" else self._zone_status_seq
+        waiters_map = self._area_status_waiters if domain == "area" else self._zone_status_waiters
+        seq_map[entity_id] = seq_map.get(entity_id, 0) + 1
+        for fut in list(waiters_map.pop(entity_id, [])):
+            if not fut.done():
+                fut.set_result(None)
+
+    async def _await_entity_status_publication(
+        self,
+        *,
+        domain: Literal["area", "zone"],
+        entity_id: int,
+        seen_before: int,
+        deadline: float,
+    ) -> None:
+        """Wait for ``AreaStatusUpdated`` / ``ZoneStatusUpdated`` covering ``entity_id``."""
+        seq_map = self._area_status_seq if domain == "area" else self._zone_status_seq
+        if seq_map.get(entity_id, 0) > seen_before:
             return
         loop = asyncio.get_running_loop()
-        timeout_value = (
-            timeout_s if timeout_s is not None else getattr(self._kernel, "_request_timeout_s", 5.0)
-        )
-        deadline = loop.time() + timeout_value
-        while self._snapshot_version <= baseline_version:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                self._log.warning(
-                    "Timed out waiting for snapshot publication (baseline=%s current=%s)",
-                    baseline_version,
-                    self._snapshot_version,
-                )
-                return
-            await asyncio.sleep(min(0.01, remaining))
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            self._log.warning(
+                "Timed out waiting for %s %s status publication (seq=%s current=%s)",
+                domain,
+                entity_id,
+                seen_before,
+                seq_map.get(entity_id, 0),
+            )
+            return
+        fut: asyncio.Future[None] = loop.create_future()
+        waiters_map = self._area_status_waiters if domain == "area" else self._zone_status_waiters
+        waiters_map[entity_id].append(fut)
+        if seq_map.get(entity_id, 0) > seen_before:
+            if not fut.done():
+                fut.set_result(None)
+        try:
+            await asyncio.wait_for(fut, timeout=remaining)
+        except TimeoutError:
+            self._log.warning(
+                "Timed out waiting for %s %s status publication (seq=%s current=%s)",
+                domain,
+                entity_id,
+                seen_before,
+                seq_map.get(entity_id, 0),
+            )
+        finally:
+            pending = waiters_map.get(entity_id, [])
+            if fut in pending:
+                pending.remove(fut)
 
     def _record_local_zone_bypass(self, zone_id: int) -> None:
         zone = self._kernel.state.zones.get(zone_id)
@@ -1527,7 +1562,11 @@ class Elke27Client:
         )
         self._enqueue_event(v2_evt)
 
-        skip_snapshot_update = False
+        if isinstance(evt, AreaStatusUpdated):
+            self._notify_entity_status_publication("area", evt.area_id)
+        elif isinstance(evt, ZoneStatusUpdated):
+            self._notify_entity_status_publication("zone", evt.zone_id)
+
         if isinstance(evt, AreaConfiguredInventoryReady):
             self._mark_inventory_ready("area")
         elif isinstance(evt, ZoneConfiguredInventoryReady):
@@ -1562,7 +1601,6 @@ class Elke27Client:
             self._mark_status_seen("area", [evt.area_id])
             if not evt.changed_fields:
                 self._refresh_all_zone_statuses_for_bypass_change(evt.area_id)
-                skip_snapshot_update = True
             if "num_bypassed_zones" in evt.changed_fields:
                 suppress_refresh = self._should_suppress_area_bypass_refresh(evt.area_id)
                 area = self._kernel.state.areas.get(evt.area_id)
@@ -1635,29 +1673,21 @@ class Elke27Client:
             TstatStatusUpdated.KIND,
             ZoneStatusUpdated.KIND,
         }:
-            stale_tracking_changed = False
             if isinstance(evt, (AreaStatusUpdated, ZoneStatusUpdated, ZonesStatusBulkUpdated)):
-                stale_tracking_changed = self._apply_stale_clears_from_event(evt)
-            if (
-                evt.kind == AreaStatusUpdated.KIND
-                and skip_snapshot_update
-                and not stale_tracking_changed
-            ):
-                self._maybe_set_ready()
-            else:
-                self._replace_snapshot(
-                    panel_info=self._build_panel_info(),
-                    table_info=self._build_table_info(),
-                    areas=self._build_area_map(),
-                    zones=self._build_zone_map(),
-                    zone_definitions=self._build_zone_definitions(),
-                    outputs=self._build_output_map(),
-                    output_definitions=self._build_output_definitions(),
-                    lights=self._build_light_map(),
-                    barriers=self._build_barrier_map(),
-                    locks=self._build_lock_map(),
-                    thermostats=self._build_thermostat_map(),
-                )
+                self._apply_stale_clears_from_event(evt)
+            self._replace_snapshot(
+                panel_info=self._build_panel_info(),
+                table_info=self._build_table_info(),
+                areas=self._build_area_map(),
+                zones=self._build_zone_map(),
+                zone_definitions=self._build_zone_definitions(),
+                outputs=self._build_output_map(),
+                output_definitions=self._build_output_definitions(),
+                lights=self._build_light_map(),
+                barriers=self._build_barrier_map(),
+                locks=self._build_lock_map(),
+                thermostats=self._build_thermostat_map(),
+            )
         self._maybe_set_ready()
 
         with self._subscriber_lock:
@@ -2372,11 +2402,23 @@ class Elke27Client:
                 if isinstance(zone_id, int) and zone_id > 0:
                     self._record_local_zone_bypass(zone_id)
 
-            snapshot_wait_baseline: int | None = (
-                self._snapshot_version
-                if command_key in {"area_set_arm_state", "zone_set_status"}
-                else None
-            )
+            publication_wait: tuple[Literal["area", "zone"], int, int] | None = None
+            if command_key == "area_set_arm_state":
+                area_id = params.get("area_id")
+                if isinstance(area_id, int) and area_id > 0:
+                    publication_wait = (
+                        "area",
+                        area_id,
+                        self._area_status_seq.get(area_id, 0),
+                    )
+            elif command_key == "zone_set_status":
+                zone_id = params.get("zone_id")
+                if isinstance(zone_id, int) and zone_id > 0:
+                    publication_wait = (
+                        "zone",
+                        zone_id,
+                        self._zone_status_seq.get(zone_id, 0),
+                    )
 
             loop = asyncio.get_running_loop()
             seq = self._kernel.next_seq()
@@ -2393,6 +2435,7 @@ class Elke27Client:
                 if timeout_s is not None
                 else getattr(self._kernel, "_request_timeout_s", 5.0)
             )
+            command_deadline = loop.time() + timeout_value
 
             try:
                 self._kernel.send_request_with_seq(
@@ -2412,7 +2455,10 @@ class Elke27Client:
 
             try:
                 await sent_event.wait()
-                msg = await asyncio.wait_for(future, timeout=timeout_value)
+                reply_timeout = command_deadline - loop.time()
+                if reply_timeout <= 0:
+                    raise TimeoutError
+                msg = await asyncio.wait_for(future, timeout=reply_timeout)
             except TimeoutError:
                 self._kernel.pending_responses.drop(seq)
                 return _err(
@@ -2444,10 +2490,13 @@ class Elke27Client:
                 response_payload,
                 timeout_s=timeout_s,
             )
-            if snapshot_wait_baseline is not None:
-                await self._await_snapshot_publication(
-                    snapshot_wait_baseline,
-                    timeout_s=timeout_s,
+            if publication_wait is not None:
+                domain, entity_id, seen_before = publication_wait
+                await self._await_entity_status_publication(
+                    domain=domain,
+                    entity_id=entity_id,
+                    seen_before=seen_before,
+                    deadline=command_deadline,
                 )
             return _ok(response_payload, status_refresh_ok=status_refresh_ok)
 

@@ -632,20 +632,19 @@ def _finalize_area_delta_outcome(
         )
         return False
 
-    if outcome.changed_fields:
-        emit(
-            AreaStatusUpdated(
-                kind=AreaStatusUpdated.KIND,
-                at=UNSET_AT,
-                seq=UNSET_SEQ,
-                classification=UNSET_CLASSIFICATION,
-                route=UNSET_ROUTE,
-                session_id=UNSET_SESSION_ID,
-                area_id=outcome.area_id,
-                changed_fields=outcome.changed_fields,
-            ),
-            ctx,
-        )
+    emit(
+        AreaStatusUpdated(
+            kind=AreaStatusUpdated.KIND,
+            at=UNSET_AT,
+            seq=UNSET_SEQ,
+            classification=UNSET_CLASSIFICATION,
+            route=UNSET_ROUTE,
+            session_id=UNSET_SESSION_ID,
+            area_id=outcome.area_id,
+            changed_fields=outcome.changed_fields,
+        ),
+        ctx,
+    )
 
     if emit_outcome_api_error and outcome.error_code is not None and outcome.error_code != 0:
         _emit_area_api_error(

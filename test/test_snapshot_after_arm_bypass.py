@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from typing import Any, cast
 
 import pytest
@@ -444,6 +445,130 @@ def test_reconnect_clears_entity_stale_tracking() -> None:
 
 
 @pytest.mark.asyncio
+async def test_unchanged_arm_reply_publication_wait_returns_promptly() -> None:
+    client, session = _make_client()
+    kernel = get_kernel(client)
+    kernel.state.get_or_create_area(1).arm_state = "ARMED_AWAY"
+    client._replace_snapshot(areas=client._build_area_map())
+    cast(Any, client)._connected = True
+    client._event_loop = asyncio.get_running_loop()
+
+    started = time.monotonic()
+    await _drive_until_done(
+        client,
+        session,
+        client.async_execute(
+            "area_set_arm_state",
+            area_id=1,
+            arm_state="ARMED_AWAY",
+            pin=1234,
+            timeout_s=5.0,
+        ),
+        first_reply={
+            "seq": 0,
+            "area": {
+                "set_arm_state": {
+                    "area_id": 1,
+                    "error_code": E27ErrorCode.ELKERR_NONE,
+                    "arm_state": "ARMED_AWAY",
+                }
+            },
+        },
+        max_replies=1,
+    )
+    elapsed = time.monotonic() - started
+    assert elapsed < 1.0
+    assert client.snapshot.areas[1].arm_mode == ArmMode.ARMED_AWAY
+
+
+@pytest.mark.asyncio
+async def test_unrelated_zone_status_does_not_release_arm_publication_wait() -> None:
+    client, session = _make_client()
+    loop = asyncio.get_running_loop()
+    cast(Any, client)._connected = True
+    client._event_loop = loop
+    kernel = get_kernel(client)
+    kernel.state.get_or_create_area(1).arm_state = "DISARMED"
+    kernel.state.get_or_create_zone(99)
+    client._replace_snapshot(areas=client._build_area_map(), zones=client._build_zone_map())
+
+    deferred_handles: list[tuple[Any, tuple[Any, ...]]] = []
+    real_call_soon_threadsafe = loop.call_soon_threadsafe
+    handle_kernel_event = client._handle_kernel_event
+
+    def intercept_call_soon_threadsafe(fn: Any, /, *args: Any) -> None:
+        if fn is handle_kernel_event or (
+            getattr(fn, "__name__", None) == "_handle_kernel_event"
+            and getattr(fn, "__self__", None) is client
+        ):
+            deferred_handles.append((fn, args))
+            return
+        real_call_soon_threadsafe(fn, *args)
+
+    loop.call_soon_threadsafe = intercept_call_soon_threadsafe  # type: ignore[method-assign]
+
+    task = asyncio.create_task(
+        client.async_execute(
+            "area_set_arm_state",
+            area_id=1,
+            arm_state="ARMED_AWAY",
+            pin=1234,
+            timeout_s=0.5,
+        )
+    )
+
+    while not session.sent:
+        await asyncio.sleep(0.01)
+
+    sent = session.sent[0]
+    on_message = get_private(kernel, "_on_message")
+    reply = {
+        "seq": sent["seq"],
+        "area": {
+            "set_arm_state": {
+                "area_id": 1,
+                "error_code": E27ErrorCode.ELKERR_NONE,
+                "arm_state": "ARMED_AWAY",
+            }
+        },
+    }
+
+    threading.Thread(
+        target=lambda: on_message(reply),
+        name="fake-receive",
+        daemon=True,
+    ).start()
+
+    await asyncio.sleep(0.05)
+    assert not task.done()
+
+    client._handle_kernel_event(
+        ZoneStatusUpdated(
+            kind=ZoneStatusUpdated.KIND,
+            at=UNSET_AT,
+            seq=UNSET_SEQ,
+            classification=UNSET_CLASSIFICATION,
+            route=UNSET_ROUTE,
+            session_id=UNSET_SESSION_ID,
+            zone_id=99,
+            changed_fields=("bypassed",),
+        )
+    )
+    assert not task.done()
+
+    while deferred_handles:
+        fn, args = deferred_handles.pop(0)
+        fn(*args)
+
+    result = await task
+    loop.call_soon_threadsafe = real_call_soon_threadsafe  # type: ignore[method-assign]
+
+    assert isinstance(result, Result)
+    assert result.ok is True
+    assert client.snapshot.areas[1].arm_mode == ArmMode.ARMED_AWAY
+
+
+@pytest.mark.asyncio
 async def test_async_execute_waits_for_receive_thread_snapshot_publication() -> None:
     """Regression for Codex r4238451930 (receive-thread resolve before loop dispatch).
 
@@ -452,7 +577,7 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication() -> 
     ``call_soon_threadsafe``. A same-thread ``call_soon`` driver cannot reproduce
     that gap; deliver the panel reply from a worker thread and defer
     ``call_soon_threadsafe(_handle_kernel_event)`` so ``async_execute`` would return
-    before snapshot publication without ``_await_snapshot_publication``.
+    before entity status publication without ``_await_entity_status_publication``.
     """
     client, session = _make_client()
     loop = asyncio.get_running_loop()
