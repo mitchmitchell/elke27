@@ -4,7 +4,11 @@
     log `Connect failed (attempt n/2)` at ERROR every few seconds (#21). After
     `Panel connection lost`, further transient failures log at DEBUG; the first
     transient failure when the panel was never up logs once at WARNING, then
-    DEBUG. Non-transient failures (e.g. invalid link keys) remain ERROR.
+    DEBUG. Non-transient failures (e.g. invalid link keys) and unrecognized
+    connect errors remain ERROR with traceback. The first successful connect
+    after warned transient failures logs INFO (`Panel connection established
+    after connect failures`); link restore still uses `Panel connection restored`.
+    See ADR-0013 keepalive / connection logging notes.
 
   Fast Dead-Link Detection, Quieter Connection Logs, async_execute Panel Errors (0.3.11)
 

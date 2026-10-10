@@ -1107,6 +1107,26 @@ async def test_connect_non_transient_failure_stays_error(
 
 
 @pytest.mark.asyncio
+async def test_connect_unknown_error_logs_error(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    client = Elke27Client(kernel=E27Kernel())
+
+    async def _connect(*_a: Any, **_k: Any) -> None:
+        raise RuntimeError("unexpected connect bug")
+
+    monkeypatch.setattr(client._kernel, "connect", _connect)
+    keys = LinkKeys("aa", "bb", "cc")
+    with caplog.at_level(logging.DEBUG, logger=client._log.name):
+        with pytest.raises(Elke27ProtocolErrorV2):
+            await client.async_connect("h", 1, keys)
+    msgs = _connect_fail_msgs(caplog)
+    assert len(msgs) == 2
+    assert all(level == logging.ERROR for level, _ in msgs)
+    assert all(r.exc_info is not None for r in caplog.records if r.levelno == logging.ERROR)
+
+
+@pytest.mark.asyncio
 async def test_connect_success_after_failures_resets_warning_cycle(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -1125,6 +1145,13 @@ async def test_connect_success_after_failures_resets_warning_cycle(
             await client.async_connect("h", 1, keys)
         mode["fail"] = False
         await client.async_connect("h", 1, keys)
+        established = [
+            r
+            for r in caplog.records
+            if r.getMessage().startswith("Panel connection established after connect failures")
+        ]
+        assert len(established) == 1
+        assert established[0].levelno == logging.INFO
         mode["fail"] = True
         caplog.clear()
         with pytest.raises(Elke27ConnectionError):

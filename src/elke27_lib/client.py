@@ -701,7 +701,7 @@ class Elke27Client:
                 return True
             if isinstance(err, KernelError):
                 return True
-        return True
+        return False
 
     def _log_connect_attempt_failure(self, attempt: int, exc: BaseException) -> None:
         message = "Connect failed (attempt %s/2): %s"
@@ -1591,6 +1591,8 @@ class Elke27Client:
                 self._log_connect_attempt_failure(attempt + 1, exc)
         if connect_exc is not None:
             self._raise_v2_error(connect_exc, phase="connect")
+        if self._connect_failures_warning_logged and not self._connection_lost_logged:
+            self._log.info("Panel connection established after connect failures")
         self._connect_failures_warning_logged = False
         self._connected = True
         if self._snapshot.version == 0:
