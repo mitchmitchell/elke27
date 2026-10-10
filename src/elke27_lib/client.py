@@ -646,6 +646,7 @@ class Elke27Client:
 
     def _raise_v2_error(self, exc: BaseException, *, phase: str) -> None:
         del phase
+        saw_kernel_wrapper = False
         for err in _iter_causes(exc):
             if isinstance(err, E27ProvisioningRequired):
                 raise Elke27LinkRequiredError(
@@ -653,12 +654,21 @@ class Elke27Client:
                 ) from None
             if isinstance(err, KernelMissingContextError):
                 raise Elke27InvalidArgument("Missing required context for operation.") from None
+            if isinstance(err, (KernelInvalidPanelError, KernelNotLinkedError)):
+                raise Elke27ProtocolErrorV2("Protocol error.") from None
+            if isinstance(err, KernelError):
+                saw_kernel_wrapper = True
+                continue
             if isinstance(
                 err, (E27ProvisioningTimeout, InvalidCredentials, E27AuthFailed, InvalidPinError)
             ):
                 raise Elke27AuthError("Authentication failed for provisioning.") from None
-            if isinstance(err, E27LinkInvalid):
+            if isinstance(err, (E27LinkInvalid, InvalidLinkKeys)):
                 raise Elke27CryptoError("Link credentials appear invalid.") from None
+            if isinstance(err, E27NotReady):
+                raise Elke27ConnectionError("Panel not ready.") from None
+            if isinstance(err, E27Timeout):
+                raise Elke27TimeoutError("Operation timed out.") from None
             if isinstance(err, CryptoError):
                 raise Elke27CryptoError("Cryptographic error.") from None
             if isinstance(err, E27ProtocolError):
@@ -667,10 +677,11 @@ class Elke27Client:
                 raise Elke27ConnectionError("Connection error.") from None
             if isinstance(err, (TimeoutError, asyncio.TimeoutError)):
                 raise Elke27TimeoutError("Operation timed out.") from None
-            if isinstance(
-                err, (KernelError, E27MissingContext, KernelInvalidPanelError, KernelNotLinkedError)
-            ):
+            if isinstance(err, E27MissingContext):
                 raise Elke27ProtocolErrorV2("Protocol error.") from None
+
+        if saw_kernel_wrapper:
+            raise Elke27ProtocolErrorV2("Protocol error.") from None
 
         raise Elke27ProtocolErrorV2("Operation failed.") from None
 
@@ -686,6 +697,7 @@ class Elke27Client:
                     E27AuthFailed,
                     InvalidPinError,
                     E27LinkInvalid,
+                    InvalidLinkKeys,
                     CryptoError,
                     E27ProtocolError,
                     E27MissingContext,
@@ -696,15 +708,30 @@ class Elke27Client:
                 return False
             if isinstance(
                 err,
-                (E27TransportError, OSError, ConnectionError, TimeoutError, asyncio.TimeoutError),
+                (
+                    E27TransportError,
+                    OSError,
+                    ConnectionError,
+                    TimeoutError,
+                    asyncio.TimeoutError,
+                    E27Timeout,
+                    E27NotReady,
+                ),
             ):
-                return True
-            if isinstance(err, KernelError):
                 return True
         return False
 
-    def _log_connect_attempt_failure(self, attempt: int, exc: BaseException) -> None:
+    def _is_retryable_connect_error(self, exc: BaseException) -> bool:
+        return self._is_transient_connect_error(exc)
+
+    def _log_connect_attempt_failure(
+        self, attempt: int, exc: BaseException, *, will_retry: bool = False
+    ) -> None:
         message = "Connect failed (attempt %s/2): %s"
+        if will_retry:
+            if self._log.isEnabledFor(logging.DEBUG):
+                self._log.debug(message, attempt, exc)
+            return
         if not self._is_transient_connect_error(exc):
             self._log.error(message, attempt, exc, exc_info=True)
             return
@@ -1580,7 +1607,8 @@ class Elke27Client:
         identity = self._v2_client_identity or self._default_identity()
         session_cfg = SessionConfig(host=host, port=port, wire_log=True)
         connect_exc: BaseException | None = None
-        for attempt in range(2):
+        max_attempts = 2
+        for attempt in range(max_attempts):
             try:
                 await self._kernel.connect(
                     self._coerce_link_keys(link_keys),
@@ -1590,9 +1618,12 @@ class Elke27Client:
                 )
                 connect_exc = None
                 break
-            except BaseException as exc:  # noqa: BLE001
+            except Exception as exc:
                 connect_exc = exc
-                self._log_connect_attempt_failure(attempt + 1, exc)
+                will_retry = attempt + 1 < max_attempts and self._is_retryable_connect_error(exc)
+                self._log_connect_attempt_failure(attempt + 1, exc, will_retry=will_retry)
+                if not will_retry:
+                    break
         if connect_exc is not None:
             self._raise_v2_error(connect_exc, phase="connect")
         if self._connect_failures_warning_logged and not self._connection_lost_logged:
