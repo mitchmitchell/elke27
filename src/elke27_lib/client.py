@@ -204,14 +204,15 @@ class Result(Generic[T]):
     ok: bool
     data: T | None = None
     error: BaseException | None = None
+    status_refresh_ok: bool | None = None
 
     @classmethod
     def success(cls: type[Result[T]], value: T) -> Result[T]:
-        return cls(ok=True, data=value, error=None)
+        return cls(ok=True, data=value, error=None, status_refresh_ok=None)
 
     @classmethod
     def failure(cls: type[Result[T]], error: BaseException) -> Result[T]:
-        return cls(ok=False, data=None, error=error)
+        return cls(ok=False, data=None, error=error, status_refresh_ok=None)
 
     def unwrap(self) -> T:
         if self.ok:
@@ -223,12 +224,12 @@ class Result(Generic[T]):
         raise E27Error("Unknown error.")
 
 
-def _ok(value: T) -> Result[T]:
-    return Result(ok=True, data=value, error=None)
+def _ok(value: T, *, status_refresh_ok: bool | None = None) -> Result[T]:
+    return Result(ok=True, data=value, error=None, status_refresh_ok=status_refresh_ok)
 
 
 def _err(error: BaseException) -> Result[T]:
-    return Result(ok=False, data=None, error=error)
+    return Result(ok=False, data=None, error=error, status_refresh_ok=None)
 
 
 __all__ = ["Elke27Client", "Result", "E27Identity", "E27LinkKeys"]
@@ -994,8 +995,32 @@ class Elke27Client:
             thermostats=thermostats or self._snapshot.thermostats,
             version=self._snapshot_version,
             updated_at=now,
+            stale=False,
         )
         self._maybe_set_ready()
+
+    def _mark_snapshot_stale(self) -> None:
+        snap = self._snapshot
+        if snap.stale:
+            return
+        self._snapshot_version += 1
+        now = datetime.now(UTC)
+        self._snapshot = PanelSnapshot(
+            panel=snap.panel,
+            table_info=snap.table_info,
+            areas=snap.areas,
+            zones=snap.zones,
+            zone_definitions=snap.zone_definitions,
+            outputs=snap.outputs,
+            output_definitions=snap.output_definitions,
+            lights=snap.lights,
+            barriers=snap.barriers,
+            locks=snap.locks,
+            thermostats=snap.thermostats,
+            version=self._snapshot_version,
+            updated_at=now,
+            stale=True,
+        )
 
     def _bootstrap_ready(self) -> bool:
         return all(self._inventory_ready.values()) and all(self._status_ready.values())
@@ -1178,21 +1203,66 @@ class Elke27Client:
             return
         self._safe_request(("zone", "get_all_zones_status"))
 
+    @staticmethod
+    def _command_reply_includes_confirmed_status(
+        command_key: str, response_payload: Mapping[str, Any] | None
+    ) -> bool:
+        if response_payload is None:
+            return False
+        if command_key == "area_set_arm_state":
+            return "arm_state" in response_payload or "armed_state" in response_payload
+        if command_key == "zone_set_status":
+            return "BYPASSED" in response_payload or "bypassed" in response_payload
+        return False
+
     async def _refresh_snapshot_from_panel_status(
-        self, command_key: str, params: Mapping[str, Any]
+        self,
+        command_key: str,
+        params: Mapping[str, Any],
+        *,
+        timeout_s: float | None,
     ) -> Result[Mapping[str, Any]] | None:
         """Pull a fresh entity status from the panel after a successful write."""
         if command_key == "area_set_arm_state":
             area_id = params.get("area_id")
             if not isinstance(area_id, int) or area_id < 1:
                 return None
-            return await self.async_execute("area_get_status", area_id=area_id)
+            return await self.async_execute("area_get_status", area_id=area_id, timeout_s=timeout_s)
         if command_key == "zone_set_status":
             zone_id = params.get("zone_id")
             if not isinstance(zone_id, int) or zone_id < 1:
                 return None
-            return await self.async_execute("zone_get_status", zone_id=zone_id)
+            return await self.async_execute("zone_get_status", zone_id=zone_id, timeout_s=timeout_s)
         return None
+
+    async def _status_refresh_after_successful_write(
+        self,
+        command_key: str,
+        params: Mapping[str, Any],
+        response_payload: Mapping[str, Any] | None,
+        *,
+        timeout_s: float | None,
+    ) -> bool | None:
+        """Return refresh outcome: None if not applicable, else whether refresh succeeded."""
+        if command_key not in {"area_set_arm_state", "zone_set_status"}:
+            return None
+        if self._command_reply_includes_confirmed_status(command_key, response_payload):
+            return True
+        refresh_result = await self._refresh_snapshot_from_panel_status(
+            command_key, params, timeout_s=timeout_s
+        )
+        if refresh_result is None:
+            return None
+        if refresh_result.ok:
+            return True
+        err = refresh_result.error
+        self._log.warning(
+            "Panel accepted %s but follow-up status read failed: %s",
+            command_key,
+            type(err).__name__ if err is not None else "unknown",
+        )
+        self._mark_snapshot_stale()
+        return False
 
     def _record_local_zone_bypass(self, zone_id: int) -> None:
         zone = self._kernel.state.zones.get(zone_id)
@@ -2245,17 +2315,13 @@ class Elke27Client:
                 return _err(self._panel_error_for_async_execute(command_key, error_code))
 
             response_payload = self._extract_response_payload(msg, expected_route)
-            refresh_result = await self._refresh_snapshot_from_panel_status(command_key, params)
-            if refresh_result is not None and not refresh_result.ok:
-                detail = f"command_key={command_key} phase=status_refresh"
-                if refresh_result.error is not None:
-                    return _err(
-                        self._normalize_error(refresh_result.error, phase="execute", detail=detail)
-                    )
-                return _err(
-                    ProtocolError(f"{command_key} succeeded but panel status refresh failed.")
-                )
-            return _ok(response_payload)
+            status_refresh_ok = await self._status_refresh_after_successful_write(
+                command_key,
+                params,
+                response_payload,
+                timeout_s=timeout_s,
+            )
+            return _ok(response_payload, status_refresh_ok=status_refresh_ok)
 
         if spec.response_mode != "paged_blocks":
             return _err(ProtocolError(f"Command {command_key!r} has unsupported response_mode."))

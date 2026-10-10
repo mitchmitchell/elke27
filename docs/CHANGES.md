@@ -1,5 +1,11 @@
   UNRELEASED
 
+  - After a successful `area_set_arm_state` or `zone_set_status`, the client issues
+    a follow-up `area_get_status` / `zone_get_status` (unless the command reply
+    already included confirmed arm or bypass fields) so `get_snapshot()` reflects
+    panel state when the command returns. The write still succeeds if that read
+    fails; `Result.status_refresh_ok` is `False` and the snapshot is marked
+    `stale` (#15).
   - Reconnect `async_connect` attempts while the panel is unreachable no longer
     log `Connect failed (attempt n/2)` at ERROR every few seconds (#21). After
     `Panel connection lost`, further transient failures log at DEBUG; the first

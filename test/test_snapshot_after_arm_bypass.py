@@ -7,7 +7,7 @@ from typing import Any, cast
 
 import pytest
 
-from elke27_lib.client import ArmMode, Elke27Client
+from elke27_lib.client import ArmMode, Elke27Client, Result
 from elke27_lib.const import E27ErrorCode
 from test.helpers.fake_panel_replies import synthetic_success_reply
 from test.helpers.internal import get_kernel, get_private
@@ -20,7 +20,8 @@ async def _drive_until_done(
     call: Any,
     *,
     first_reply: dict[str, Any] | None = None,
-) -> None:
+    max_replies: int | None = None,
+) -> Any:
     task = asyncio.ensure_future(call)
     on_message = get_private(get_kernel(client), "_on_message")
     seen = 0
@@ -28,6 +29,8 @@ async def _drive_until_done(
     client._event_loop = asyncio.get_running_loop()
     while not task.done():
         await asyncio.sleep(0)
+        if max_replies is not None and seen >= max_replies:
+            continue
         while seen < len(session.sent):
             sent = session.sent[seen]
             if seen == 0 and first_reply is not None:
@@ -37,7 +40,7 @@ async def _drive_until_done(
             else:
                 on_message(synthetic_success_reply(sent, sent_history=session.sent[:seen]))
             seen += 1
-    await task
+    return await task
 
 
 @pytest.mark.asyncio
@@ -60,6 +63,7 @@ async def test_arm_ack_only_then_get_status_updates_snapshot() -> None:
     assert len(session.sent) == 2
     assert "get_status" in session.sent[1]["area"]
     assert client.snapshot.areas[1].arm_mode == ArmMode.ARMED_AWAY
+    assert client.snapshot.stale is False
 
 
 @pytest.mark.asyncio
@@ -83,18 +87,24 @@ async def test_zone_bypass_ack_only_then_get_status_updates_snapshot() -> None:
     assert len(session.sent) == 2
     assert "get_status" in session.sent[1]["zone"]
     assert client.snapshot.zones[17].bypassed is True
+    assert client.snapshot.stale is False
 
 
 @pytest.mark.asyncio
-async def test_set_arm_state_reply_with_arm_state_updates_before_refresh() -> None:
+async def test_set_arm_state_reply_with_arm_state_skips_follow_up_read() -> None:
     client, session = _make_client()
     kernel = get_kernel(client)
     kernel.state.get_or_create_area(1).arm_state = "DISARMED"
 
-    await _drive_until_done(
+    result = await _drive_until_done(
         client,
         session,
-        client.async_arm_area(1, mode=ArmMode.ARMED_STAY, pin="1234"),
+        client.async_execute(
+            "area_set_arm_state",
+            area_id=1,
+            arm_state="ARMED_STAY",
+            pin=1234,
+        ),
         first_reply={
             "seq": 0,
             "area": {
@@ -105,6 +115,99 @@ async def test_set_arm_state_reply_with_arm_state_updates_before_refresh() -> No
                 }
             },
         },
+        max_replies=1,
     )
 
+    assert isinstance(result, Result)
+    assert result.ok is True
+    assert result.status_refresh_ok is True
+    assert len(session.sent) == 1
     assert client.snapshot.areas[1].arm_mode == ArmMode.ARMED_STAY
+
+
+@pytest.mark.asyncio
+async def test_arm_ok_when_status_read_times_out() -> None:
+    client, session = _make_client()
+    kernel = get_kernel(client)
+    kernel.state.get_or_create_area(1).arm_state = "DISARMED"
+    client._replace_snapshot(
+        areas=client._build_area_map(),
+    )
+
+    result = await _drive_until_done(
+        client,
+        session,
+        client.async_execute(
+            "area_set_arm_state",
+            area_id=1,
+            arm_state="ARMED_AWAY",
+            pin=1234,
+            timeout_s=0.05,
+        ),
+        first_reply={
+            "seq": 0,
+            "area": {"set_arm_state": {"area_id": 1, "error_code": E27ErrorCode.ELKERR_NONE}},
+        },
+        max_replies=1,
+    )
+
+    assert isinstance(result, Result)
+    assert result.ok is True
+    assert result.status_refresh_ok is False
+    assert client.snapshot.stale is True
+
+
+@pytest.mark.asyncio
+async def test_arm_ok_when_status_read_returns_panel_error() -> None:
+    client, session = _make_client()
+    kernel = get_kernel(client)
+    kernel.state.get_or_create_area(1).arm_state = "DISARMED"
+    client._replace_snapshot(
+        areas=client._build_area_map(),
+    )
+
+    task = asyncio.create_task(
+        client.async_execute(
+            "area_set_arm_state",
+            area_id=1,
+            arm_state="ARMED_AWAY",
+            pin=1234,
+        )
+    )
+    on_message = get_private(kernel, "_on_message")
+    client._event_loop = asyncio.get_running_loop()
+    seen = 0
+    while not task.done():
+        await asyncio.sleep(0)
+        while seen < len(session.sent):
+            sent = session.sent[seen]
+            if seen == 0:
+                on_message(
+                    {
+                        "seq": sent["seq"],
+                        "area": {
+                            "set_arm_state": {
+                                "area_id": 1,
+                                "error_code": E27ErrorCode.ELKERR_NONE,
+                            }
+                        },
+                    }
+                )
+            elif seen == 1:
+                on_message(
+                    {
+                        "seq": sent["seq"],
+                        "area": {
+                            "get_status": {
+                                "area_id": 1,
+                                "error_code": int(E27ErrorCode.ELKERR_INVALID_PIN),
+                            }
+                        },
+                    }
+                )
+            seen += 1
+    result = await task
+
+    assert result.ok is True
+    assert result.status_refresh_ok is False
+    assert client.snapshot.stale is True

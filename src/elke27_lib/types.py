@@ -301,6 +301,7 @@ class PanelSnapshot:
     thermostats: Mapping[int, ThermostatState]
     version: int
     updated_at: datetime
+    stale: bool = False
 
     @classmethod
     def empty(cls) -> PanelSnapshot:
@@ -319,6 +320,7 @@ class PanelSnapshot:
             thermostats={},
             version=0,
             updated_at=datetime.min.replace(tzinfo=UTC),
+            stale=False,
         )
 
     @property

@@ -163,6 +163,13 @@ The library returns:
 - success results, or
 - typed failures
 
+For `area_set_arm_state` and `zone_set_status`, a successful write may include
+`Result.status_refresh_ok == False` when a follow-up status read failed; the
+mutation still applied on the panel but `PanelSnapshot.stale` is set until state
+is refreshed by a later read or broadcast. HA should not treat that as a failed
+service call, but should avoid chaining further mutations on a stale snapshot
+without re-reading.
+
 Home Assistant:
 - does not retry mutating commands automatically
 - may retry read-only commands
