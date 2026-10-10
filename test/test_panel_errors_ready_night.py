@@ -21,8 +21,14 @@ from test.helpers.fake_panel_replies import synthetic_success_reply
 from test.helpers.internal import get_kernel, get_private
 
 
+class _FakeSessionCfg:
+    host = "127.0.0.1"
+    port = 2101
+
+
 class _FakeSession:
     state = session_mod.SessionState.ACTIVE
+    cfg = _FakeSessionCfg()
 
     def __init__(self) -> None:
         self.sent: list[dict[str, Any]] = []
