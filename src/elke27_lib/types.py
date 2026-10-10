@@ -302,6 +302,8 @@ class PanelSnapshot:
     version: int
     updated_at: datetime
     stale: bool = False
+    stale_area_ids: frozenset[int] = frozenset()
+    stale_zone_ids: frozenset[int] = frozenset()
 
     @classmethod
     def empty(cls) -> PanelSnapshot:
@@ -321,6 +323,8 @@ class PanelSnapshot:
             version=0,
             updated_at=datetime.min.replace(tzinfo=UTC),
             stale=False,
+            stale_area_ids=frozenset(),
+            stale_zone_ids=frozenset(),
         )
 
     @property

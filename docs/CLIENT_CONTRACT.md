@@ -62,9 +62,11 @@ a breaking change.
 - `locks`
 - `thermostats`
 - Snapshots return read-only views or dataclasses; do not deep-copy large structures.
-- `PanelSnapshot.stale` is `True` when a successful arm or zone bypass could not be
-  confirmed with a follow-up status read; treat entity fields as unreliable until
-  a later broadcast or explicit read refreshes the snapshot.
+- `PanelSnapshot.stale` is `True` when any area or zone could not be confirmed
+  after a successful arm or bypass write (`stale_area_ids`, `stale_zone_ids`).
+  Treat fields for those ids as unreliable until a successful status read or
+  broadcast covering the id clears it (unchanged re-reads count). All stale ids
+  are cleared on reconnect.
 
 ## Configured Inventory Filtering
 
@@ -129,7 +131,7 @@ After the panel accepts arm/disarm (`area_set_arm_state`) or zone bypass
 command reply did not already include confirmed arm/bypass fields, so
 `get_snapshot()` is up to date when the helper returns. If that read fails,
 the command still succeeds; `async_execute` sets `Result.status_refresh_ok` to
-`False` and marks the snapshot stale.
+`False` and marks the affected area or zone id stale in the snapshot metadata.
 
 ## Commands
 

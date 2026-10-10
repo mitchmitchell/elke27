@@ -470,6 +470,8 @@ class Elke27Client:
         self._now_monotonic: Callable[[], float] = now_monotonic or time.monotonic
         self._snapshot: PanelSnapshot = PanelSnapshot.empty()
         self._snapshot_version: int = 0
+        self._stale_area_ids: set[int] = set()
+        self._stale_zone_ids: set[int] = set()
         self._last_auth_pin: int | None = None
         self._pending_bypass_by_area: dict[int, float] = {}
         self._last_disconnect_at: float | None = None
@@ -968,15 +970,28 @@ class Elke27Client:
                 )
         return types_mod.MappingProxyType(out)
 
-    @staticmethod
-    def _should_clear_snapshot_stale(evt: Event) -> bool:
+    def _snapshot_stale_view(self) -> tuple[bool, frozenset[int], frozenset[int]]:
+        stale_area_ids = frozenset(self._stale_area_ids)
+        stale_zone_ids = frozenset(self._stale_zone_ids)
+        return bool(stale_area_ids or stale_zone_ids), stale_area_ids, stale_zone_ids
+
+    def _apply_stale_clears_from_event(self, evt: Event) -> bool:
+        before_areas = frozenset(self._stale_area_ids)
+        before_zones = frozenset(self._stale_zone_ids)
         if isinstance(evt, AreaStatusUpdated):
-            return bool(set(evt.changed_fields) & {"arm_state", "armed_state"})
-        if isinstance(evt, ZoneStatusUpdated):
-            return "bypassed" in evt.changed_fields
-        if isinstance(evt, ZonesStatusBulkUpdated):
-            return bool(evt.updated_ids)
-        return False
+            self._stale_area_ids.discard(evt.area_id)
+        elif isinstance(evt, ZoneStatusUpdated):
+            self._stale_zone_ids.discard(evt.zone_id)
+        elif isinstance(evt, ZonesStatusBulkUpdated):
+            self._stale_zone_ids.difference_update(evt.updated_ids)
+        return (before_areas, before_zones) != (
+            frozenset(self._stale_area_ids),
+            frozenset(self._stale_zone_ids),
+        )
+
+    def _clear_all_entity_stale(self) -> None:
+        self._stale_area_ids.clear()
+        self._stale_zone_ids.clear()
 
     def _notify_snapshot_listeners(self) -> None:
         snap = self._snapshot
@@ -1014,11 +1029,10 @@ class Elke27Client:
         barriers: Mapping[int, V2BarrierState] | None = None,
         locks: Mapping[int, V2LockState] | None = None,
         thermostats: Mapping[int, V2ThermostatState] | None = None,
-        stale: bool | None = None,
     ) -> None:
         self._snapshot_version += 1
         now = datetime.now(UTC)
-        stale_flag = self._snapshot.stale if stale is None else stale
+        stale_flag, stale_area_ids, stale_zone_ids = self._snapshot_stale_view()
         self._snapshot = PanelSnapshot(
             panel=panel_info or self._snapshot.panel,
             table_info=table_info or self._snapshot.table_info,
@@ -1034,30 +1048,46 @@ class Elke27Client:
             version=self._snapshot_version,
             updated_at=now,
             stale=stale_flag,
+            stale_area_ids=stale_area_ids,
+            stale_zone_ids=stale_zone_ids,
         )
         self._maybe_set_ready()
 
-    def _mark_snapshot_stale(self) -> None:
-        snap = self._snapshot
-        if snap.stale:
+    def _mark_area_stale(self, area_id: int) -> None:
+        if area_id in self._stale_area_ids:
             return
-        self._snapshot_version += 1
-        now = datetime.now(UTC)
-        self._snapshot = PanelSnapshot(
-            panel=snap.panel,
-            table_info=snap.table_info,
-            areas=snap.areas,
-            zones=snap.zones,
-            zone_definitions=snap.zone_definitions,
-            outputs=snap.outputs,
-            output_definitions=snap.output_definitions,
-            lights=snap.lights,
-            barriers=snap.barriers,
-            locks=snap.locks,
-            thermostats=snap.thermostats,
-            version=self._snapshot_version,
-            updated_at=now,
-            stale=True,
+        self._stale_area_ids.add(area_id)
+        self._replace_snapshot(
+            panel_info=self._snapshot.panel,
+            table_info=self._snapshot.table_info,
+            areas=self._snapshot.areas,
+            zones=self._snapshot.zones,
+            zone_definitions=self._snapshot.zone_definitions,
+            outputs=self._snapshot.outputs,
+            output_definitions=self._snapshot.output_definitions,
+            lights=self._snapshot.lights,
+            barriers=self._snapshot.barriers,
+            locks=self._snapshot.locks,
+            thermostats=self._snapshot.thermostats,
+        )
+        self._notify_snapshot_listeners()
+
+    def _mark_zone_stale(self, zone_id: int) -> None:
+        if zone_id in self._stale_zone_ids:
+            return
+        self._stale_zone_ids.add(zone_id)
+        self._replace_snapshot(
+            panel_info=self._snapshot.panel,
+            table_info=self._snapshot.table_info,
+            areas=self._snapshot.areas,
+            zones=self._snapshot.zones,
+            zone_definitions=self._snapshot.zone_definitions,
+            outputs=self._snapshot.outputs,
+            output_definitions=self._snapshot.output_definitions,
+            lights=self._snapshot.lights,
+            barriers=self._snapshot.barriers,
+            locks=self._snapshot.locks,
+            thermostats=self._snapshot.thermostats,
         )
         self._notify_snapshot_listeners()
 
@@ -1300,7 +1330,14 @@ class Elke27Client:
             command_key,
             type(err).__name__ if err is not None else "unknown",
         )
-        self._mark_snapshot_stale()
+        if command_key == "area_set_arm_state":
+            area_id = params.get("area_id")
+            if isinstance(area_id, int) and area_id > 0:
+                self._mark_area_stale(area_id)
+        elif command_key == "zone_set_status":
+            zone_id = params.get("zone_id")
+            if isinstance(zone_id, int) and zone_id > 0:
+                self._mark_zone_stale(zone_id)
         return False
 
     async def _await_snapshot_publication(
@@ -1402,6 +1439,7 @@ class Elke27Client:
 
         if isinstance(evt, ConnectionStateChanged):
             if evt.connected:
+                self._clear_all_entity_stale()
                 if self._connection_lost_logged:
                     self._log.info(
                         "Panel connection restored (reason=%s error_type=%s)",
@@ -1590,12 +1628,16 @@ class Elke27Client:
             TstatStatusUpdated.KIND,
             ZoneStatusUpdated.KIND,
         }:
-            if evt.kind == AreaStatusUpdated.KIND and skip_snapshot_update:
+            stale_tracking_changed = False
+            if isinstance(evt, (AreaStatusUpdated, ZoneStatusUpdated, ZonesStatusBulkUpdated)):
+                stale_tracking_changed = self._apply_stale_clears_from_event(evt)
+            if (
+                evt.kind == AreaStatusUpdated.KIND
+                and skip_snapshot_update
+                and not stale_tracking_changed
+            ):
                 self._maybe_set_ready()
             else:
-                stale_override: bool | None = (
-                    False if self._should_clear_snapshot_stale(evt) else None
-                )
                 self._replace_snapshot(
                     panel_info=self._build_panel_info(),
                     table_info=self._build_table_info(),
@@ -1608,7 +1650,6 @@ class Elke27Client:
                     barriers=self._build_barrier_map(),
                     locks=self._build_lock_map(),
                     thermostats=self._build_thermostat_map(),
-                    stale=stale_override,
                 )
         self._maybe_set_ready()
 
@@ -1749,6 +1790,7 @@ class Elke27Client:
             self._log.info("Panel connection established after connect failures")
         self._connect_failures_warning_logged = False
         self._connected = True
+        self._clear_all_entity_stale()
         if self._snapshot.version == 0:
             self._replace_snapshot(
                 panel_info=self._build_panel_info(),

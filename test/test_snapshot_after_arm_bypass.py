@@ -17,7 +17,10 @@ from elke27_lib.events import (
     UNSET_SEQ,
     UNSET_SESSION_ID,
     AreaStatusUpdated,
+    ConnectionStateChanged,
     PanelAttribsUpdated,
+    ZonesStatusBulkUpdated,
+    ZoneStatusUpdated,
 )
 from elke27_lib.types import EventType, PanelInfo
 from test.helpers.fake_panel_replies import synthetic_success_reply
@@ -166,6 +169,7 @@ async def test_arm_ok_when_status_read_times_out() -> None:
     assert result.ok is True
     assert result.status_refresh_ok is False
     assert client.snapshot.stale is True
+    assert client.snapshot.stale_area_ids == frozenset({1})
 
 
 @pytest.mark.asyncio
@@ -222,14 +226,16 @@ async def test_arm_ok_when_status_read_returns_panel_error() -> None:
     assert result.ok is True
     assert result.status_refresh_ok is False
     assert client.snapshot.stale is True
+    assert client.snapshot.stale_area_ids == frozenset({1})
 
 
 def test_unrelated_snapshot_update_preserves_stale_flag() -> None:
     """Regression for Bugbot r4238451936 / commit 9728ee1."""
     client = Elke27Client()
     client._replace_snapshot(panel_info=PanelInfo(model="M1"))
-    client._mark_snapshot_stale()
+    client._mark_area_stale(1)
     assert client.snapshot.stale is True
+    assert client.snapshot.stale_area_ids == frozenset({1})
 
     client._handle_kernel_event(
         PanelAttribsUpdated(
@@ -244,15 +250,16 @@ def test_unrelated_snapshot_update_preserves_stale_flag() -> None:
     )
 
     assert client.snapshot.stale is True
+    assert client.snapshot.stale_area_ids == frozenset({1})
 
 
-def test_mark_snapshot_stale_notifies_subscribers() -> None:
+def test_mark_area_stale_notifies_subscribers() -> None:
     client = Elke27Client()
     client._replace_snapshot(panel_info=PanelInfo(model="M1"))
     seen: list[object] = []
     client.subscribe(lambda evt: seen.append(evt))
 
-    client._mark_snapshot_stale()
+    client._mark_area_stale(1)
 
     assert len(seen) == 1
     evt = seen[0]
@@ -260,13 +267,32 @@ def test_mark_snapshot_stale_notifies_subscribers() -> None:
     assert getattr(evt, "data", {}).get("stale") is True
 
 
-def test_area_arm_status_reconciliation_clears_stale_flag() -> None:
+def test_area_status_update_clears_only_matching_stale_area() -> None:
     client = Elke27Client()
-    kernel = get_kernel(client)
-    kernel.state.get_or_create_area(1).arm_state = "ARMED_AWAY"
-    client._replace_snapshot(areas=client._build_area_map())
-    client._mark_snapshot_stale()
+    get_kernel(client)
+    client._mark_area_stale(1)
+
+    client._handle_kernel_event(
+        AreaStatusUpdated(
+            kind=AreaStatusUpdated.KIND,
+            at=UNSET_AT,
+            seq=UNSET_SEQ,
+            classification=UNSET_CLASSIFICATION,
+            route=UNSET_ROUTE,
+            session_id=UNSET_SESSION_ID,
+            area_id=2,
+            changed_fields=("arm_state",),
+        )
+    )
+
     assert client.snapshot.stale is True
+    assert client.snapshot.stale_area_ids == frozenset({1})
+
+
+def test_unchanged_area_status_read_clears_stale_area() -> None:
+    client = Elke27Client()
+    get_kernel(client)
+    client._mark_area_stale(1)
 
     client._handle_kernel_event(
         AreaStatusUpdated(
@@ -277,11 +303,82 @@ def test_area_arm_status_reconciliation_clears_stale_flag() -> None:
             route=UNSET_ROUTE,
             session_id=UNSET_SESSION_ID,
             area_id=1,
-            changed_fields=("arm_state",),
+            changed_fields=(),
         )
     )
 
     assert client.snapshot.stale is False
+    assert client.snapshot.stale_area_ids == frozenset()
+
+
+def test_unchanged_zone_status_read_clears_stale_zone() -> None:
+    client = Elke27Client()
+    get_kernel(client)
+    client._mark_zone_stale(17)
+
+    client._handle_kernel_event(
+        ZoneStatusUpdated(
+            kind=ZoneStatusUpdated.KIND,
+            at=UNSET_AT,
+            seq=UNSET_SEQ,
+            classification=UNSET_CLASSIFICATION,
+            route=UNSET_ROUTE,
+            session_id=UNSET_SESSION_ID,
+            zone_id=17,
+            changed_fields=(),
+        )
+    )
+
+    assert client.snapshot.stale is False
+    assert client.snapshot.stale_zone_ids == frozenset()
+
+
+def test_zone_bulk_status_clears_only_updated_zones() -> None:
+    client = Elke27Client()
+    get_kernel(client)
+    client._mark_zone_stale(10)
+    client._mark_zone_stale(11)
+    client._mark_zone_stale(12)
+
+    client._handle_kernel_event(
+        ZonesStatusBulkUpdated(
+            kind=ZonesStatusBulkUpdated.KIND,
+            at=UNSET_AT,
+            seq=UNSET_SEQ,
+            classification=UNSET_CLASSIFICATION,
+            route=UNSET_ROUTE,
+            session_id=UNSET_SESSION_ID,
+            updated_count=2,
+            updated_ids=(10, 11),
+        )
+    )
+
+    assert client.snapshot.stale is True
+    assert client.snapshot.stale_zone_ids == frozenset({12})
+
+
+def test_reconnect_clears_entity_stale_tracking() -> None:
+    client = Elke27Client()
+    client._mark_area_stale(1)
+    client._mark_zone_stale(2)
+
+    client._handle_kernel_event(
+        ConnectionStateChanged(
+            kind=ConnectionStateChanged.KIND,
+            at=UNSET_AT,
+            seq=UNSET_SEQ,
+            classification=UNSET_CLASSIFICATION,
+            route=UNSET_ROUTE,
+            session_id=UNSET_SESSION_ID,
+            connected=True,
+            reason="restored",
+            error_type=None,
+        )
+    )
+
+    assert client.snapshot.stale is False
+    assert client.snapshot.stale_area_ids == frozenset()
+    assert client.snapshot.stale_zone_ids == frozenset()
 
 
 @pytest.mark.asyncio

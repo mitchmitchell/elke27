@@ -37,7 +37,7 @@ Snapshots (read-only views):
 - `barriers`
 - `locks`
 - `thermostats`
-- `PanelSnapshot.stale` when arm/bypass succeeded but a follow-up status read failed
+- `PanelSnapshot.stale` / `stale_area_ids` / `stale_zone_ids` when arm/bypass succeeded but a follow-up status read failed for that entity
 
 Configured inventory filtering:
 - `areas` and `zones` snapshots include only configured ids reported by the panel.
