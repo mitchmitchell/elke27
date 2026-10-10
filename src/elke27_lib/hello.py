@@ -110,18 +110,22 @@ def perform_hello(
 
     # Check for any pre-hello bytes already queued by the panel.
     pre_objs: list[Mapping[str, object]] = []
+    prev_timeout = sock.gettimeout()
     try:
         sock.settimeout(0.05)
-        predata = sock.recv(4096)
-        if predata:
-            LOG.warning("Pre-HELLO bytes received: %s", predata.hex())
-            try:
-                pre_batch = recv_cleartext_json_objects_from_bytes(predata)
-                pre_objs = [cast(Mapping[str, object], obj) for obj in pre_batch]
-            except (ValueError, json.JSONDecodeError) as e:
-                LOG.warning("Pre-HELLO JSON parse failed: %s", e)
-    except (TimeoutError, BlockingIOError):
-        pass
+        try:
+            predata = sock.recv(4096)
+            if predata:
+                LOG.debug("Pre-HELLO bytes received: %s", predata.hex())
+                try:
+                    pre_batch = recv_cleartext_json_objects_from_bytes(predata)
+                    pre_objs = [cast(Mapping[str, object], obj) for obj in pre_batch]
+                except (ValueError, json.JSONDecodeError) as e:
+                    LOG.warning("Pre-HELLO JSON parse failed: %s", e)
+        except (TimeoutError, BlockingIOError):
+            pass
+    finally:
+        sock.settimeout(prev_timeout)
 
     # Send clear, UNFRAMED JSON
     LOG.debug("Hello request payload: %s", req)
