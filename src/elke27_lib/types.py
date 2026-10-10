@@ -208,7 +208,7 @@ class AreaState:
             return False
         if self.ee_timer is None or self.ee_timer <= 0:
             return False
-        if self.alarm_zone is not None and str(self.alarm_zone).strip():
+        if self.alarm_zone != "":
             return False
         return True
 

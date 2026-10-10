@@ -62,6 +62,8 @@ class AreaState:
     ee_timer: int | None = None
     alarm_zone: str | None = None
     ready_status: str | None = None
+    # True when the last exit-delay reconcile applied all four payload fields.
+    exit_delay_payload_complete: bool = False
 
     # Common flags
     ready: bool | None = None

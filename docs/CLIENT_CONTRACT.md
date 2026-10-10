@@ -58,11 +58,12 @@ a breaking change.
   - Each area snapshot includes `arm_mode` (current `arm_state`), optional
     `arm_cmd_mode` (`arm_cmd_state` while arming), optional `ee_timer` (exit
     delay seconds when reported), optional `alarm_zone`, and `arming` (`True`
-    only when `arm_mode` is disarmed, `arm_cmd_mode` is away/stay, `ee_timer`
-    > 0, and `alarm_zone` is empty). Pending exit-delay fields are cleared when
-    status payloads omit `arm_cmd_state` but include `arm_state`, when
-    `arm_state` is not disarmed, and when the session reconnects or the client
-    resets bootstrap snapshot state.
+    only when all four exit-delay fields are coherent, `alarm_zone == ""`
+    exactly, `ee_timer` > 0, disarmed, and pending away/stay). Partial status
+    payloads clear exit-delay fields not present (except allowed `ee_timer`-only
+    ticks after a complete four-field payload). Reconnect / snapshot reset clears
+    pending exit-delay state. Stay→away changes without a full `get_status`
+    show `arming` false; use a fresh full status read before skip/entry logic.
 - `zones`
 - `outputs`
 - `lights`

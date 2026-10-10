@@ -2,12 +2,15 @@
 
   - Area exit delay: `area.get_status` and periodic status broadcasts expose
     `arm_cmd_state`, `ee_timer`, and `alarm_zone` during the arm exit countdown.
-    Internal `AreaState` stores all three; public snapshots add `arm_cmd_mode`,
-    `ee_timer`, `alarm_zone`, and derived `arming` (only when disarmed, pending
-    away/stay command, `ee_timer` > 0, and `alarm_zone` is empty). Stale
-    `arm_cmd_state` / `ee_timer` are cleared when a payload carries `arm_state`
-    without `arm_cmd_state`, when `arm_state` is not `DISARMED`, and on
-    reconnect / client snapshot reset (`clear_all_area_exit_delay_pending`).
+    Public `arming` is `True` only when all four fields are present on the
+    snapshot, `alarm_zone == ""` exactly (missing/`None` is not empty),
+    `ee_timer` > 0, and the area is disarmed with a pending away/stay command.
+    Partial payloads clear any of the four exit-delay fields not included, except
+    an `ee_timer`-only tick after a complete four-field payload while the timer
+    is still counting down. Reconnect and client snapshot reset clear pending
+    exit-delay fields. A stay→away command change without a fresh full
+    `get_status` leaves `arming` false; consumers should treat exit-delay skip
+    logic only after a full four-field status read.
 
   - Reconnect `async_connect` attempts while the panel is unreachable no longer
     log `Connect failed (attempt n/2)` at ERROR every few seconds (#21). After

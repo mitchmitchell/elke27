@@ -140,36 +140,84 @@ def _is_disarmed_arm_state(value: str | None) -> bool:
     return value.upper() == "DISARMED"
 
 
+_EXIT_DELAY_PAYLOAD_KEYS: tuple[str, ...] = (
+    "arm_state",
+    "arm_cmd_state",
+    "ee_timer",
+    "alarm_zone",
+)
+
+
+def _exit_delay_field_valid_in_payload(payload: Mapping[str, Any], key: str) -> bool:
+    if key not in payload:
+        return False
+    expected = _EXPECTED_TYPES.get(key)
+    value = payload.get(key)
+    if expected is not None and not isinstance(value, expected):
+        return False
+    return True
+
+
+def _payload_touches_exit_delay(payload: Mapping[str, Any]) -> bool:
+    return any(key in payload for key in _EXIT_DELAY_PAYLOAD_KEYS)
+
+
+def _clear_exit_delay_field(area: AreaState, attr: str, changed: set[str]) -> None:
+    if getattr(area, attr) is not None:
+        setattr(area, attr, None)
+        changed.add(attr)
+
+
 def _clear_area_exit_delay_pending(area: AreaState, changed: set[str]) -> None:
-    if area.arm_cmd_state is not None:
-        area.arm_cmd_state = None
-        changed.add("arm_cmd_state")
-    if area.ee_timer is not None:
-        area.ee_timer = None
-        changed.add("ee_timer")
+    _clear_exit_delay_field(area, "arm_cmd_state", changed)
+    _clear_exit_delay_field(area, "ee_timer", changed)
+    _clear_exit_delay_field(area, "alarm_zone", changed)
 
 
 def apply_area_exit_delay_clearing_rules(
-    area: AreaState, payload: Mapping[str, Any], changed: set[str]
+    area: AreaState,
+    payload: Mapping[str, Any],
+    changed: set[str],
+    *,
+    prev_ee_timer: int | None,
+    prev_payload_complete: bool,
 ) -> None:
     """
-    Drop stale exit-delay fields after applying an area status/arm payload.
+    Keep exit-delay fields coherent across partial area status/arm payloads.
 
     Shared by get_status, set_status, and set_arm_state reconcile paths (PR #29).
     """
-    arm_state_in_payload = "arm_state" in payload
-    arm_cmd_in_payload = "arm_cmd_state" in payload
-    raw_arm_state = payload.get("arm_state")
-    arm_state_applied = isinstance(raw_arm_state, str)
+    if not _payload_touches_exit_delay(payload):
+        if area.arm_state is not None and not _is_disarmed_arm_state(area.arm_state):
+            _clear_area_exit_delay_pending(area, changed)
+            area.exit_delay_payload_complete = False
+        return
 
-    should_clear = False
-    if arm_state_in_payload and arm_state_applied and not arm_cmd_in_payload:
-        should_clear = True
-    if not _is_disarmed_arm_state(area.arm_state):
-        should_clear = True
+    applied_keys = {
+        key for key in _EXIT_DELAY_PAYLOAD_KEYS if _exit_delay_field_valid_in_payload(payload, key)
+    }
 
-    if should_clear:
+    is_timer_tick_only = (
+        applied_keys == {"ee_timer"}
+        and prev_payload_complete
+        and prev_ee_timer is not None
+        and area.ee_timer is not None
+        and area.ee_timer < prev_ee_timer
+        and area.ee_timer > 0
+    )
+
+    if is_timer_tick_only:
+        area.exit_delay_payload_complete = True
+        return
+
+    for key in _EXIT_DELAY_PAYLOAD_KEYS:
+        if not _exit_delay_field_valid_in_payload(payload, key):
+            _clear_exit_delay_field(area, _FIELD_MAP[key], changed)
+
+    if area.arm_state is not None and not _is_disarmed_arm_state(area.arm_state):
         _clear_area_exit_delay_pending(area, changed)
+
+    area.exit_delay_payload_complete = applied_keys == set(_EXIT_DELAY_PAYLOAD_KEYS)
 
 
 def clear_all_area_exit_delay_pending(state: PanelState) -> None:
@@ -177,6 +225,7 @@ def clear_all_area_exit_delay_pending(state: PanelState) -> None:
     for area in state.areas.values():
         changed: set[str] = set()
         _clear_area_exit_delay_pending(area, changed)
+        area.exit_delay_payload_complete = False
 
 
 def _reconcile_area_state(
@@ -209,6 +258,8 @@ def _reconcile_area_state(
         )
 
     area = state.get_or_create_area(area_id_val)
+    prev_ee_timer = area.ee_timer
+    prev_payload_complete = area.exit_delay_payload_complete
 
     for key, attr in _FIELD_MAP.items():
         if key not in payload:
@@ -227,7 +278,13 @@ def _reconcile_area_state(
             setattr(area, attr, value)
             changed.add(attr)
 
-    apply_area_exit_delay_clearing_rules(area, payload, changed)
+    apply_area_exit_delay_clearing_rules(
+        area,
+        payload,
+        changed,
+        prev_ee_timer=prev_ee_timer,
+        prev_payload_complete=prev_payload_complete,
+    )
 
     # timestamps (monotonic)
     area.last_update_at = now

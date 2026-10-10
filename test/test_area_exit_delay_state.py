@@ -105,6 +105,26 @@ def test_fully_armed_payload_clears_exit_delay_pending_fields() -> None:
     assert snapshot_area.arming is False
 
 
+def test_missing_alarm_zone_makes_arming_false() -> None:
+    state = PanelState()
+    handler = _status_handler(state)
+    msg = {
+        "area": {
+            "get_status": {
+                "area_id": 1,
+                "arm_state": "DISARMED",
+                "arm_cmd_state": "ARMED_AWAY",
+                "ee_timer": 30,
+                "error_code": E27ErrorCode.ELKERR_NONE,
+            }
+        }
+    }
+    assert handler(msg, make_ctx()) is True
+    area = state.areas[1]
+    assert area.alarm_zone is None
+    assert _snapshot_for(area).arming is False
+
+
 def test_missing_exit_delay_fields_remain_none() -> None:
     state = PanelState()
     handler = _status_handler(state)
@@ -152,7 +172,31 @@ def test_disarm_reply_without_arm_cmd_clears_stale_exit_delay() -> None:
     area = state.areas[1]
     assert area.arm_cmd_state is None
     assert area.ee_timer is None
+    assert area.alarm_zone is None
     assert _snapshot_for(area).arming is False
+
+
+def test_stale_alarm_zone_cleared_on_disarm_reply() -> None:
+    state = PanelState()
+    state.areas[1] = AreaState(
+        area_id=1,
+        arm_state="DISARMED",
+        arm_cmd_state="ARMED_AWAY",
+        ee_timer=10,
+        alarm_zone="2",
+    )
+    handler = _status_handler(state)
+    msg = {
+        "area": {
+            "get_status": {
+                "area_id": 1,
+                "arm_state": "DISARMED",
+                "error_code": E27ErrorCode.ELKERR_NONE,
+            }
+        }
+    }
+    assert handler(msg, make_ctx()) is True
+    assert state.areas[1].alarm_zone is None
 
 
 def test_set_arm_state_shaped_payload_clears_when_armed() -> None:
@@ -177,6 +221,7 @@ def test_set_arm_state_shaped_payload_clears_when_armed() -> None:
     assert area.arm_state == "ARMED_AWAY"
     assert area.arm_cmd_state is None
     assert area.ee_timer is None
+    assert area.alarm_zone is None
 
 
 def test_set_arm_state_shaped_disarm_reply_via_reconcile() -> None:
@@ -286,6 +331,7 @@ async def test_reconnect_clears_exit_delay_pending_on_kernel_connect(
         area_id=1,
         arm_cmd_state="ARMED_AWAY",
         ee_timer=15,
+        alarm_zone="1",
     )
     monkeypatch.setattr(kernel, "load_features_blocking", lambda _modules=None: None)
 
@@ -323,6 +369,148 @@ async def test_reconnect_clears_exit_delay_pending_on_kernel_connect(
     )
     assert kernel.state.areas[1].arm_cmd_state is None
     assert kernel.state.areas[1].ee_timer is None
+    assert kernel.state.areas[1].alarm_zone is None
+
+
+def test_ee_timer_tick_after_full_payload_keeps_arming_true() -> None:
+    state = PanelState()
+    handler = _status_handler(state)
+    assert handler({"area": {"get_status": _base_status_payload()}}, make_ctx()) is True
+    assert _snapshot_for(state.areas[1]).arming is True
+
+    msg = {
+        "area": {
+            "get_status": {
+                "area_id": 1,
+                "ee_timer": 40,
+                "error_code": E27ErrorCode.ELKERR_NONE,
+            }
+        }
+    }
+    assert handler(msg, make_ctx()) is True
+    area = state.areas[1]
+    assert area.ee_timer == 40
+    assert area.arm_cmd_state == "ARMED_AWAY"
+    assert area.alarm_zone == ""
+    assert _snapshot_for(area).arming is True
+
+
+def test_fresh_arm_cmd_with_stale_timer_clears_and_not_arming() -> None:
+    state = PanelState()
+    handler = _status_handler(state)
+    assert handler({"area": {"get_status": _base_status_payload()}}, make_ctx()) is True
+    msg = {
+        "area": {
+            "get_status": {
+                "area_id": 1,
+                "arm_cmd_state": "ARMED_AWAY",
+                "error_code": E27ErrorCode.ELKERR_NONE,
+            }
+        }
+    }
+    assert handler(msg, make_ctx()) is True
+    area = state.areas[1]
+    assert area.arm_cmd_state == "ARMED_AWAY"
+    assert area.ee_timer is None
+    assert area.alarm_zone is None
+    assert _snapshot_for(area).arming is False
+
+
+def test_exit_delay_full_sequence_ends_not_arming() -> None:
+    state = PanelState()
+    handler = _status_handler(state)
+    assert handler({"area": {"get_status": _base_status_payload()}}, make_ctx()) is True
+    assert _snapshot_for(state.areas[1]).arming is True
+
+    assert (
+        handler(
+            {
+                "area": {
+                    "get_status": {
+                        "area_id": 1,
+                        "ee_timer": 40,
+                        "error_code": E27ErrorCode.ELKERR_NONE,
+                    }
+                }
+            },
+            make_ctx(),
+        )
+        is True
+    )
+    assert _snapshot_for(state.areas[1]).arming is True
+
+    assert (
+        handler(
+            {
+                "area": {
+                    "get_status": {
+                        "area_id": 1,
+                        "ee_timer": 0,
+                        "error_code": E27ErrorCode.ELKERR_NONE,
+                    }
+                }
+            },
+            make_ctx(),
+        )
+        is True
+    )
+    assert _snapshot_for(state.areas[1]).arming is False
+
+    assert (
+        handler(
+            {
+                "area": {
+                    "get_status": _base_status_payload(
+                        arm_state="ARMED_AWAY",
+                        arm_cmd_state="ARMED_AWAY",
+                        ee_timer=0,
+                    )
+                }
+            },
+            make_ctx(),
+        )
+        is True
+    )
+    assert _snapshot_for(state.areas[1]).arming is False
+
+
+def test_stay_to_away_partial_update_not_arming() -> None:
+    state = PanelState()
+    handler = _status_handler(state)
+    assert (
+        handler(
+            {
+                "area": {
+                    "get_status": _base_status_payload(
+                        arm_cmd_state="ARMED_STAY",
+                    )
+                }
+            },
+            make_ctx(),
+        )
+        is True
+    )
+    assert _snapshot_for(state.areas[1]).arming is True
+
+    assert (
+        handler(
+            {
+                "area": {
+                    "get_status": {
+                        "area_id": 1,
+                        "arm_cmd_state": "ARMED_AWAY",
+                        "error_code": E27ErrorCode.ELKERR_NONE,
+                    }
+                }
+            },
+            make_ctx(),
+        )
+        is True
+    )
+    area = state.areas[1]
+    assert area.arm_cmd_state == "ARMED_AWAY"
+    assert area.ee_timer is None
+    assert _snapshot_for(area).arming is False
 
 
 def _event_base(kind: str) -> dict[str, Any]:
@@ -342,6 +530,7 @@ def test_disconnect_snapshot_reset_clears_exit_delay_pending() -> None:
         area_id=1,
         arm_cmd_state="ARMED_STAY",
         ee_timer=9,
+        alarm_zone="",
     )
     client = Elke27Client(kernel=kernel)
     client._handle_kernel_event(
@@ -349,3 +538,4 @@ def test_disconnect_snapshot_reset_clears_exit_delay_pending() -> None:
     )
     assert kernel.state.areas[1].arm_cmd_state is None
     assert kernel.state.areas[1].ee_timer is None
+    assert kernel.state.areas[1].alarm_zone is None
