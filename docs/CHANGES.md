@@ -1,4 +1,16 @@
-  async_execute Panel Errors and ASCII PIN Validation (0.3.11) — UNRELEASED
+  Fast Dead-Link Detection, Quieter Connection Logs, async_execute Panel Errors (0.3.11)
+
+  - A dead panel link is detected within seconds instead of ~2 minutes (#18,
+    #20). Keepalive probes are scheduled from the last inbound traffic (sends
+    no longer postpone them), the first unanswered probe disconnects
+    (`keepalive_max_missed` default 2 -> 1), and `keepalive_timeout_s` default
+    is 5 s (was 10 s).
+  - A request that times out with no inbound traffic since it was sent
+    triggers an immediate probe. New `Elke27Client.request_link_check()` lets
+    callers do the same (no-op when not connected).
+  - Connection loss logs exactly one WARNING (`Panel connection lost`); restore
+    logs at INFO; a deliberate close/unload logs at DEBUG. `Session disconnect`
+    and `keepalive response missing` are INFO (#19, #20).
 
   - `async_execute` now returns `Elke27PanelError` (with `panel_error_code`,
     `reason`, and a warning log) when the panel answers with a non-zero
@@ -15,7 +27,7 @@
   - Behavior change: callers of `async_execute` (including
     `control_authenticate`) now get `Elke27InvalidArgument` instead of the
     internal `InvalidPinError` for a bad PIN (non-ASCII-digit string, zero,
-    negative, `bool`, or non-integer type). Nothing is sent to the panel.
+    negative, `bool`, or non-integer type). Nothing is sent to the panel (#11).
 
   Panel Error Reasons, Area Ready, Arm Night, Lights, Zone Bypass (0.3.10)
 
