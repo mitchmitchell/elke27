@@ -1127,6 +1127,27 @@ async def test_connect_unknown_error_logs_error(
 
 
 @pytest.mark.asyncio
+async def test_connect_success_without_prior_failures_logs_no_established_info(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    client = Elke27Client(kernel=E27Kernel())
+    keys = LinkKeys("aa", "bb", "cc")
+
+    async def _connect(*_a: Any, **_k: Any) -> None:
+        return None
+
+    monkeypatch.setattr(client._kernel, "connect", _connect)
+    with caplog.at_level(logging.DEBUG, logger=client._log.name):
+        await client.async_connect("h", 1, keys)
+    established = [
+        r
+        for r in caplog.records
+        if r.getMessage().startswith("Panel connection established after connect failures")
+    ]
+    assert established == []
+
+
+@pytest.mark.asyncio
 async def test_connect_success_after_failures_resets_warning_cycle(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
