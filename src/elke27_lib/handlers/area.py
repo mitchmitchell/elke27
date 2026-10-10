@@ -147,6 +147,13 @@ _EXIT_DELAY_PAYLOAD_KEYS: tuple[str, ...] = (
     "alarm_zone",
 )
 
+# Pending exit-delay fields cleared on partial/invalid payloads; never arm_state.
+_EXIT_DELAY_PENDING_CLEAR_KEYS: tuple[str, ...] = (
+    "arm_cmd_state",
+    "ee_timer",
+    "alarm_zone",
+)
+
 
 def _field_value_matches_type(value: object, expected: type | tuple[type, ...]) -> bool:
     if isinstance(value, bool) and expected is int:
@@ -228,7 +235,7 @@ def apply_area_exit_delay_clearing_rules(
             area.exit_delay_payload_complete = True
             return
 
-    for key in _EXIT_DELAY_PAYLOAD_KEYS:
+    for key in _EXIT_DELAY_PENDING_CLEAR_KEYS:
         if not _exit_delay_field_valid_in_payload(payload, key):
             _clear_exit_delay_field(area, _FIELD_MAP[key], changed)
 

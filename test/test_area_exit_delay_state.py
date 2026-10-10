@@ -464,6 +464,65 @@ def test_bool_ee_timer_rejected() -> None:
     assert _snapshot_for(area).arming is False
 
 
+def test_ee_timer_zero_tick_does_not_clear_arm_state() -> None:
+    state = PanelState()
+    handler = _status_handler(state)
+    assert handler({"area": {"get_status": _base_status_payload()}}, make_ctx()) is True
+    assert (
+        handler(
+            {
+                "area": {
+                    "get_status": {
+                        "area_id": 1,
+                        "ee_timer": 0,
+                        "error_code": E27ErrorCode.ELKERR_NONE,
+                    }
+                }
+            },
+            make_ctx(),
+        )
+        is True
+    )
+    area = state.areas[1]
+    assert area.arm_state == "DISARMED"
+    assert _snapshot_for(area).arm_mode is ArmMode.DISARMED
+    assert _snapshot_for(area).arming is False
+
+
+def test_partial_arm_cmd_patch_does_not_clear_arm_state() -> None:
+    state = PanelState()
+    handler = _status_handler(state)
+    assert (
+        handler(
+            {
+                "area": {
+                    "get_status": _base_status_payload(arm_cmd_state="ARMED_STAY"),
+                }
+            },
+            make_ctx(),
+        )
+        is True
+    )
+    assert (
+        handler(
+            {
+                "area": {
+                    "get_status": {
+                        "area_id": 1,
+                        "arm_cmd_state": "ARMED_AWAY",
+                        "error_code": E27ErrorCode.ELKERR_NONE,
+                    }
+                }
+            },
+            make_ctx(),
+        )
+        is True
+    )
+    area = state.areas[1]
+    assert area.arm_state == "DISARMED"
+    assert _snapshot_for(area).arm_mode is ArmMode.DISARMED
+
+
 def test_invalid_ee_timer_null_after_full_payload_clears_arming() -> None:
     state = PanelState()
     handler = _status_handler(state)
