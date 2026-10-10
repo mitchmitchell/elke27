@@ -1020,6 +1020,8 @@ class Elke27Client:
         self._status_pending = {"area": set(), "zone": set(), "output": set()}
         self._status_ready = {"area": False, "zone": False, "output": False}
         self._reset_ready_event()
+        if self._snapshot.version != 0:
+            self._replace_snapshot(areas=self._build_area_map())
 
     def _mark_inventory_ready(self, domain: str) -> None:
         if self._inventory_ready.get(domain):

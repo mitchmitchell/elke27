@@ -703,14 +703,25 @@ def test_disconnect_snapshot_reset_clears_exit_delay_pending() -> None:
     kernel = E27Kernel()
     kernel.state.areas[1] = AreaState(
         area_id=1,
+        arm_state="DISARMED",
         arm_cmd_state="ARMED_STAY",
         ee_timer=9,
         alarm_zone="",
     )
     client = Elke27Client(kernel=kernel)
+    client._replace_snapshot(areas=client._build_area_map())
+    before_disconnect = client.get_area(1)
+    assert before_disconnect is not None
+    assert before_disconnect.arming is True
+
     client._handle_kernel_event(
         ConnectionStateChanged(**_event_base(ConnectionStateChanged.KIND), connected=False)
     )
     assert kernel.state.areas[1].arm_cmd_state is None
     assert kernel.state.areas[1].ee_timer is None
     assert kernel.state.areas[1].alarm_zone is None
+    public_area = client.get_area(1)
+    assert public_area is not None
+    assert public_area.arming is False
+    assert public_area.arm_cmd_mode is None
+    assert public_area.ee_timer is None
