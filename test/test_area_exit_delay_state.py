@@ -458,7 +458,34 @@ def test_bool_ee_timer_rejected() -> None:
     }
     assert handler(msg, make_ctx()) is True
     area = state.areas[1]
-    assert area.ee_timer == 30
+    assert area.arm_cmd_state is None
+    assert area.ee_timer is None
+    assert area.alarm_zone is None
+    assert _snapshot_for(area).arming is False
+
+
+def test_invalid_ee_timer_null_after_full_payload_clears_arming() -> None:
+    state = PanelState()
+    handler = _status_handler(state)
+    assert handler({"area": {"get_status": _base_status_payload()}}, make_ctx()) is True
+    assert _snapshot_for(state.areas[1]).arming is True
+
+    msg = {
+        "area": {
+            "get_status": {
+                "area_id": 1,
+                "ee_timer": None,
+                "error_code": E27ErrorCode.ELKERR_NONE,
+            }
+        }
+    }
+    assert handler(msg, make_ctx()) is True
+    area = state.areas[1]
+    assert area.arm_cmd_state is None
+    assert area.ee_timer is None
+    assert area.alarm_zone is None
+    assert area.exit_delay_payload_complete is False
+    assert _snapshot_for(area).arming is False
 
 
 def test_ee_timer_tick_after_full_payload_keeps_arming_true() -> None:

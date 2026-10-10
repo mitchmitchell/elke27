@@ -204,6 +204,8 @@ def apply_area_exit_delay_clearing_rules(
     }
 
     if any(key in payload for key in _EXIT_DELAY_PAYLOAD_KEYS) and not applied_keys:
+        _clear_area_exit_delay_pending(area, changed)
+        area.exit_delay_payload_complete = False
         return
 
     if (
