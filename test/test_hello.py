@@ -77,6 +77,19 @@ def test_perform_hello_predata_parse_error(monkeypatch: pytest.MonkeyPatch) -> N
         hello.perform_hello(sock=sock, client_identity=_identity(), linkkey_hex="00", timeout_s=0)
 
 
+def test_perform_hello_probe_recv_oserror_restores_timeout() -> None:
+    io_timeout_s = 0.55
+
+    class _ErrSocket(_FakeSocket):
+        def recv(self, _size: int) -> bytes:
+            raise OSError("probe recv failed")
+
+    sock = _ErrSocket(timeout=io_timeout_s)
+    with pytest.raises(OSError, match="probe recv failed"):
+        hello.perform_hello(sock=sock, client_identity=_identity(), linkkey_hex="00", timeout_s=1)
+    assert sock.gettimeout() == io_timeout_s
+
+
 def test_perform_hello_preobjs_success(monkeypatch: pytest.MonkeyPatch) -> None:
     io_timeout_s = 0.42
     sock = _FakeSocket(predata=b"pre", timeout=io_timeout_s)

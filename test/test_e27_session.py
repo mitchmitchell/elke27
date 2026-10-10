@@ -27,6 +27,7 @@ import pytest
 from elke27_lib import hello as hello_mod
 from elke27_lib import linking
 from elke27_lib import session as session_mod
+from elke27_lib.errors import E27ErrorContext, E27ProtocolError
 from elke27_lib.framing import DeframeState
 from test.helpers.internal import get_private, set_private
 
@@ -251,6 +252,42 @@ def test_connect_io_timeout_after_preobjs_hello(monkeypatch: pytest.MonkeyPatch)
     s = session_mod.Session(cfg, client_identity=identity, link_key_hex="cc" * 16)
     info = s.connect()
     assert info.session_id == 9
+    assert fake_sock.gettimeout() == io_timeout_s
+
+
+def test_connect_hello_failure_closes_session_and_reapplies_io_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_sock = _FakeSocket()
+    monkeypatch.setattr(socket, "socket", lambda *_a, **_k: fake_sock)
+
+    io_timeout_s = 0.37
+
+    def _fail_perform_hello(**_kwargs: Any) -> _HelloKeys:
+        fake_sock.settimeout(0.05)
+        raise E27ProtocolError(
+            "hello failed",
+            context=E27ErrorContext(phase="hello_recv"),
+        )
+
+    monkeypatch.setattr(session_mod, "perform_hello", _fail_perform_hello)
+
+    cfg = session_mod.SessionConfig(
+        host="127.0.0.1",
+        port=2101,
+        io_timeout_s=io_timeout_s,
+        keepalive_enabled=False,
+    )
+    identity = linking.E27Identity(
+        mn="0222", sn="001122334455", fwver="1.0", hwver="1.0", osver="1.0"
+    )
+    s = session_mod.Session(cfg, client_identity=identity, link_key_hex="cc" * 16)
+
+    with pytest.raises(session_mod.SessionProtocolError):
+        s.connect()
+
+    assert s.sock is None
+    assert fake_sock.closed is True
     assert fake_sock.gettimeout() == io_timeout_s
 
 
