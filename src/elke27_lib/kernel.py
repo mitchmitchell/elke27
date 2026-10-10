@@ -23,6 +23,7 @@ Notes
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextlib
 import importlib
 import json
@@ -40,6 +41,11 @@ from typing import (
 )
 
 LOG = logging.getLogger(__name__)
+
+_CONNECT_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="e27-connect"
+)
+
 from . import discovery, linking
 from . import session as session_mod
 from .const import REDACT_DIAGNOSTICS
@@ -606,8 +612,28 @@ class E27Kernel:
         def _do_connect_sync() -> session_mod.SessionInfo:
             return s.connect()
 
+        loop = asyncio.get_running_loop()
+        connect_cf: concurrent.futures.Future[session_mod.SessionInfo] = _CONNECT_EXECUTOR.submit(
+            _do_connect_sync
+        )
         try:
-            await asyncio.to_thread(_do_connect_sync)
+            await asyncio.wrap_future(connect_cf, loop=loop)
+        except asyncio.CancelledError:
+
+            def _close_after_connect(
+                _cf: concurrent.futures.Future[session_mod.SessionInfo],
+            ) -> None:
+                def _close() -> None:
+                    with contextlib.suppress(Exception):
+                        s.close()
+
+                try:
+                    loop.call_soon_threadsafe(_close)
+                except RuntimeError:
+                    s.close()
+
+            connect_cf.add_done_callback(_close_after_connect)
+            raise
         except Exception as e:
             raise KernelError(f"Session connect failed for {host}:{port}: {e}") from e
 
@@ -1646,6 +1672,15 @@ class E27Kernel:
             self._mark_send_failed(seq, exc)
             self._disconnect_session_on_io_error(exc)
             return
+        if isinstance(exc, session_mod.SessionIOError):
+            self.dispatcher.drop_pending(seq)
+            self._pending_responses.fail(seq, exc)
+            self._signal_sent_event(seq)
+            if self._log.isEnabledFor(logging.WARNING):
+                self._log.warning("E27 send failed: seq=%s error=%s", seq, exc)
+            self._disconnect_session_on_io_error(exc)
+            self._complete_active(reason="send_failed")
+            return
         active_item = self._active_request
         if active_item is not None and isinstance(active_item, _QueuedRequest):
             self._handle_transport_failure(
@@ -1655,24 +1690,20 @@ class E27Kernel:
                 was_active=True,
                 log_final_warning=True,
             )
-            self._disconnect_session_on_io_error(exc)
             return
         self.dispatcher.drop_pending(seq)
         self._pending_responses.fail(seq, exc)
         self._signal_sent_event(seq)
         if self._log.isEnabledFor(logging.WARNING):
             self._log.warning("E27 send failed: seq=%s error=%s", seq, exc)
-        self._complete_active(reason="send_failed")
         self._disconnect_session_on_io_error(exc)
+        self._complete_active(reason="send_failed")
 
     def _disconnect_session_on_io_error(self, exc: BaseException) -> None:
         if not isinstance(exc, session_mod.SessionIOError):
             return
         session = self._session
-        if session is None:
-            return
-        session_state = getattr(session, "state", session_mod.SessionState.ACTIVE)
-        if session_state is not session_mod.SessionState.ACTIVE:
+        if session is None or session.state is not session_mod.SessionState.ACTIVE:
             return
         session.handle_disconnect(exc)
 
@@ -1850,10 +1881,10 @@ class E27Kernel:
                     msg,
                     priority=priority,
                     on_sent=lambda _: self._mark_request_sent(seq),
-                    on_fail=lambda exc: self._mark_send_failed(seq, exc),
+                    on_fail=lambda exc: self._handle_send_failure(seq, exc),
                 )
             except Exception as exc:
-                self._mark_send_failed(seq, exc)
+                self._handle_send_failure(seq, exc)
                 raise KernelError(
                     f"Failed to send request {domain}.{name} seq={seq}: {exc}"
                 ) from exc

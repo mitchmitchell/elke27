@@ -5,7 +5,7 @@ import json
 import pytest
 
 from elke27_lib import hello
-from elke27_lib.errors import E27ProtocolError
+from elke27_lib.errors import E27HelloTimeout, E27ProtocolError
 from elke27_lib.linking import E27Identity
 
 
@@ -45,7 +45,7 @@ def test_select_hello_object_and_coerce_helpers() -> None:
 def test_perform_hello_missing_hello(monkeypatch: pytest.MonkeyPatch) -> None:
     sock = _FakeSocket()
     monkeypatch.setattr(hello, "send_unframed_json", lambda *_args, **_kwargs: None)
-    with pytest.raises(E27ProtocolError):
+    with pytest.raises(E27HelloTimeout):
         hello.perform_hello(sock=sock, client_identity=_identity(), linkkey_hex="00", timeout_s=0)
 
 
@@ -70,7 +70,7 @@ def test_perform_hello_predata_parse_error(monkeypatch: pytest.MonkeyPatch) -> N
 
     monkeypatch.setattr(hello, "send_unframed_json", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(hello, "recv_cleartext_json_objects_from_bytes", _raise)
-    with pytest.raises(E27ProtocolError):
+    with pytest.raises(E27HelloTimeout):
         hello.perform_hello(sock=sock, client_identity=_identity(), linkkey_hex="00", timeout_s=0)
 
 
@@ -113,6 +113,36 @@ def test_perform_hello_timeout_continue(monkeypatch: pytest.MonkeyPatch) -> None
         lambda *_a, **_k: (_ for _ in ()).throw(hello.E27Timeout()),
     )
     monkeypatch.setattr(hello.time, "monotonic", _fake_monotonic)
+    with pytest.raises(E27HelloTimeout):
+        hello.perform_hello(sock=sock, client_identity=_identity(), linkkey_hex="00", timeout_s=1)
+
+
+def test_perform_hello_deadline_without_hello_raises_hello_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sock = _FakeSocket()
+    monkeypatch.setattr(hello, "send_unframed_json", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(hello, "recv_cleartext_json_objects", lambda *_a, **_k: [{"other": 1}])
+    clock = {"t": 0.0}
+
+    def _monotonic() -> float:
+        if clock["t"] < 1.0:
+            clock["t"] = 2.0
+            return 0.0
+        return 2.0
+
+    monkeypatch.setattr(hello.time, "monotonic", _monotonic)
+    with pytest.raises(E27HelloTimeout):
+        hello.perform_hello(sock=sock, client_identity=_identity(), linkkey_hex="00", timeout_s=1)
+
+
+def test_perform_hello_malformed_hello_object_raises_protocol_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sock = _FakeSocket()
+    monkeypatch.setattr(hello, "send_unframed_json", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(hello, "recv_cleartext_json_objects", lambda *_a, **_k: [{"hello": None}])
+    monkeypatch.setattr(hello.time, "monotonic", lambda: 0.0)
     with pytest.raises(E27ProtocolError):
         hello.perform_hello(sock=sock, client_identity=_identity(), linkkey_hex="00", timeout_s=1)
 
