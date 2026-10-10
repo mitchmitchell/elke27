@@ -762,10 +762,7 @@ class Elke27Client:
         task = asyncio.current_task()
         if task is None:
             return False
-        cancelling = getattr(task, "cancelling", None)
-        if callable(cancelling):
-            return bool(cancelling())
-        return False
+        return task.cancelling() > 0
 
     async def _await_kernel_command_response(
         self,
