@@ -65,8 +65,10 @@ a breaking change.
 - `PanelSnapshot.stale` is `True` when any area or zone could not be confirmed
   after a successful arm or bypass write (`stale_area_ids`, `stale_zone_ids`).
   Treat fields for those ids as unreliable until a successful status read or
-  broadcast covering the id clears it (unchanged re-reads count). All stale ids
-  are cleared on reconnect.
+  broadcast covering the id clears it. Stale clearing keys off the entity id on
+  ``AreaStatusUpdated`` / ``ZoneStatusUpdated`` only (not ``changed_fields``;
+  unchanged ``get_status`` replies still emit those events). All stale ids are
+  cleared on reconnect.
 
 ## Configured Inventory Filtering
 

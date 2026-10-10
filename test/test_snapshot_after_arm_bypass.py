@@ -289,6 +289,68 @@ def test_area_status_update_clears_only_matching_stale_area() -> None:
     assert client.snapshot.stale_area_ids == frozenset({1})
 
 
+def _immediate_event_loop(client: Elke27Client) -> None:
+    class _Loop:
+        def call_soon_threadsafe(self, fn: Any, /, *args: Any) -> None:
+            fn(*args)
+
+    client._event_loop = _Loop()  # type: ignore[assignment]
+
+
+def test_unchanged_area_get_status_handler_reply_clears_stale() -> None:
+    client, _session = _make_client()
+    kernel = get_kernel(client)
+    area = kernel.state.get_or_create_area(1)
+    area.arm_state = "DISARMED"
+    client._replace_snapshot(areas=client._build_area_map())
+    client._mark_area_stale(1)
+    _immediate_event_loop(client)
+
+    on_message = get_private(kernel, "_on_message")
+    on_message(
+        {
+            "seq": 1,
+            "area": {
+                "get_status": {
+                    "area_id": 1,
+                    "arm_state": "DISARMED",
+                    "error_code": E27ErrorCode.ELKERR_NONE,
+                }
+            },
+        }
+    )
+
+    assert client.snapshot.stale is False
+    assert client.snapshot.stale_area_ids == frozenset()
+
+
+def test_unchanged_zone_get_status_handler_reply_clears_stale() -> None:
+    client, _session = _make_client()
+    kernel = get_kernel(client)
+    zone = kernel.state.get_or_create_zone(17)
+    zone.bypassed = False
+    client._replace_snapshot(zones=client._build_zone_map())
+    client._mark_zone_stale(17)
+    _immediate_event_loop(client)
+
+    on_message = get_private(kernel, "_on_message")
+    on_message(
+        {
+            "seq": 1,
+            "zone": {
+                "get_status": {
+                    "zone_id": 17,
+                    "BYPASSED": False,
+                    "error_code": E27ErrorCode.ELKERR_NONE,
+                }
+            },
+        }
+    )
+
+    assert client.snapshot.stale is False
+    assert client.snapshot.stale_zone_ids == frozenset()
+
+
 def test_unchanged_area_status_read_clears_stale_area() -> None:
     client = Elke27Client()
     get_kernel(client)

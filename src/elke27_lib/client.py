@@ -976,6 +976,13 @@ class Elke27Client:
         return bool(stale_area_ids or stale_zone_ids), stale_area_ids, stale_zone_ids
 
     def _apply_stale_clears_from_event(self, evt: Event) -> bool:
+        """Clear per-entity stale ids from successful status coverage events.
+
+        Uses only the entity id on ``AreaStatusUpdated`` / ``ZoneStatusUpdated``
+        (and ``ZonesStatusBulkUpdated.updated_ids``). ``changed_fields`` is never
+        consulted; handlers emit these events on every successful ``get_status``
+        reply, including when reconcile made no state changes.
+        """
         before_areas = frozenset(self._stale_area_ids)
         before_zones = frozenset(self._stale_zone_ids)
         if isinstance(evt, AreaStatusUpdated):
