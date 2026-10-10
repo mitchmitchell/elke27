@@ -1,4 +1,4 @@
-  UNRELEASED
+  Quieter Reconnect Logs (UNRELEASED, planned 0.3.12)
 
   - Reconnect `async_connect` attempts while the panel is unreachable no longer
     log `Connect failed (attempt n/2)` at ERROR every few seconds (#21). After
@@ -9,6 +9,8 @@
     after warned transient failures logs INFO (`Panel connection established
     after connect failures`); link restore still uses `Panel connection restored`.
     See ADR-0013 keepalive / connection logging notes.
+  - Test: a first successful connect with no earlier connect failures logs no
+    `Panel connection established after connect failures` INFO line (#25).
 
   Fast Dead-Link Detection, Quieter Connection Logs, async_execute Panel Errors (0.3.11)
 
