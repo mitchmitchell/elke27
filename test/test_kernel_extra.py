@@ -322,7 +322,9 @@ async def test_keepalive_loop_disconnect(monkeypatch: pytest.MonkeyPatch) -> Non
     session = _FakeSession(session_mod.SessionConfig(host="h"), _identity(), "aa")
     cast(Any, session)._outbound = SimpleNamespace(is_idle=lambda: True)
     cast(Any, kernel)._session = session
-    monkeypatch.setattr(kernel, "_send_keepalive_request", lambda: asyncio.sleep(0, result=False))
+    monkeypatch.setattr(
+        kernel, "_send_keepalive_request", lambda **_kw: asyncio.sleep(0, result=False)
+    )
     await kernel._keepalive_loop()
     assert session.disconnected is not None
 

@@ -450,6 +450,7 @@ class Elke27Client:
         filter_attribs_to_configured: bool = True,
     ) -> None:
         self._log: logging.Logger = logger or logging.getLogger(__name__)
+        self._connection_lost_logged = False
         self._feature_modules: Sequence[str] | None = features
         self._v2_config: ClientConfig | None = config
         self._v2_client_identity: linking_mod.E27Identity | None = None
@@ -1205,11 +1206,13 @@ class Elke27Client:
 
         if isinstance(evt, ConnectionStateChanged):
             if evt.connected:
-                self._log.warning(
-                    "Panel connection restored (reason=%s error_type=%s)",
-                    evt.reason,
-                    evt.error_type,
-                )
+                if self._connection_lost_logged:
+                    self._log.info(
+                        "Panel connection restored (reason=%s error_type=%s)",
+                        evt.reason,
+                        evt.error_type,
+                    )
+                self._connection_lost_logged = False
                 last_disconnect_at = self._last_disconnect_at
                 if last_disconnect_at is not None:
                     disconnect_age = self._now_monotonic() - last_disconnect_at
@@ -1245,11 +1248,21 @@ class Elke27Client:
                     thermostats=self._build_thermostat_map(),
                 )
             else:
-                self._log.error(
-                    "Panel connection lost (reason=%s error_type=%s)",
-                    evt.reason,
-                    evt.error_type,
-                )
+                # Log a real link loss once per drop; a deliberate close
+                # (unload/disable/reconnect teardown) is expected, so debug only.
+                if evt.reason == "closed" or self._connection_lost_logged:
+                    self._log.debug(
+                        "Panel connection closed (reason=%s error_type=%s)",
+                        evt.reason,
+                        evt.error_type,
+                    )
+                else:
+                    self._log.warning(
+                        "Panel connection lost (reason=%s error_type=%s)",
+                        evt.reason,
+                        evt.error_type,
+                    )
+                    self._connection_lost_logged = True
                 self._last_disconnect_at = self._now_monotonic()
                 self._reconnect_csm_snapshot = self._kernel.state.csm_snapshot
                 self._awaiting_reconnect_csm_check = False
@@ -1580,6 +1593,15 @@ class Elke27Client:
     def snapshot(self) -> PanelSnapshot:
         """Return the latest immutable snapshot (v2 public API)."""
         return self._snapshot
+
+    def request_link_check(self) -> None:
+        """Probe the panel now; disconnect if the probe is not answered.
+
+        Callers can use this when a command times out to get a dead link
+        detected within ``keepalive_timeout_s`` instead of waiting for the next
+        scheduled keepalive. Safe to call when not connected (no-op).
+        """
+        self._kernel.request_link_check()
 
     def get_snapshot(self) -> PanelSnapshot:
         """Return the latest immutable snapshot."""

@@ -1000,3 +1000,27 @@ def test_request_and_pump_once_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     kernel._session = _Sess()  # type: ignore[assignment]
     result = client.pump_once()
     assert result.ok is False and isinstance(result.error, ProtocolError)
+
+
+def test_connection_lost_logged_once_per_drop(caplog: pytest.LogCaptureFixture) -> None:
+    kernel = E27Kernel()
+    client = Elke27Client(kernel=kernel)
+    client._safe_request = lambda *_a, **_k: None  # type: ignore[method-assign]
+    lost = ConnectionStateChanged(
+        **_event_base(ConnectionStateChanged.KIND), connected=False, error_type="SessionIOError"
+    )
+    closed = ConnectionStateChanged(
+        **_event_base(ConnectionStateChanged.KIND), connected=False, reason="closed"
+    )
+    up = ConnectionStateChanged(**_event_base(ConnectionStateChanged.KIND), connected=True)
+    with caplog.at_level(logging.DEBUG, logger=client._log.name):
+        client._handle_kernel_event(lost)
+        client._handle_kernel_event(closed)  # reconnect teardown of the dead session
+        client._handle_kernel_event(up)
+        client._handle_kernel_event(closed)  # deliberate unload
+    msgs = [(r.levelno, r.getMessage()) for r in caplog.records]
+    lost_logs = [m for m in msgs if m[1].startswith("Panel connection lost")]
+    assert lost_logs == [(logging.WARNING, lost_logs[0][1])]
+    restored = [m for m in msgs if m[1].startswith("Panel connection restored")]
+    assert [lvl for lvl, _ in restored] == [logging.INFO]
+    assert not [m for m in msgs if m[0] >= logging.ERROR]

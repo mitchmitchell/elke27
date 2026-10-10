@@ -279,6 +279,10 @@ class E27Kernel:
     _last_exchange_at: float
     _last_rx_at: float
     _keepalive_inflight: bool
+    _keepalive_probe_requested: bool
+    _keepalive_wake: asyncio.Event | None
+    _keepalive_send_wait_s: float
+    _active_sent_at: float | None
 
     DEFAULT_FEATURES: Sequence[str] = (
         "elke27_lib.features.control",
@@ -359,6 +363,7 @@ class E27Kernel:
         self._loop = None
         self._request_state = _RequestState.IDLE
         self._active_seq = None
+        self._active_sent_at = None
         self._active_timeout_handle = None
         self._active_released = False
         self._active_request = None
@@ -367,13 +372,18 @@ class E27Kernel:
         self._keepalive_task = None
         self._keepalive_enabled = False
         self._keepalive_interval_s = 30.0
-        self._keepalive_timeout_s = 10.0
-        self._keepalive_max_missed = 2
+        self._keepalive_timeout_s = 5.0
+        self._keepalive_max_missed = 1
+        # Max wait for a probe to leave the outbound queue (covers one in-flight
+        # command's reply timeout).
+        self._keepalive_send_wait_s = 30.0
         self._keepalive_missed = 0
         now = self.now()
         self._last_exchange_at = now
         self._last_rx_at = now
         self._keepalive_inflight = False
+        self._keepalive_probe_requested = False
+        self._keepalive_wake = None
 
         # Always register dispatcher error envelope handler
         self.register_handler(("__error__", "__all__"), self._handle_dispatch_error_envelope)
@@ -655,28 +665,72 @@ class E27Kernel:
             return
         if self._keepalive_task is not None and not self._keepalive_task.done():
             return
+        # Fresh event per keepalive run: an Event created under an earlier
+        # (possibly closed) event loop must not be reused after reconnect.
+        self._keepalive_wake = asyncio.Event()
         self._keepalive_task = self._loop.create_task(self._keepalive_loop())
 
     def _stop_keepalive(self) -> None:
         if self._keepalive_task is None:
+            self._keepalive_wake = None
             return
         if not self._keepalive_task.done():
             self._keepalive_task.cancel()
         self._keepalive_task = None
         self._keepalive_missed = 0
         self._keepalive_inflight = False
+        self._keepalive_probe_requested = False
+        self._keepalive_wake = None
+
+    def request_link_check(self) -> None:
+        """Probe the panel now instead of waiting for the next keepalive.
+
+        Called when a request times out with no inbound traffic since it was
+        sent, which usually means the link is dead. If the probe is not
+        answered within ``keepalive_timeout_s`` the session is disconnected.
+        """
+        if not self._keepalive_enabled or self._session is None:
+            return
+        self._keepalive_probe_requested = True
+        if self._keepalive_wake is not None:
+            self._keepalive_wake.set()
+
+    async def _keepalive_sleep(self, delay: float) -> None:
+        wake = self._keepalive_wake
+        if wake is None or wake.is_set():
+            if wake is not None:
+                wake.clear()
+            else:
+                await asyncio.sleep(delay)
+            return
+        sleeper = asyncio.ensure_future(asyncio.sleep(delay))
+        waker = asyncio.ensure_future(wake.wait())
+        try:
+            done, _ = await asyncio.wait({sleeper, waker}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for task in (sleeper, waker):
+                if not task.done():
+                    task.cancel()
+        wake.clear()
+        if sleeper in done:
+            sleeper.result()
 
     async def _keepalive_loop(self) -> None:
+        if self._keepalive_wake is None:
+            self._keepalive_wake = asyncio.Event()
         while True:
             if self._closing:
                 return
             if not self._keepalive_enabled:
                 return
-            idle_for = self.now() - self._last_exchange_at
+            # Schedule probes from the last *inbound* traffic. Outbound sends
+            # (including unanswered commands and the probe itself) must not
+            # postpone detection of a dead link.
+            idle_for = self.now() - self._last_rx_at
             wait_for = self._keepalive_interval_s - idle_for
-            if wait_for > 0:
+            if wait_for > 0 and not self._keepalive_probe_requested:
                 try:
-                    await asyncio.sleep(wait_for)
+                    await self._keepalive_sleep(wait_for)
                 except asyncio.CancelledError:
                     return
                 continue
@@ -687,7 +741,7 @@ class E27Kernel:
                 except asyncio.CancelledError:
                     return
                 continue
-            if (
+            if not self._keepalive_probe_requested and (
                 self._request_state is not _RequestState.IDLE
                 or self._request_queue_high
                 or self._request_queue_normal
@@ -698,7 +752,11 @@ class E27Kernel:
                     return
                 continue
             outbound = getattr(self._session, "_outbound", None)
-            if outbound is not None and not outbound.is_idle():
+            if (
+                not self._keepalive_probe_requested
+                and outbound is not None
+                and not outbound.is_idle()
+            ):
                 try:
                     await asyncio.sleep(0.5)
                 except asyncio.CancelledError:
@@ -710,7 +768,9 @@ class E27Kernel:
                 except asyncio.CancelledError:
                     return
                 continue
-            ok = await self._send_keepalive_request()
+            forced = self._keepalive_probe_requested
+            self._keepalive_probe_requested = False
+            ok = await self._send_keepalive_request(force=forced)
             if ok:
                 self._keepalive_missed = 0
                 continue
@@ -719,17 +779,18 @@ class E27Kernel:
                 session.handle_disconnect(session_mod.SessionProtocolError("Keepalive timed out"))
                 return
 
-    async def _send_keepalive_request(self) -> bool:
+    async def _send_keepalive_request(self, *, force: bool = False) -> bool:
         self._set_loop_if_needed()
         if self._loop is None:
             return False
         if self._session is None or self._session.state is not session_mod.SessionState.ACTIVE:
             return False
-        if self.now() - self._last_exchange_at < self._keepalive_interval_s:
+        if not force and self.now() - self._last_rx_at < self._keepalive_interval_s:
             return True
-        if (
-            self._keepalive_inflight
-            or self._request_state is not _RequestState.IDLE
+        if self._keepalive_inflight:
+            return True
+        if not force and (
+            self._request_state is not _RequestState.IDLE
             or self._request_queue_high
             or self._request_queue_normal
         ):
@@ -762,14 +823,29 @@ class E27Kernel:
             except Exception:
                 self._pending_responses.drop(seq)
                 return False
-            await sent_event.wait()
+            queued_at = self.now()
+            try:
+                # A HIGH-priority probe can wait behind one in-flight command
+                # (up to its own reply timeout); never wait forever on a wedged
+                # outbound queue.
+                await asyncio.wait_for(sent_event.wait(), timeout=self._keepalive_send_wait_s)
+            except TimeoutError:
+                self._pending_responses.drop(seq)
+                self._log.info(
+                    "E27 keepalive probe could not be sent within %.1fs: seq=%s",
+                    self._keepalive_send_wait_s,
+                    seq,
+                )
+                return self._last_rx_at > queued_at
             sent_at = self.now()
             try:
                 await future
                 return True
             except E27Timeout:
-                if self._log.isEnabledFor(logging.WARNING):
-                    self._log.warning(
+                # Info, not warning: if this means the link is dead, the client
+                # logs the single "Panel connection lost" warning.
+                if self._log.isEnabledFor(logging.INFO):
+                    self._log.info(
                         "E27 keepalive response missing for seq=%s session_id=%s",
                         seq,
                         self.state.panel.session_id,
@@ -1039,7 +1115,7 @@ class E27Kernel:
             return
         if self._closed_explicitly and isinstance(err, session_mod.SessionIOError):
             return
-        self._log.warning(
+        self._log.debug(
             "E27Kernel._on_session_disconnected: session reported disconnect err=%s",
             err,
         )
@@ -1226,6 +1302,8 @@ class E27Kernel:
             self._handle_send_failure(item.seq, exc)
 
     def _on_request_sent(self, seq: int, timeout_s: float) -> None:
+        if self._active_seq == seq:
+            self._active_sent_at = self.now()
         self._mark_request_sent(seq)
         self._arm_reply_timeout(seq, timeout_s)
 
@@ -1255,8 +1333,16 @@ class E27Kernel:
             route = self._active_request.expected_route
         if route is not None:
             self.dispatcher.drop_pending(seq)
+        sent_at = self._active_sent_at
+        silent = sent_at is not None and self._last_rx_at <= sent_at
         self._pending_responses.fail(seq, E27Timeout(f"Response timed out for seq={seq}"))
-        if self._log.isEnabledFor(logging.WARNING):
+        if silent and route != ("system", "r_u_alive"):
+            # Nothing at all came back from the panel since this request was
+            # sent: treat it as evidence of a dead link and probe right away.
+            self.request_link_check()
+        if route == ("system", "r_u_alive"):
+            self._log.debug("E27 keepalive reply timeout: seq=%s", seq)
+        elif self._log.isEnabledFor(logging.WARNING):
             if route is not None:
                 self._log.warning(
                     "E27 reply timeout: route=%s.%s seq=%s",
@@ -1286,6 +1372,7 @@ class E27Kernel:
         self._active_released = True
         self._cancel_active_timeout()
         self._active_seq = None
+        self._active_sent_at = None
         self._active_request = None
         self._request_state = _RequestState.IDLE
         self._kick_scheduler()
