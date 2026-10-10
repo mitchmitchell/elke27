@@ -406,23 +406,23 @@ def make_area_get_status_handler(state: PanelState, emit: EmitFn, now: NowFn):
                 outcome.changed_fields,
                 outcome.area_id,
             )
-            evt = AreaStatusUpdated(
-                kind=AreaStatusUpdated.KIND,
-                at=UNSET_AT,
-                seq=UNSET_SEQ,
-                classification=UNSET_CLASSIFICATION,
-                route=UNSET_ROUTE,
-                session_id=UNSET_SESSION_ID,
-                area_id=outcome.area_id,
-                changed_fields=outcome.changed_fields,
-            )
-            try:
-                emit(evt, ctx)
-                LOG.debug("area.get_status emitted AreaStatusUpdated")
-            except Exception as e:
-                LOG.error("area.get_status emit failed: %s", e, exc_info=True)
         else:
             LOG.warning("area.get_status no changes; area_id=%s", outcome.area_id)
+        evt = AreaStatusUpdated(
+            kind=AreaStatusUpdated.KIND,
+            at=UNSET_AT,
+            seq=UNSET_SEQ,
+            classification=UNSET_CLASSIFICATION,
+            route=UNSET_ROUTE,
+            session_id=UNSET_SESSION_ID,
+            area_id=outcome.area_id,
+            changed_fields=outcome.changed_fields,
+        )
+        try:
+            emit(evt, ctx)
+            LOG.debug("area.get_status emitted AreaStatusUpdated")
+        except Exception as e:
+            LOG.error("area.get_status emit failed: %s", e, exc_info=True)
 
         if outcome.warnings:
             emit(

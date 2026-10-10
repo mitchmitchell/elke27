@@ -444,7 +444,7 @@ def test_ee_timer_late_higher_tick_ignored_keeps_previous() -> None:
     assert _snapshot_for(area).arming is True
 
 
-def test_late_ee_timer_tick_does_not_report_spurious_change() -> None:
+def test_late_ee_timer_tick_emits_without_ee_timer_in_changed_fields() -> None:
     state = PanelState()
     emit = _EmitSpy()
     handler = make_area_get_status_handler(state, emit, now=lambda: 1.0)
@@ -482,7 +482,22 @@ def test_late_ee_timer_tick_does_not_report_spurious_change() -> None:
     )
     assert state.areas[1].ee_timer == 40
     status_events = [evt for evt in emit.events if isinstance(evt, AreaStatusUpdated)]
-    assert status_events == []
+    assert len(status_events) == 1
+    assert status_events[0].changed_fields == ()
+    assert "ee_timer" not in status_events[0].changed_fields
+
+
+def test_unchanged_area_get_status_still_emits_empty_changed_fields() -> None:
+    state = PanelState()
+    emit = _EmitSpy()
+    handler = make_area_get_status_handler(state, emit, now=lambda: 1.0)
+    payload = _base_status_payload()
+    assert handler({"area": {"get_status": payload}}, make_ctx()) is True
+    emit.events.clear()
+    assert handler({"area": {"get_status": payload}}, make_ctx()) is True
+    status_events = [evt for evt in emit.events if isinstance(evt, AreaStatusUpdated)]
+    assert len(status_events) == 1
+    assert status_events[0].changed_fields == ()
 
 
 def test_bool_ee_timer_rejected() -> None:
