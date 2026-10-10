@@ -9,13 +9,21 @@ from elke27_lib import linking
 from elke27_lib import session as session_mod
 from elke27_lib.client import Elke27Client
 from elke27_lib.const import E27ErrorCode
-from elke27_lib.events import ConnectionStateChanged
+from elke27_lib.events import AreaStatusUpdated, ConnectionStateChanged
 from elke27_lib.handlers import area as area_handler
 from elke27_lib.handlers.area import make_area_get_status_handler, make_area_set_status_handler
 from elke27_lib.kernel import E27Kernel
 from elke27_lib.states import AreaState, PanelState
 from elke27_lib.types import ArmMode
 from test.helpers.dispatch import make_ctx
+
+
+class _EmitSpy:
+    def __init__(self) -> None:
+        self.events: list[object] = []
+
+    def __call__(self, evt: object, _ctx: object) -> None:
+        self.events.append(evt)
 
 
 class _NoEmit:
@@ -436,6 +444,47 @@ def test_ee_timer_late_higher_tick_ignored_keeps_previous() -> None:
     assert _snapshot_for(area).arming is True
 
 
+def test_late_ee_timer_tick_does_not_report_spurious_change() -> None:
+    state = PanelState()
+    emit = _EmitSpy()
+    handler = make_area_get_status_handler(state, emit, now=lambda: 1.0)
+    assert handler({"area": {"get_status": _base_status_payload()}}, make_ctx()) is True
+    assert (
+        handler(
+            {
+                "area": {
+                    "get_status": {
+                        "area_id": 1,
+                        "ee_timer": 40,
+                        "error_code": E27ErrorCode.ELKERR_NONE,
+                    }
+                }
+            },
+            make_ctx(),
+        )
+        is True
+    )
+    emit.events.clear()
+    assert (
+        handler(
+            {
+                "area": {
+                    "get_status": {
+                        "area_id": 1,
+                        "ee_timer": 50,
+                        "error_code": E27ErrorCode.ELKERR_NONE,
+                    }
+                }
+            },
+            make_ctx(),
+        )
+        is True
+    )
+    assert state.areas[1].ee_timer == 40
+    status_events = [evt for evt in emit.events if isinstance(evt, AreaStatusUpdated)]
+    assert status_events == []
+
+
 def test_bool_ee_timer_rejected() -> None:
     state = PanelState()
     state.areas[1] = AreaState(
@@ -722,6 +771,7 @@ def test_disconnect_snapshot_reset_clears_exit_delay_pending() -> None:
     assert kernel.state.areas[1].alarm_zone is None
     public_area = client.get_area(1)
     assert public_area is not None
+    assert public_area.arm_mode is ArmMode.DISARMED
     assert public_area.arming is False
     assert public_area.arm_cmd_mode is None
     assert public_area.ee_timer is None

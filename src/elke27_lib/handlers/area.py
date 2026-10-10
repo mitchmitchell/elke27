@@ -226,9 +226,8 @@ def apply_area_exit_delay_clearing_rules(
         if new_timer == 0:
             pass
         elif new_timer > prev_ee_timer:
-            if area.ee_timer != prev_ee_timer:
-                area.ee_timer = prev_ee_timer
-                changed.add("ee_timer")
+            area.ee_timer = prev_ee_timer
+            changed.discard("ee_timer")
             area.exit_delay_payload_complete = True
             return
         elif 0 < new_timer <= prev_ee_timer:
@@ -407,23 +406,23 @@ def make_area_get_status_handler(state: PanelState, emit: EmitFn, now: NowFn):
                 outcome.changed_fields,
                 outcome.area_id,
             )
+            evt = AreaStatusUpdated(
+                kind=AreaStatusUpdated.KIND,
+                at=UNSET_AT,
+                seq=UNSET_SEQ,
+                classification=UNSET_CLASSIFICATION,
+                route=UNSET_ROUTE,
+                session_id=UNSET_SESSION_ID,
+                area_id=outcome.area_id,
+                changed_fields=outcome.changed_fields,
+            )
+            try:
+                emit(evt, ctx)
+                LOG.debug("area.get_status emitted AreaStatusUpdated")
+            except Exception as e:
+                LOG.error("area.get_status emit failed: %s", e, exc_info=True)
         else:
             LOG.warning("area.get_status no changes; area_id=%s", outcome.area_id)
-        evt = AreaStatusUpdated(
-            kind=AreaStatusUpdated.KIND,
-            at=UNSET_AT,
-            seq=UNSET_SEQ,
-            classification=UNSET_CLASSIFICATION,
-            route=UNSET_ROUTE,
-            session_id=UNSET_SESSION_ID,
-            area_id=outcome.area_id,
-            changed_fields=outcome.changed_fields,
-        )
-        try:
-            emit(evt, ctx)
-            LOG.debug("area.get_status emitted AreaStatusUpdated")
-        except Exception as e:
-            LOG.error("area.get_status emit failed: %s", e, exc_info=True)
 
         if outcome.warnings:
             emit(
