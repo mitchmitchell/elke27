@@ -135,3 +135,28 @@ async def test_outbound_queue_stop_fails_pending() -> None:
 
     queue.stop(fail_exc=RuntimeError("transport gone"))
     await asyncio.wait_for(failed.wait(), timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_outbound_queue_cancel_pending_seq() -> None:
+    loop = asyncio.get_running_loop()
+
+    def _send(_payload: bytes) -> None:
+        return None
+
+    queue = OutboundQueue(loop=loop, send_fn=_send, min_interval_s=10.0, max_burst=1)
+    queue.start()
+    for seq in (10, 11):
+        queue.enqueue(
+            OutboundItem(
+                payload=b"x",
+                seq=seq,
+                kind="request",
+                priority=OutboundPriority.NORMAL,
+                enqueued_at=time.monotonic(),
+            )
+        )
+    await asyncio.sleep(0)
+    assert queue.cancel_pending_seq(11) is True
+    assert queue.cancel_pending_seq(11) is False
+    assert queue.cancel_pending_seq(10) is True

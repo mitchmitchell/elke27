@@ -221,6 +221,9 @@ class Session:
             raise SessionProtocolError(
                 f"HELLO failed for {self.cfg.host}:{self.cfg.port}: {e}"
             ) from e
+        finally:
+            with contextlib.suppress(OSError):
+                s.settimeout(self.cfg.io_timeout_s)
 
         self.info = SessionInfo(
             session_id=keys.session_id,
@@ -530,6 +533,11 @@ class Session:
             on_fail=on_fail,
         )
         self._outbound.enqueue(item)
+
+    def cancel_outbound_pending_seq(self, seq: int) -> bool:
+        if self._outbound is None:
+            return False
+        return self._outbound.cancel_pending_seq(seq)
 
     def enable_outbound_queue(
         self,

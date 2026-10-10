@@ -46,6 +46,7 @@ class OutboundQueue:
     _tokens: float
     _last_refill: float
     _sending: bool
+    _current_seq: int | None
 
     def __init__(
         self,
@@ -68,6 +69,7 @@ class OutboundQueue:
         self._tokens = float(self._max_burst)
         self._last_refill = self._loop.time()
         self._sending = False
+        self._current_seq = None
 
     def start(self) -> None:
         if self._worker is None or self._worker.done():
@@ -109,6 +111,49 @@ class OutboundQueue:
     def is_idle(self) -> bool:
         return self._high_q.empty() and self._normal_q.empty() and not self._sending
 
+    def cancel_pending_seq(self, seq: int) -> bool:
+        """Drop a queued frame before send. Returns True if removed from a queue."""
+
+        def _cancel_on_loop() -> bool:
+            if self._current_seq == seq and self._sending:
+                return False
+            removed = False
+            for queue in (self._high_q, self._normal_q):
+                kept: list[OutboundItem] = []
+                while not queue.empty():
+                    try:
+                        item = queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                    if item.seq == seq:
+                        removed = True
+                        queue.task_done()
+                    else:
+                        kept.append(item)
+                for item in kept:
+                    queue.put_nowait(item)
+            return removed
+
+        try:
+            if asyncio.get_running_loop() is self._loop:
+                return _cancel_on_loop()
+        except RuntimeError:
+            pass
+        if self._loop.is_running():
+            import concurrent.futures
+
+            done = concurrent.futures.Future[bool]()
+
+            def _run() -> None:
+                try:
+                    done.set_result(_cancel_on_loop())
+                except BaseException as exc:
+                    done.set_exception(exc)
+
+            self._loop.call_soon_threadsafe(_run)
+            return done.result(timeout=2.0)
+        return _cancel_on_loop()
+
     async def wait_idle(self, *, timeout_s: float | None = None) -> bool:
         deadline = None
         if timeout_s is not None:
@@ -149,6 +194,7 @@ class OutboundQueue:
                 continue
             await self._throttle()
             self._sending = True
+            self._current_seq = item.seq
             try:
                 await asyncio.to_thread(self._send_fn, item.payload)
                 sent_at = time.monotonic()
@@ -175,6 +221,7 @@ class OutboundQueue:
                 )
             finally:
                 self._sending = False
+                self._current_seq = None
                 self._high_q.task_done() if item.priority is OutboundPriority.HIGH else self._normal_q.task_done()
 
     async def _next_item(self) -> OutboundItem | None:

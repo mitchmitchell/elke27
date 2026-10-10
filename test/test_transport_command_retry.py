@@ -272,6 +272,37 @@ async def test_kernel_arm_not_retried_after_sent_timeout() -> None:
 
 
 @pytest.mark.asyncio
+async def test_kernel_set_arm_state_missing_arm_state_not_retried_after_sent_timeout() -> None:
+    kernel = E27Kernel(request_timeout_s=0.02, request_max_retries=2, request_max_backoff_s=0.0)
+    session = _FakeSession()
+    _wire_kernel(kernel, session)
+
+    seq = 52
+    future = kernel.pending_responses.create(
+        seq,
+        command_key="area_set_arm_state",
+        expected_route=("area", "set_arm_state"),
+        loop=asyncio.get_running_loop(),
+    )
+    kernel.send_request_with_seq(
+        seq,
+        "area",
+        "set_arm_state",
+        {"area_id": 1, "pin": 1234},
+        pending=False,
+        opaque=None,
+        expected_route=("area", "set_arm_state"),
+        timeout_s=0.02,
+    )
+    await asyncio.sleep(0)
+    on_reply_timeout = get_private(kernel, "_on_reply_timeout")
+    on_reply_timeout(seq)
+    with pytest.raises(E27Timeout):
+        await asyncio.wait_for(future, timeout=0.2)
+    assert len(session.sent) == 1
+
+
+@pytest.mark.asyncio
 async def test_kernel_lock_set_status_not_retried_after_sent_timeout() -> None:
     kernel = E27Kernel(request_timeout_s=0.02, request_max_retries=2, request_max_backoff_s=0.0)
     session = _FakeSession()
@@ -538,6 +569,166 @@ async def test_kernel_close_cancels_retry_timers_and_queues() -> None:
     assert not cast(Any, kernel)._request_queue_normal
     with pytest.raises(KernelError):
         await future
+
+
+@pytest.mark.asyncio
+async def test_kernel_close_fails_transport_backoff_waiter() -> None:
+    kernel = E27Kernel(request_timeout_s=0.5, request_max_retries=2, request_max_backoff_s=60.0)
+    session = _FakeSession()
+    _wire_kernel(kernel, session)
+
+    seq = 81
+    sent_event = asyncio.Event()
+    kernel.register_sent_event(seq, sent_event)
+    future = kernel.pending_responses.create(
+        seq,
+        command_key="zone_get_status",
+        expected_route=("zone", "get_status"),
+        loop=asyncio.get_running_loop(),
+    )
+    kernel.send_request_with_seq(
+        seq,
+        "zone",
+        "get_status",
+        {"zone_id": 1},
+        pending=False,
+        opaque=None,
+        expected_route=("zone", "get_status"),
+    )
+    await asyncio.sleep(0)
+    on_reply_timeout = get_private(kernel, "_on_reply_timeout")
+    on_reply_timeout(seq)
+    await asyncio.sleep(0)
+    kernel_any = cast(Any, kernel)
+    assert seq in kernel_any._transport_retry_timer_by_seq
+
+    class _CloseSession(_FakeSession):
+        info: object = type("_Info", (), {"session_id": None})()
+
+        def close(self) -> None:
+            return None
+
+    kernel_any._session = _CloseSession()
+    await kernel.close()
+    with pytest.raises(KernelError):
+        await asyncio.wait_for(future, timeout=0.2)
+    assert sent_event.is_set()
+
+
+@pytest.mark.asyncio
+async def test_disarm_transport_retry_stays_ahead_of_queued_commands() -> None:
+    kernel = E27Kernel(request_timeout_s=0.02, request_max_retries=2, request_max_backoff_s=30.0)
+    session = _FakeSession()
+    _wire_kernel(kernel, session)
+
+    seq_disarm = 90
+    seq_read = 91
+    loop = asyncio.get_running_loop()
+    kernel.pending_responses.create(
+        seq_disarm,
+        command_key="area_set_arm_state",
+        expected_route=("area", "set_arm_state"),
+        loop=loop,
+    )
+    kernel.pending_responses.create(
+        seq_read,
+        command_key="zone_get_status",
+        expected_route=("zone", "get_status"),
+        loop=loop,
+    )
+    kernel.send_request_with_seq(
+        seq_disarm,
+        "area",
+        "set_arm_state",
+        {"area_id": 1, "arm_state": "DISARMED", "pin": 1234},
+        pending=False,
+        opaque=None,
+        expected_route=("area", "set_arm_state"),
+        timeout_s=0.02,
+    )
+    kernel.send_request_with_seq(
+        seq_read,
+        "zone",
+        "get_status",
+        {"zone_id": 1},
+        pending=False,
+        opaque=None,
+        expected_route=("zone", "get_status"),
+        timeout_s=0.02,
+    )
+    await asyncio.sleep(0)
+    assert len(session.sent) == 1
+    assert session.sent[0]["seq"] == seq_disarm
+
+    on_reply_timeout = get_private(kernel, "_on_reply_timeout")
+    on_reply_timeout(seq_disarm)
+    await asyncio.sleep(0)
+    assert len(session.sent) == 2
+    assert session.sent[1]["seq"] == seq_disarm
+    assert session.sent[1]["area"]["set_arm_state"]["arm_state"] == "DISARMED"
+
+
+@pytest.mark.asyncio
+async def test_cancel_command_transport_drops_outbound_queued_frame() -> None:
+    from elke27_lib.outbound import OutboundItem, OutboundQueue
+    from elke27_lib.session import SessionState
+
+    loop = asyncio.get_running_loop()
+    outbound = OutboundQueue(
+        loop=loop,
+        send_fn=lambda _b: None,
+        min_interval_s=10.0,
+        max_burst=1,
+    )
+    outbound.start()
+    outbound.enqueue(
+        OutboundItem(
+            payload=b"seq=96",
+            seq=96,
+            kind="request",
+            priority=OutboundPriority.NORMAL,
+            enqueued_at=0.0,
+        )
+    )
+
+    class _OutboundSession:
+        state = SessionState.ACTIVE
+
+        def cancel_outbound_pending_seq(self, seq: int) -> bool:
+            return outbound.cancel_pending_seq(seq)
+
+    kernel = E27Kernel()
+    cast(Any, kernel)._session = _OutboundSession()
+
+    kernel.cancel_command_transport(96, E27Timeout("cancelled"))
+    assert outbound.cancel_pending_seq(96) is False
+
+
+@pytest.mark.parametrize(
+    ("route", "payload", "allowed"),
+    [
+        (("area", "set_arm_state"), {"arm_state": "DISARMED", "area_id": 1}, True),
+        (("area", "set_arm_state"), {"arm_state": "ARMED_STAY", "area_id": 1}, False),
+        (("area", "set_arm_state"), {"area_id": 1, "pin": 1}, False),
+        (("zone", "get_status"), {"zone_id": 1}, True),
+        (("zone", "import_snapshot"), {"zone_id": 1}, False),
+    ],
+)
+def test_retry_after_send_allowlist(
+    route: tuple[str, str], payload: dict[str, object], allowed: bool
+) -> None:
+    item = kernel_mod._QueuedRequest(
+        seq=1,
+        domain=route[0],
+        name=route[1],
+        payload=payload,
+        pending=False,
+        opaque=None,
+        expected_route=route,
+        priority=OutboundPriority.NORMAL,
+        timeout_s=5.0,
+    )
+    assert kernel_mod._queued_request_retry_after_send_allowed(item) is allowed
 
 
 @pytest.mark.asyncio

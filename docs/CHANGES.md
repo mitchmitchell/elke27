@@ -20,7 +20,28 @@
     failures keep the normal retry policy. Disarm is
     always `OutboundPriority.HIGH`, is requeued immediately on transport retry
     (no backoff), and is not delayed behind other commands waiting to retry.
-    `kernel.close()` cancels transport retry timers and fails queued commands.
+    `kernel.close()` fails every pending command (including send-confirmation
+    waiters and transport backoff waiters) before clearing retry timers.
+
+  - Area exit delay: `area.get_status` and periodic status broadcasts expose
+    `arm_cmd_state`, `ee_timer`, and `alarm_zone` during the arm exit countdown.
+    Public `arming` is `True` only when all four fields are present on the
+    snapshot, `alarm_zone == ""` exactly (missing/`None` is not empty),
+    `ee_timer` > 0, and the area is disarmed with a pending away/stay command.
+    Partial payloads clear any of the four exit-delay fields not included, except
+    an `ee_timer`-only tick after a complete four-field payload: accept when
+    `0 < new <= previous` (duplicates allowed), ignore when `new > previous`,
+    and clear when `new == 0`. A restarted exit timer requires a fresh full
+    four-field payload. Reconnect and client snapshot reset clear pending
+    exit-delay fields. A stay→away command change without a fresh full
+    `get_status` leaves `arming` false; consumers should treat exit-delay skip
+    logic only after a full four-field status read.
+
+  - HELLO: restore the socket read timeout after the short pre-HELLO probe;
+    `Session.connect()` reapplies `io_timeout_s` when HELLO finishes so the
+    receive pump keeps the configured cadence (#33). Pre-HELLO greeting bytes
+    log at DEBUG instead of WARNING.
+
   - Session transport: serialize outbound `send()` with a send-only lock (recv
     stays unlocked on its worker thread), enforce write deadlines with a
     monotonic `io_write_timeout_s` without changing socket `settimeout` (so

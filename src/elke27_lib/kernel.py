@@ -72,6 +72,7 @@ from .events import (
     Event,
     stamp_event,
 )
+from .handlers.area import clear_all_area_exit_delay_pending
 from .outbound import OutboundPriority
 from .pending import PendingResponseManager
 from .states import PanelState
@@ -650,6 +651,7 @@ class E27Kernel:
         self.state.table_info_by_domain.clear()
         self.state.table_info_known.clear()
         self.state.bootstrap_counts_ready = False
+        clear_all_area_exit_delay_pending(self.state)
         self._reset_inventory_state()
         for domain in ("area", "zone", "output", "light", "barrier", "lock", "tstat"):
             self.state.table_info_by_domain.setdefault(
@@ -689,14 +691,18 @@ class E27Kernel:
 
     async def close(self) -> None:
         """Close any active session. Idempotent."""
+        close_exc = (
+            KernelError("Kernel closed.")
+            if self._session is not None
+            else KernelError("Kernel closed with no active session.")
+        )
         if self._session is None:
+            self._fail_all_pending_commands(close_exc)
             self._cancel_all_transport_retry_timers()
-            self._fail_all_pending_commands(KernelError("Kernel closed with no active session."))
             return
         self._stop_keepalive()
-        self._cancel_all_transport_retry_timers()
-        close_exc = KernelError("Kernel closed.")
         self._fail_all_pending_commands(close_exc)
+        self._cancel_all_transport_retry_timers()
 
         s = self._session
         self._session = None
@@ -1476,6 +1482,11 @@ class E27Kernel:
         """Stop transport retries for a command and fail its pending future."""
         self._cancel_transport_retry_timer_for_seq(seq)
         self._remove_queued_seq(seq)
+        session = self._session
+        if session is not None:
+            cancel_outbound = getattr(session, "cancel_outbound_pending_seq", None)
+            if cancel_outbound is not None:
+                cancel_outbound(seq)
         if (
             self._request_state is _RequestState.IN_FLIGHT
             and self._active_seq == seq
@@ -1516,6 +1527,13 @@ class E27Kernel:
         for item in queued_items:
             self._fail_queued_command(item, exc)
         self._pending_responses.fail_all(exc)
+        self._signal_all_sent_events()
+
+    def _signal_all_sent_events(self) -> None:
+        with self._sent_event_lock:
+            seqs = list(self._sent_events.keys())
+        for seq in seqs:
+            self._signal_sent_event(seq)
 
     def _schedule_transport_requeue(self, item: _QueuedRequest) -> None:
         if self._is_past_deadline(item):
@@ -1588,6 +1606,13 @@ class E27Kernel:
                     )
             self.dispatcher.drop_pending(item.seq)
             retry_item = replace(item, attempt=item.attempt + 1)
+            if was_active and _queued_request_is_disarm(retry_item):
+                self._cancel_transport_retry_timer_for_seq(retry_item.seq)
+                if retry_item.priority is not OutboundPriority.HIGH:
+                    retry_item = replace(retry_item, priority=OutboundPriority.HIGH)
+                self._request_queue_high.appendleft(retry_item)
+                self._complete_active(reason="transport_retry")
+                return
             if was_active:
                 self._complete_active(reason="transport_retry")
             self._schedule_transport_requeue(retry_item)
