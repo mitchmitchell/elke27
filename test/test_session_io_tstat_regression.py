@@ -17,7 +17,6 @@ import pytest
 from elke27_lib import session as session_mod
 from elke27_lib.framing import DeframeState
 from elke27_lib.kernel import E27Kernel
-from elke27_lib.outbound import OutboundItem, OutboundPriority, OutboundQueue
 from elke27_lib.session import (
     Session,
     SessionConfig,
@@ -30,6 +29,14 @@ def _identity() -> session_mod.linking.E27Identity:
     return session_mod.linking.E27Identity("mn", "sn", "fw", "hw", "os")
 
 
+class _NoOpLock:
+    def __enter__(self) -> _NoOpLock:
+        return self
+
+    def __exit__(self, *_args: object) -> bool:
+        return False
+
+
 class _SendTrackingSocket:
     """Tracks concurrent send() calls (outbound queue must serialize via _send_lock)."""
 
@@ -38,9 +45,6 @@ class _SendTrackingSocket:
         self._send_overlap = 0
         self._guard = threading.Lock()
         self.sent: list[bytes] = []
-
-    def settimeout(self, _value: float) -> None:
-        return None
 
     def send(self, data: bytes) -> int:
         with self._guard:
@@ -59,29 +63,64 @@ class _SendTrackingSocket:
         return None
 
 
-class _DualFailureSocket:
-    """recv returns EOF after the socket is closed during deliberate teardown."""
+class _PartialSendSocket:
+    def __init__(self, *, chunk_size: int) -> None:
+        self._chunk_size = chunk_size
+        self.sent: list[bytes] = []
+
+    def send(self, data: bytes) -> int:
+        n = min(self._chunk_size, len(data))
+        self.sent.append(bytes(data[:n]))
+        return n
+
+    def close(self) -> None:
+        return None
+
+
+class _TimeoutUntilDeadlineSocket:
+    def __init__(self) -> None:
+        self.send_calls = 0
+
+    def send(self, _data: bytes) -> int:
+        self.send_calls += 1
+        raise TimeoutError("would block")
+
+    def close(self) -> None:
+        return None
+
+
+class _BlockingCloseOSErrorSocket:
+    """recv blocks until close, then raises OSError like a dead fd."""
 
     def __init__(self) -> None:
-        self.closed = False
-        self.timeout: float | None = None
         self._recv_blocked = threading.Event()
+        self._closed = False
+        self._wake = threading.Event()
 
-    def settimeout(self, value: float) -> None:
-        self.timeout = value
+    def settimeout(self, _value: float) -> None:
+        return None
 
     def recv(self, _max_bytes: int) -> bytes:
         self._recv_blocked.set()
-        if self.closed:
-            return b""
-        raise TimeoutError("wait")
+        while not self._closed:
+            self._wake.wait(0.05)
+        raise OSError(9, "Bad file descriptor")
 
     def close(self) -> None:
-        self.closed = True
+        self._closed = True
+        self._wake.set()
 
 
-def _ready_session(*, sock: object) -> Session:
-    cfg = SessionConfig(host="panel", auto_receive=False)
+def _ready_session(
+    *,
+    sock: object,
+    io_write_timeout_s: float = 5.0,
+) -> Session:
+    cfg = SessionConfig(
+        host="panel",
+        auto_receive=False,
+        io_write_timeout_s=io_write_timeout_s,
+    )
     sess = Session(cfg, client_identity=_identity(), link_key_hex="00")
     sess.state = SessionState.ACTIVE
     cast(Any, sess).sock = sock
@@ -92,38 +131,149 @@ def _ready_session(*, sock: object) -> Session:
     return sess
 
 
-@pytest.mark.asyncio
-async def test_outbound_sends_are_serialized_by_send_lock() -> None:
+def _session_with_real_recv(
+    sock: _BlockingCloseOSErrorSocket, *, use_thread_fallback: bool
+) -> Session:
+    cfg = SessionConfig(
+        host="panel",
+        auto_receive=True,
+        auto_receive_thread_fallback=use_thread_fallback,
+        io_timeout_s=0.05,
+    )
+    sess = Session(cfg, client_identity=_identity(), link_key_hex="00")
+    sess.state = SessionState.ACTIVE
+    cast(Any, sess).sock = sock
+    sess._deframe_state = DeframeState()
+    sess.info = session_mod.SessionInfo(
+        session_id=1, session_key_hex="00" * 16, session_hmac_hex="11" * 16
+    )
+    sess.on_message = lambda _msg: None
+    return sess
+
+
+def _parallel_send_all(sess: Session, *, workers: int = 8) -> None:
+    threads = [
+        threading.Thread(target=sess._send_all, args=(bytes([i]) * 8,), name=f"send-{i}")
+        for i in range(workers)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=3.0)
+
+
+def test_parallel_send_all_is_serialized_by_send_lock() -> None:
     sock = _SendTrackingSocket()
     sess = _ready_session(sock=sock)
-    loop = asyncio.get_running_loop()
-    queue = OutboundQueue(
-        loop=loop,
-        send_fn=sess._send_all,
-        min_interval_s=0.0,
-        max_burst=4,
-    )
-    queue.start()
-    for i in range(8):
-        queue.enqueue(
-            OutboundItem(
-                payload=bytes([i]),
-                seq=i,
-                kind="request",
-                priority=OutboundPriority.NORMAL,
-                enqueued_at=time.monotonic(),
-            )
-        )
-    await asyncio.sleep(0.01)
-    await asyncio.wait_for(queue.wait_idle(), timeout=3.0)
-    await asyncio.sleep(0.05)
+    _parallel_send_all(sess)
     assert sock._send_overlap == 0
     assert len(sock.sent) == 8
 
 
+def test_parallel_send_all_overlaps_without_send_lock(monkeypatch: pytest.MonkeyPatch) -> None:
+    sock = _SendTrackingSocket()
+    sess = _ready_session(sock=sock)
+    monkeypatch.setattr(sess, "_send_lock", _NoOpLock())
+    _parallel_send_all(sess)
+    assert sock._send_overlap > 0
+
+
+def test_send_all_logs_partial_send_and_completes(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    sock = _PartialSendSocket(chunk_size=2)
+    sess = _ready_session(sock=sock)
+    payload = b"abcdef"
+    with caplog.at_level(logging.DEBUG, logger="elke27_lib.session"):
+        sess._send_all(payload)
+    assert b"".join(sock.sent) == payload
+    assert any("Partial socket send" in r.getMessage() for r in caplog.records)
+
+
+def test_send_all_write_deadline_raises_session_io_error() -> None:
+    sock = _TimeoutUntilDeadlineSocket()
+    sess = _ready_session(sock=sock, io_write_timeout_s=0.08)
+    with pytest.raises(SessionIOError, match="timed out"):
+        sess._send_all(b"payload")
+    assert sock.send_calls >= 1
+
+
+def _run_single_disconnect_scenario(
+    sock: _BlockingCloseOSErrorSocket,
+    *,
+    use_thread_fallback: bool,
+    begin_teardown: Callable[[Session], None],
+) -> list[Exception | None]:
+    sess = _session_with_real_recv(sock, use_thread_fallback=use_thread_fallback)
+    disconnects: list[Exception | None] = []
+    sess.on_disconnected = lambda err: disconnects.append(err)
+    sess._start_receiver()
+    assert sock._recv_blocked.wait(timeout=2.0)
+    begin_teardown(sess)
+    deadline = time.monotonic() + 2.0
+    while len(disconnects) < 1 and time.monotonic() < deadline:
+        time.sleep(0.02)
+    time.sleep(0.5)
+    sess._stop_receiver()
+    return disconnects
+
+
 def test_real_recv_thread_emits_single_disconnect_on_teardown() -> None:
-    sock = _DualFailureSocket()
-    cfg = SessionConfig(host="panel", auto_receive=True, auto_receive_thread_fallback=True)
+    sock = _BlockingCloseOSErrorSocket()
+
+    def _begin(sess: Session) -> None:
+        sess.handle_disconnect(SessionIOError("deliberate teardown"))
+
+    disconnects = _run_single_disconnect_scenario(
+        sock, use_thread_fallback=True, begin_teardown=_begin
+    )
+    assert len(disconnects) == 1
+    assert isinstance(disconnects[0], SessionIOError)
+
+
+def test_disconnect_gate_blocks_second_callback() -> None:
+    class _Sock:
+        def close(self) -> None:
+            return None
+
+    sess = _ready_session(sock=_Sock())
+    disconnects: list[Exception | None] = []
+    sess.on_disconnected = lambda err: disconnects.append(err)
+    err_a = SessionIOError("first")
+    err_b = SessionIOError("second")
+    sess._handle_disconnect(err_a)
+    sess._handle_disconnect(err_b)
+    assert len(disconnects) == 1
+    assert disconnects[0] is err_a
+
+
+def test_without_disconnect_gate_double_callback(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Sock:
+        def close(self) -> None:
+            return None
+
+    sess = _ready_session(sock=_Sock())
+
+    def _always_begin(_self: Session) -> bool:
+        return True
+
+    monkeypatch.setattr(Session, "_try_begin_disconnect_teardown", _always_begin)
+    disconnects: list[Exception | None] = []
+    sess.on_disconnected = lambda err: disconnects.append(err)
+    sess._handle_disconnect(SessionIOError("first"))
+    sess._handle_disconnect(SessionIOError("second"))
+    assert len(disconnects) == 2
+
+
+@pytest.mark.asyncio
+async def test_single_disconnect_with_asyncio_recv_and_daemon_join() -> None:
+    sock = _BlockingCloseOSErrorSocket()
+    cfg = SessionConfig(
+        host="panel",
+        auto_receive=True,
+        auto_receive_thread_fallback=False,
+        io_timeout_s=0.05,
+    )
     sess = Session(cfg, client_identity=_identity(), link_key_hex="00")
     sess.state = SessionState.ACTIVE
     cast(Any, sess).sock = sock
@@ -134,17 +284,21 @@ def test_real_recv_thread_emits_single_disconnect_on_teardown() -> None:
     disconnects: list[Exception | None] = []
     sess.on_disconnected = lambda err: disconnects.append(err)
     sess.on_message = lambda _msg: None
-    sess._start_receiver()
-    assert sock._recv_blocked.wait(timeout=2.0)
+    try:
+        sess._start_receiver()
+        deadline = time.monotonic() + 3.0
+        while not sock._recv_blocked.is_set() and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+        assert sock._recv_blocked.is_set()
 
-    sess.handle_disconnect(SessionIOError("deliberate teardown"))
-    deadline = time.monotonic() + 2.0
-    while len(disconnects) < 1 and time.monotonic() < deadline:
-        time.sleep(0.02)
-
-    assert len(disconnects) == 1
-    assert isinstance(disconnects[0], SessionIOError)
-    sess._stop_receiver()
+        await asyncio.to_thread(sess.handle_disconnect, SessionIOError("deliberate teardown"))
+        deadline = time.monotonic() + 2.0
+        while len(disconnects) < 1 and time.monotonic() < deadline:
+            await asyncio.sleep(0.02)
+        await asyncio.sleep(0.5)
+        assert len(disconnects) == 1
+    finally:
+        sess._stop_receiver()
 
 
 @pytest.mark.asyncio
