@@ -20,6 +20,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import select
 import socket
 import threading
 import time
@@ -45,7 +46,6 @@ class SessionConfig:
     port: int = 2101  # Mitch preference: non-TLS port 2101
     connect_timeout_s: float = 5.0
     io_timeout_s: float = 0.5  # socket read timeout (pump cadence)
-    io_write_timeout_s: float = 5.0  # socket send timeout (longer than read cadence)
     hello_timeout_s: float = 5.0  # overall HELLO timeout
     recv_max_bytes: int = 4096  # per socket recv() call
     protocol_default: int = 0x80  # default protocol byte for schema-0 encrypted frames
@@ -59,6 +59,7 @@ class SessionConfig:
     keepalive_max_missed: int = 1
     auto_receive: bool = True  # start background receive loop when on_message is set
     auto_receive_thread_fallback: bool = False  # allow dedicated thread when no event loop exists
+    io_write_timeout_s: float = 5.0  # monotonic send deadline (longer than read cadence)
 
 
 @dataclass(frozen=True)
@@ -305,56 +306,135 @@ class Session:
 
         return data
 
+    def _raise_write_timeout(self, *, sent: int, total: int, write_timeout: float) -> None:
+        raise SessionIOError(
+            f"Socket write timed out to {self.cfg.host}:{self.cfg.port} "
+            f"after {sent} of {total} bytes within {write_timeout}s."
+        )
+
+    def _wait_socket_writable(self, sock: socket.socket, *, deadline: float) -> None:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            try:
+                _, writable, _ = select.select([], [sock], [], remaining)
+            except OSError as e:
+                raise SessionIOError(
+                    f"Socket write failed to {self.cfg.host}:{self.cfg.port}: {e}"
+                ) from e
+            if writable:
+                return
+
+    def _send_on_socket_with_deadline(
+        self,
+        sock: socket.socket,
+        data: bytes,
+        *,
+        deadline: float,
+        write_timeout: float,
+    ) -> None:
+        total = len(data)
+        sent = 0
+        view = memoryview(data)
+        was_blocking = sock.getblocking()
+        try:
+            sock.setblocking(False)
+            while sent < total:
+                if time.monotonic() >= deadline:
+                    self._raise_write_timeout(sent=sent, total=total, write_timeout=write_timeout)
+                self._wait_socket_writable(sock, deadline=deadline)
+                if time.monotonic() >= deadline:
+                    self._raise_write_timeout(sent=sent, total=total, write_timeout=write_timeout)
+                try:
+                    chunk = sock.send(view[sent:])
+                except BlockingIOError:
+                    continue
+                except InterruptedError:
+                    continue
+                if chunk == 0:
+                    raise SessionIOError(
+                        f"Socket write stalled to {self.cfg.host}:{self.cfg.port} "
+                        f"after {sent} of {total} bytes."
+                    )
+                if chunk < total - sent and logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "Partial socket send to %s:%s: sent %d of %d bytes this "
+                        "call (%d of %d total so far)",
+                        self.cfg.host,
+                        self.cfg.port,
+                        chunk,
+                        total - sent,
+                        sent + chunk,
+                        total,
+                    )
+                sent += chunk
+        finally:
+            sock.setblocking(was_blocking)
+
+    def _send_on_transport_with_deadline(
+        self,
+        sock: Any,
+        data: bytes,
+        *,
+        deadline: float,
+        write_timeout: float,
+    ) -> None:
+        total = len(data)
+        send_fn = getattr(sock, "send", None)
+        if not callable(send_fn):
+            if time.monotonic() >= deadline:
+                self._raise_write_timeout(sent=0, total=total, write_timeout=write_timeout)
+            sock.sendall(data)
+            return
+        sent = 0
+        view = memoryview(data)
+        while sent < total:
+            if time.monotonic() >= deadline:
+                self._raise_write_timeout(sent=sent, total=total, write_timeout=write_timeout)
+            try:
+                chunk = cast(int, send_fn(view[sent:]))
+            except TimeoutError:
+                continue
+            if chunk == 0:
+                raise SessionIOError(
+                    f"Socket write stalled to {self.cfg.host}:{self.cfg.port} "
+                    f"after {sent} of {total} bytes."
+                )
+            if chunk < total - sent and logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "Partial socket send to %s:%s: sent %d of %d bytes this "
+                    "call (%d of %d total so far)",
+                    self.cfg.host,
+                    self.cfg.port,
+                    chunk,
+                    total - sent,
+                    sent + chunk,
+                    total,
+                )
+            sent += chunk
+
     def _send_all(self, data: bytes) -> None:
         self._require_ready()
         assert self.sock is not None
         sock = self.sock
-        total = len(data)
         write_timeout = float(self.cfg.io_write_timeout_s)
         deadline = time.monotonic() + write_timeout if write_timeout > 0 else float("inf")
         try:
             with self._send_lock:
-                send_fn = getattr(sock, "send", None)
-                if callable(send_fn):
-                    sent = 0
-                    view = memoryview(data)
-                    while sent < total:
-                        if time.monotonic() >= deadline:
-                            raise SessionIOError(
-                                f"Socket write timed out to {self.cfg.host}:{self.cfg.port} "
-                                f"after {sent} of {total} bytes within {write_timeout}s."
-                            )
-                        try:
-                            chunk = cast(int, send_fn(view[sent:]))
-                        except TimeoutError:
-                            continue
-                        if chunk == 0:
-                            raise SessionIOError(
-                                f"Socket write stalled to {self.cfg.host}:{self.cfg.port} "
-                                f"after {sent} of {total} bytes."
-                            )
-                        if chunk < total - sent and logger.isEnabledFor(logging.DEBUG):
-                            logger.debug(
-                                "Partial socket send to %s:%s: sent %d of %d bytes this "
-                                "call (%d of %d total so far)",
-                                self.cfg.host,
-                                self.cfg.port,
-                                chunk,
-                                total - sent,
-                                sent + chunk,
-                                total,
-                            )
-                        sent += chunk
+                if isinstance(sock, socket.socket):
+                    self._send_on_socket_with_deadline(
+                        sock, data, deadline=deadline, write_timeout=write_timeout
+                    )
                 else:
-                    if time.monotonic() >= deadline:
-                        raise SessionIOError(
-                            f"Socket write timed out to {self.cfg.host}:{self.cfg.port} "
-                            f"before sendall ({total} bytes) within {write_timeout}s."
-                        )
-                    sock.sendall(data)
+                    self._send_on_transport_with_deadline(
+                        sock, data, deadline=deadline, write_timeout=write_timeout
+                    )
                 now = time.monotonic()
                 self._last_tx_at = now
                 self._last_exchange_at = now
+        except SessionIOError:
+            raise
         except OSError as e:
             raise SessionIOError(
                 f"Socket write failed to {self.cfg.host}:{self.cfg.port}: {e}"

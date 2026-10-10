@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import socket
 import threading
 import time
 from collections.abc import Callable
@@ -196,6 +197,59 @@ def test_send_all_write_deadline_raises_session_io_error() -> None:
     with pytest.raises(SessionIOError, match="timed out"):
         sess._send_all(b"payload")
     assert sock.send_calls >= 1
+
+
+def _fill_socket_send_buffer(sock: socket.socket) -> None:
+    was_blocking = sock.getblocking()
+    sock.setblocking(False)
+    try:
+        chunk = b"x" * 65536
+        while True:
+            try:
+                sock.send(chunk)
+            except BlockingIOError:
+                break
+    finally:
+        sock.setblocking(was_blocking)
+
+
+def test_real_socket_send_uses_write_deadline_not_socket_read_timeout() -> None:
+    """Blocking send must not wait out io_timeout_s when the buffer is full."""
+    send_sock, _recv_sock = socket.socketpair()
+    try:
+        send_sock.settimeout(30.0)
+        _fill_socket_send_buffer(send_sock)
+        write_deadline_s = 0.12
+        cfg = SessionConfig(
+            host="panel",
+            io_timeout_s=30.0,
+            io_write_timeout_s=write_deadline_s,
+            auto_receive=False,
+        )
+        sess = Session(cfg, client_identity=_identity(), link_key_hex="00")
+        sess.state = SessionState.ACTIVE
+        cast(Any, sess).sock = send_sock
+        sess._deframe_state = DeframeState()
+        sess.info = session_mod.SessionInfo(
+            session_id=1, session_key_hex="00" * 16, session_hmac_hex="11" * 16
+        )
+        started = time.monotonic()
+        with pytest.raises(SessionIOError, match="timed out"):
+            sess._send_all(b"overflow" * 4096)
+        elapsed = time.monotonic() - started
+        assert elapsed < 2.0
+        assert elapsed >= write_deadline_s * 0.5
+    finally:
+        send_sock.close()
+        _recv_sock.close()
+
+
+def test_session_config_positional_preserves_hello_timeout() -> None:
+    cfg = SessionConfig("panel", 2101, 4.0, 0.25, 6.5)
+    assert cfg.connect_timeout_s == 4.0
+    assert cfg.io_timeout_s == 0.25
+    assert cfg.hello_timeout_s == 6.5
+    assert cfg.io_write_timeout_s == 5.0
 
 
 def _run_single_disconnect_scenario(
