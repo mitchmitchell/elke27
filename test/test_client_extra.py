@@ -1024,3 +1024,113 @@ def test_connection_lost_logged_once_per_drop(caplog: pytest.LogCaptureFixture) 
     restored = [m for m in msgs if m[1].startswith("Panel connection restored")]
     assert [lvl for lvl, _ in restored] == [logging.INFO]
     assert not [m for m in msgs if m[0] >= logging.ERROR]
+
+
+def _connect_fail_msgs(caplog: pytest.LogCaptureFixture) -> list[tuple[int, str]]:
+    return [
+        (r.levelno, r.getMessage())
+        for r in caplog.records
+        if r.getMessage().startswith("Connect failed")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_connect_failures_log_warning_then_debug(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    client = Elke27Client(kernel=E27Kernel())
+
+    async def _connect(*_a: Any, **_k: Any) -> None:
+        raise E27TransportError("unreachable")
+
+    monkeypatch.setattr(client._kernel, "connect", _connect)
+    keys = LinkKeys("aa", "bb", "cc")
+    with caplog.at_level(logging.DEBUG, logger=client._log.name):
+        with pytest.raises(Elke27ConnectionError):
+            await client.async_connect("h", 1, keys)
+        with pytest.raises(Elke27ConnectionError):
+            await client.async_connect("h", 1, keys)
+    msgs = _connect_fail_msgs(caplog)
+    assert msgs == [
+        (logging.WARNING, msgs[0][1]),
+        (logging.DEBUG, msgs[1][1]),
+        (logging.DEBUG, msgs[2][1]),
+        (logging.DEBUG, msgs[3][1]),
+    ]
+    assert not [m for m in msgs if m[0] >= logging.ERROR]
+
+
+@pytest.mark.asyncio
+async def test_connect_failures_after_link_loss_log_debug_only(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    client = Elke27Client(kernel=E27Kernel())
+    lost = ConnectionStateChanged(
+        **_event_base(ConnectionStateChanged.KIND), connected=False, error_type="SessionIOError"
+    )
+    client._handle_kernel_event(lost)
+
+    async def _connect(*_a: Any, **_k: Any) -> None:
+        raise E27TransportError("unreachable")
+
+    monkeypatch.setattr(client._kernel, "connect", _connect)
+    keys = LinkKeys("aa", "bb", "cc")
+    with caplog.at_level(logging.DEBUG, logger=client._log.name):
+        for _ in range(3):
+            with pytest.raises(Elke27ConnectionError):
+                await client.async_connect("h", 1, keys)
+    msgs = _connect_fail_msgs(caplog)
+    assert len(msgs) == 6
+    assert all(level == logging.DEBUG for level, _ in msgs)
+    lost_logs = [r for r in caplog.records if r.getMessage().startswith("Panel connection lost")]
+    assert len(lost_logs) == 1
+    assert lost_logs[0].levelno == logging.WARNING
+
+
+@pytest.mark.asyncio
+async def test_connect_non_transient_failure_stays_error(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    client = Elke27Client(kernel=E27Kernel())
+
+    async def _connect(*_a: Any, **_k: Any) -> None:
+        raise E27LinkInvalid("bad keys")
+
+    monkeypatch.setattr(client._kernel, "connect", _connect)
+    keys = LinkKeys("aa", "bb", "cc")
+    with caplog.at_level(logging.DEBUG, logger=client._log.name):
+        with pytest.raises(Elke27CryptoError):
+            await client.async_connect("h", 1, keys)
+    msgs = _connect_fail_msgs(caplog)
+    assert len(msgs) == 2
+    assert all(level == logging.ERROR for level, _ in msgs)
+
+
+@pytest.mark.asyncio
+async def test_connect_success_after_failures_resets_warning_cycle(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    client = Elke27Client(kernel=E27Kernel())
+    keys = LinkKeys("aa", "bb", "cc")
+    mode = {"fail": True}
+
+    async def _connect(*_a: Any, **_k: Any) -> None:
+        if mode["fail"]:
+            raise E27TransportError("unreachable")
+        return None
+
+    monkeypatch.setattr(client._kernel, "connect", _connect)
+    with caplog.at_level(logging.DEBUG, logger=client._log.name):
+        with pytest.raises(Elke27ConnectionError):
+            await client.async_connect("h", 1, keys)
+        mode["fail"] = False
+        await client.async_connect("h", 1, keys)
+        mode["fail"] = True
+        caplog.clear()
+        with pytest.raises(Elke27ConnectionError):
+            await client.async_connect("h", 1, keys)
+    msgs = _connect_fail_msgs(caplog)
+    assert msgs == [
+        (logging.WARNING, msgs[0][1]),
+        (logging.DEBUG, msgs[1][1]),
+    ]
