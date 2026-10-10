@@ -59,6 +59,117 @@ def _wire_kernel(kernel: E27Kernel, session: _FakeSession, *, max_retries: int =
 
 
 @pytest.mark.asyncio
+async def test_late_reply_cancels_pending_same_seq_transport_retry() -> None:
+    kernel = E27Kernel(request_timeout_s=0.02, request_max_retries=2, request_max_backoff_s=60.0)
+    session = _FakeSession()
+    _wire_kernel(kernel, session)
+
+    seq = 55
+    future = kernel.pending_responses.create(
+        seq,
+        command_key="zone_get_status",
+        expected_route=("zone", "get_status"),
+        loop=asyncio.get_running_loop(),
+    )
+    kernel.send_request_with_seq(
+        seq,
+        "zone",
+        "get_status",
+        {"zone_id": 1},
+        pending=False,
+        opaque=None,
+        expected_route=("zone", "get_status"),
+        timeout_s=0.02,
+    )
+    await asyncio.sleep(0)
+    assert len(session.sent) == 1
+
+    on_reply_timeout = get_private(kernel, "_on_reply_timeout")
+    on_reply_timeout(seq)
+    await asyncio.sleep(0)
+    kernel_any = cast(Any, kernel)
+    assert seq in kernel_any._transport_retry_timer_by_seq or any(
+        item.seq == seq
+        for item in list(kernel_any._request_queue_high) + list(kernel_any._request_queue_normal)
+    )
+
+    on_message = get_private(kernel, "_on_message")
+    on_message({"seq": seq, "zone": {"get_status": {"zone_id": 1, "status": "OK"}}})
+    assert seq not in kernel_any._transport_retry_timer_by_seq
+    assert not any(
+        item.seq == seq
+        for item in list(kernel_any._request_queue_high) + list(kernel_any._request_queue_normal)
+    )
+    assert len(session.sent) == 1
+    reply = await asyncio.wait_for(future, timeout=0.2)
+    assert reply["seq"] == seq
+
+    seq_other = 56
+    kernel.send_request_with_seq(
+        seq_other,
+        "zone",
+        "get_status",
+        {"zone_id": 2},
+        pending=False,
+        opaque=None,
+        expected_route=("zone", "get_status"),
+        timeout_s=0.02,
+    )
+    await asyncio.sleep(0)
+    assert len(session.sent) == 2
+    assert session.sent[1]["seq"] == seq_other
+
+
+@pytest.mark.asyncio
+async def test_keepalive_timeout_skips_transport_retry_and_uses_keepalive_timeout() -> None:
+    kernel = E27Kernel(request_timeout_s=5.0, request_max_retries=2, request_max_backoff_s=0.0)
+    kernel._keepalive_timeout_s = 0.04
+    session = _FakeSession()
+    _wire_kernel(kernel, session)
+
+    seq = 77
+    loop = asyncio.get_running_loop()
+    future = kernel.pending_responses.create(
+        seq,
+        command_key="system_r_u_alive",
+        expected_route=("system", "r_u_alive"),
+        loop=loop,
+    )
+    before = kernel.now()
+    kernel.send_request_with_seq(
+        seq,
+        "system",
+        "r_u_alive",
+        {},
+        pending=False,
+        opaque=None,
+        expected_route=("system", "r_u_alive"),
+        priority=OutboundPriority.HIGH,
+        timeout_s=kernel._keepalive_timeout_s,
+    )
+    await asyncio.sleep(0)
+    queued = list(cast(Any, kernel)._request_queue_high) + list(
+        cast(Any, kernel)._request_queue_normal
+    )
+    assert len(queued) == 0
+    assert len(session.sent) == 1
+    active = cast(Any, kernel)._active_request
+    assert active is not None
+    assert active.timeout_s == kernel._keepalive_timeout_s
+    assert active.deadline_at <= before + kernel._keepalive_timeout_s + 0.01
+
+    on_reply_timeout = get_private(kernel, "_on_reply_timeout")
+    on_reply_timeout(seq)
+    await asyncio.sleep(0)
+    kernel_any = cast(Any, kernel)
+    assert seq not in kernel_any._transport_retry_timer_by_seq
+    assert not kernel_any._request_queue_high and not kernel_any._request_queue_normal
+    assert len(session.sent) == 1
+    with pytest.raises(E27Timeout):
+        await asyncio.wait_for(future, timeout=0.2)
+
+
+@pytest.mark.asyncio
 async def test_kernel_timeout_then_success_retries_same_seq() -> None:
     kernel = E27Kernel(request_timeout_s=0.02, request_max_retries=2, request_max_backoff_s=0.0)
     session = _FakeSession()

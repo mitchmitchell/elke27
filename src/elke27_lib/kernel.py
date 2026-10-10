@@ -138,6 +138,12 @@ class _QueuedRequest:
     deadline_at: float = 0.0
 
 
+def _queued_request_is_keepalive(item: _QueuedRequest) -> bool:
+    if item.domain == "system" and item.name == "r_u_alive":
+        return True
+    return item.expected_route == ("system", "r_u_alive")
+
+
 def _queued_request_is_disarm(item: _QueuedRequest) -> bool:
     if item.domain != "area" or item.name != "set_arm_state":
         return False
@@ -1110,6 +1116,7 @@ class E27Kernel:
                             msg["session_id"] = auth_sid
         if isinstance(seq_val, int) and seq_val > 0:
             self._pending_responses.resolve(seq_val, msg)
+            self._clear_pending_transport_retry_for_seq(seq_val)
 
         sid = msg.get("session_id")
         if isinstance(sid, int):
@@ -1399,6 +1406,8 @@ class E27Kernel:
         return item.attempt >= self._request_max_retries
 
     def _transport_retry_allowed(self, item: _QueuedRequest, *, sent: bool) -> bool:
+        if _queued_request_is_keepalive(item):
+            return False
         if self._is_past_deadline(item):
             return False
         route = item.expected_route
@@ -1424,10 +1433,16 @@ class E27Kernel:
 
     def _cancel_transport_retry_timer_for_seq(self, seq: int) -> None:
         handle = self._transport_retry_timer_by_seq.pop(seq, None)
+        self._transport_retry_item_by_seq.pop(seq, None)
         if handle is None:
             return
         handle.cancel()
         self._transport_retry_timers.discard(handle)
+
+    def _clear_pending_transport_retry_for_seq(self, seq: int) -> None:
+        """Drop queued/backoff resends for seq after a reply arrives (including late)."""
+        self._cancel_transport_retry_timer_for_seq(seq)
+        self._remove_queued_seq(seq)
 
     def _remove_queued_seq(self, seq: int) -> None:
         for queue in (self._request_queue_high, self._request_queue_normal):
@@ -1862,7 +1877,11 @@ class E27Kernel:
             )
         ):
             effective_priority = OutboundPriority.HIGH
-        budget_s = self.command_transport_wait_budget_s(timeout_value)
+        if domain == "system" and name == "r_u_alive":
+            deadline_at = self.now() + timeout_value
+        else:
+            budget_s = self.command_transport_wait_budget_s(timeout_value)
+            deadline_at = self.now() + budget_s
         queued = _QueuedRequest(
             seq=seq,
             domain=domain,
@@ -1873,7 +1892,7 @@ class E27Kernel:
             expected_route=expected_route,
             priority=effective_priority,
             timeout_s=timeout_value,
-            deadline_at=self.now() + budget_s,
+            deadline_at=deadline_at,
         )
         self._enqueue_request(queued)
         return seq
