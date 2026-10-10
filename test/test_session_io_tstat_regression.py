@@ -200,6 +200,7 @@ def test_send_all_write_deadline_raises_session_io_error() -> None:
 
 
 def _fill_socket_send_buffer(sock: socket.socket) -> None:
+    timeout = sock.gettimeout()
     was_blocking = sock.getblocking()
     sock.setblocking(False)
     try:
@@ -211,6 +212,8 @@ def _fill_socket_send_buffer(sock: socket.socket) -> None:
                 break
     finally:
         sock.setblocking(was_blocking)
+        if timeout is not None:
+            sock.settimeout(timeout)
 
 
 def test_real_socket_send_uses_write_deadline_not_socket_read_timeout() -> None:
@@ -250,6 +253,97 @@ def test_session_config_positional_preserves_hello_timeout() -> None:
     assert cfg.io_timeout_s == 0.25
     assert cfg.hello_timeout_s == 6.5
     assert cfg.io_write_timeout_s == 5.0
+
+
+def _session_on_socketpair(
+    send_sock: socket.socket,
+    *,
+    io_timeout_s: float = 0.5,
+    io_write_timeout_s: float = 5.0,
+) -> Session:
+    cfg = SessionConfig(
+        host="panel",
+        io_timeout_s=io_timeout_s,
+        io_write_timeout_s=io_write_timeout_s,
+        auto_receive=False,
+    )
+    sess = Session(cfg, client_identity=_identity(), link_key_hex="00")
+    sess.state = SessionState.ACTIVE
+    cast(Any, sess).sock = send_sock
+    sess._deframe_state = DeframeState()
+    sess.info = session_mod.SessionInfo(
+        session_id=1, session_key_hex="00" * 16, session_hmac_hex="11" * 16
+    )
+    return sess
+
+
+def test_send_all_preserves_socket_timeout_after_stalled_and_successful_send() -> None:
+    send_sock, recv_sock = socket.socketpair()
+    read_timeout_s = 0.5
+    try:
+        send_sock.settimeout(read_timeout_s)
+        sess = _session_on_socketpair(send_sock, io_write_timeout_s=0.12)
+        _fill_socket_send_buffer(send_sock)
+        assert send_sock.gettimeout() == read_timeout_s
+        with pytest.raises(SessionIOError, match="timed out"):
+            sess._send_all(b"overflow" * 4096)
+        assert send_sock.gettimeout() == read_timeout_s
+        recv_sock.setblocking(False)
+        try:
+            while True:
+                try:
+                    if not recv_sock.recv(65536):
+                        break
+                except BlockingIOError:
+                    break
+        finally:
+            recv_sock.setblocking(True)
+            recv_sock.settimeout(read_timeout_s)
+        sess._send_all(b"ok")
+        assert send_sock.gettimeout() == read_timeout_s
+    finally:
+        send_sock.close()
+        recv_sock.close()
+
+
+def test_stalled_send_does_not_disrupt_concurrent_recv() -> None:
+    send_sock, recv_sock = socket.socketpair()
+    read_timeout_s = 0.05
+    try:
+        send_sock.settimeout(read_timeout_s)
+        recv_sock.settimeout(read_timeout_s)
+        sess = _session_on_socketpair(send_sock, io_write_timeout_s=0.15)
+        _fill_socket_send_buffer(send_sock)
+        recv_errors: list[BaseException] = []
+        disconnects: list[Exception | None] = []
+        sess.on_disconnected = lambda err: disconnects.append(err)
+        recv_done = threading.Event()
+
+        def _recv_worker() -> None:
+            try:
+                for _ in range(40):
+                    try:
+                        sess._recv_some(max_bytes=256)
+                    except TimeoutError:
+                        continue
+                    except SessionIOError as e:
+                        recv_errors.append(e)
+                        break
+            finally:
+                recv_done.set()
+
+        worker = threading.Thread(target=_recv_worker, name="concurrent-recv")
+        worker.start()
+        time.sleep(0.02)
+        with pytest.raises(SessionIOError, match="timed out"):
+            sess._send_all(b"blocked" * 8192)
+        recv_done.wait(timeout=2.0)
+        worker.join(timeout=2.0)
+        assert disconnects == []
+        assert recv_errors == []
+    finally:
+        send_sock.close()
+        recv_sock.close()
 
 
 def _run_single_disconnect_scenario(

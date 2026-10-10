@@ -334,43 +334,45 @@ class Session:
         deadline: float,
         write_timeout: float,
     ) -> None:
+        """Send without changing the socket blocking mode or timeout (recv shares the fd)."""
         total = len(data)
         sent = 0
         view = memoryview(data)
-        was_blocking = sock.getblocking()
-        try:
-            sock.setblocking(False)
-            while sent < total:
-                if time.monotonic() >= deadline:
-                    self._raise_write_timeout(sent=sent, total=total, write_timeout=write_timeout)
-                self._wait_socket_writable(sock, deadline=deadline)
-                if time.monotonic() >= deadline:
-                    self._raise_write_timeout(sent=sent, total=total, write_timeout=write_timeout)
-                try:
+        send_flags = getattr(socket, "MSG_DONTWAIT", 0)
+        while sent < total:
+            if time.monotonic() >= deadline:
+                self._raise_write_timeout(sent=sent, total=total, write_timeout=write_timeout)
+            self._wait_socket_writable(sock, deadline=deadline)
+            if time.monotonic() >= deadline:
+                self._raise_write_timeout(sent=sent, total=total, write_timeout=write_timeout)
+            try:
+                if send_flags:
+                    chunk = sock.send(view[sent:], send_flags)
+                else:
                     chunk = sock.send(view[sent:])
-                except BlockingIOError:
-                    continue
-                except InterruptedError:
-                    continue
-                if chunk == 0:
-                    raise SessionIOError(
-                        f"Socket write stalled to {self.cfg.host}:{self.cfg.port} "
-                        f"after {sent} of {total} bytes."
-                    )
-                if chunk < total - sent and logger.isEnabledFor(logging.DEBUG):
-                    logger.debug(
-                        "Partial socket send to %s:%s: sent %d of %d bytes this "
-                        "call (%d of %d total so far)",
-                        self.cfg.host,
-                        self.cfg.port,
-                        chunk,
-                        total - sent,
-                        sent + chunk,
-                        total,
-                    )
-                sent += chunk
-        finally:
-            sock.setblocking(was_blocking)
+            except BlockingIOError:
+                continue
+            except TimeoutError:
+                continue
+            except InterruptedError:
+                continue
+            if chunk == 0:
+                raise SessionIOError(
+                    f"Socket write stalled to {self.cfg.host}:{self.cfg.port} "
+                    f"after {sent} of {total} bytes."
+                )
+            if chunk < total - sent and logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "Partial socket send to %s:%s: sent %d of %d bytes this "
+                    "call (%d of %d total so far)",
+                    self.cfg.host,
+                    self.cfg.port,
+                    chunk,
+                    total - sent,
+                    sent + chunk,
+                    total,
+                )
+            sent += chunk
 
     def _send_on_transport_with_deadline(
         self,
