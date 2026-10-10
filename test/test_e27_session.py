@@ -24,6 +24,7 @@ import pytest
 
 # Adjust import path if your session module lives elsewhere.
 # The tests are written to be resilient by monkeypatching module-level dependencies.
+from elke27_lib import hello as hello_mod
 from elke27_lib import linking
 from elke27_lib import session as session_mod
 from elke27_lib.framing import DeframeState
@@ -45,12 +46,17 @@ class _FakeSocket:
     def __init__(self) -> None:
         self.connected_to: tuple[str, int] | None = None
         self.timeouts: list[float] = []
+        self._timeout: float | None = None
         self.closed: bool = False
         self.sent: list[bytes] = []
         self._recv_queue: list[bytes] = []
 
-    def settimeout(self, t: float) -> None:
-        self.timeouts.append(t)
+    def gettimeout(self) -> float | None:
+        return self._timeout
+
+    def settimeout(self, t: float | None) -> None:
+        self.timeouts.append(t)  # type: ignore[arg-type]
+        self._timeout = t
 
     def connect(self, addr: tuple[str, int]) -> None:
         self.connected_to = addr
@@ -162,12 +168,90 @@ def test_connect_establishes_tcp_and_performs_hello(monkeypatch: pytest.MonkeyPa
     assert fake_sock.connected_to == ("10.0.0.5", 2101)
     assert fake_sock.timeouts[0] == 3.0  # connect timeout
     assert fake_sock.timeouts[1] == 0.25  # io/pump cadence timeout
+    assert fake_sock.gettimeout() == 0.25
 
     # HELLO result stored as SessionInfo and returned.
     assert isinstance(info, session_mod.SessionInfo)
     assert info.session_id == 7
     assert info.session_key_hex == "aa" * 16
     assert info.session_hmac_hex == "bb" * 20
+
+
+def test_connect_reapplies_io_timeout_after_hello(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_sock = _FakeSocket()
+
+    monkeypatch.setattr(socket, "socket", lambda *_a, **_k: fake_sock)
+
+    keys = _HelloKeys(session_id=1, session_key_hex="aa" * 16, hmac_key_hex="bb" * 20)
+
+    def _fake_perform_hello(**_kwargs: Any) -> _HelloKeys:
+        fake_sock.settimeout(0.05)
+        return keys
+
+    monkeypatch.setattr(session_mod, "perform_hello", _fake_perform_hello)
+
+    cfg = session_mod.SessionConfig(
+        host="127.0.0.1",
+        port=2101,
+        io_timeout_s=0.33,
+        keepalive_enabled=False,
+    )
+    identity = linking.E27Identity(
+        mn="0222", sn="001122334455", fwver="1.0", hwver="1.0", osver="1.0"
+    )
+    s = session_mod.Session(cfg, client_identity=identity, link_key_hex="cc" * 16)
+    s.connect()
+    assert fake_sock.gettimeout() == 0.33
+
+
+class _PreHelloSocket(_FakeSocket):
+    """First recv() returns pre-HELLO bytes (hello probe path)."""
+
+    def __init__(self, predata: bytes) -> None:
+        super().__init__()
+        self._predata = predata
+
+    def recv(self, _max_bytes: int) -> bytes:
+        if self._predata:
+            data, self._predata = self._predata, b""
+            return data
+        return super().recv(_max_bytes)
+
+
+def test_connect_io_timeout_after_preobjs_hello(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_sock = _PreHelloSocket(predata=b"pre")
+    monkeypatch.setattr(socket, "socket", lambda *_a, **_k: fake_sock)
+
+    hello_obj = {
+        "hello": {"session_id": 9, "sk": "aa", "shm": "bb", "error_code": 0},
+    }
+    monkeypatch.setattr(
+        hello_mod,
+        "recv_cleartext_json_objects_from_bytes",
+        lambda _d: [hello_obj],
+    )
+    monkeypatch.setattr(hello_mod, "send_unframed_json", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        hello_mod,
+        "decrypt_key_field_with_linkkey",
+        lambda **_kwargs: b"\x00" * 16 if _kwargs["ciphertext_hex"] == "aa" else b"\x00" * 32,
+    )
+
+    io_timeout_s = 0.44
+    cfg = session_mod.SessionConfig(
+        host="127.0.0.1",
+        port=2101,
+        io_timeout_s=io_timeout_s,
+        hello_timeout_s=0.0,
+        keepalive_enabled=False,
+    )
+    identity = linking.E27Identity(
+        mn="0222", sn="001122334455", fwver="1.0", hwver="1.0", osver="1.0"
+    )
+    s = session_mod.Session(cfg, client_identity=identity, link_key_hex="cc" * 16)
+    info = s.connect()
+    assert info.session_id == 9
+    assert fake_sock.gettimeout() == io_timeout_s
 
 
 def test_close_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:

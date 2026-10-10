@@ -10,11 +10,14 @@ from elke27_lib.linking import E27Identity
 
 
 class _FakeSocket:
-    def __init__(self, predata: bytes = b"") -> None:
+    def __init__(self, predata: bytes = b"", *, timeout: float | None = None) -> None:
         self.predata = predata
-        self.timeout: float | None = None
+        self.timeout = timeout
 
-    def settimeout(self, timeout: float) -> None:
+    def gettimeout(self) -> float | None:
+        return self.timeout
+
+    def settimeout(self, timeout: float | None) -> None:
         self.timeout = timeout
 
     def recv(self, _size: int) -> bytes:
@@ -75,7 +78,8 @@ def test_perform_hello_predata_parse_error(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_perform_hello_preobjs_success(monkeypatch: pytest.MonkeyPatch) -> None:
-    sock = _FakeSocket(predata=b"pre")
+    io_timeout_s = 0.42
+    sock = _FakeSocket(predata=b"pre", timeout=io_timeout_s)
     hello_obj = {"hello": {"session_id": 1, "sk": "aa", "shm": "bb", "error_code": 0}}
     monkeypatch.setattr(hello, "recv_cleartext_json_objects_from_bytes", lambda _d: [hello_obj])
     monkeypatch.setattr(hello, "send_unframed_json", lambda *_args, **_kwargs: None)
@@ -86,6 +90,7 @@ def test_perform_hello_preobjs_success(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     out = hello.perform_hello(sock=sock, client_identity=_identity(), linkkey_hex="00", timeout_s=0)
     assert out.session_id == 1
+    assert sock.gettimeout() == io_timeout_s
 
 
 def test_perform_hello_parse_error(monkeypatch: pytest.MonkeyPatch) -> None:

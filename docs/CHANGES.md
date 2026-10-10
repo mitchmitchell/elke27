@@ -1,5 +1,10 @@
   UNRELEASED
 
+  - HELLO: restore the socket read timeout after the short pre-HELLO probe;
+    `Session.connect()` reapplies `io_timeout_s` when HELLO finishes so the
+    receive pump keeps the configured cadence (#33). Pre-HELLO greeting bytes
+    log at DEBUG instead of WARNING.
+
   - Session transport: serialize outbound `send()` with a send-only lock (recv
     stays unlocked on its worker thread), enforce write deadlines with a
     monotonic `io_write_timeout_s` without changing socket `settimeout` (so

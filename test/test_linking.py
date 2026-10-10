@@ -14,9 +14,14 @@ class _FakeSocket:
         self._recv_items = list(recv_items or [])
         self.sent: list[bytes] = []
         self.timeouts: list[float] = []
+        self._timeout: float | None = None
 
-    def settimeout(self, t: float) -> None:
-        self.timeouts.append(t)
+    def gettimeout(self) -> float | None:
+        return self._timeout
+
+    def settimeout(self, t: float | None) -> None:
+        self.timeouts.append(t)  # type: ignore[arg-type]
+        self._timeout = t
 
     def recv(self, _n: int) -> bytes:
         if not self._recv_items:
