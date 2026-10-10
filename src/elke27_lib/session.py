@@ -50,9 +50,12 @@ class SessionConfig:
     protocol_default: int = 0x80  # default protocol byte for schema-0 encrypted frames
     wire_log: bool = False  # enable raw RX/TX hex dump logging
     keepalive_enabled: bool = True
+    # Probe after this long without any inbound traffic from the panel.
     keepalive_interval_s: float = 30.0
-    keepalive_timeout_s: float = 10.0
-    keepalive_max_missed: int = 2
+    # How long to wait for the probe reply before declaring the link dead.
+    keepalive_timeout_s: float = 5.0
+    # Missed probes (with no other inbound traffic) before disconnecting.
+    keepalive_max_missed: int = 1
     auto_receive: bool = True  # start background receive loop when on_message is set
     auto_receive_thread_fallback: bool = False  # allow dedicated thread when no event loop exists
 
@@ -132,6 +135,7 @@ class Session:
 
         self.state: SessionState = SessionState.DISCONNECTED
         self.last_error: Exception | None = None
+        self._closing = False
 
         self._tx_envelope_seq = 1
         self._last_rx_envelope_seq: int | None = None
@@ -234,6 +238,7 @@ class Session:
         """
         Close the socket. Safe to call multiple times.
         """
+        self._closing = True
         self._stop_receiver()
         if self._outbound is not None:
             self._outbound.stop(fail_exc=SessionIOError("Session closed."))
@@ -246,6 +251,7 @@ class Session:
         self._pending_frames = deque()
         self.info = None
         self.state = SessionState.DISCONNECTED
+        self._closing = False
 
     def handle_disconnect(self, err: Exception | None) -> None:
         self._handle_disconnect(err)
@@ -654,7 +660,11 @@ class Session:
         tx_age = now - self._last_tx_at
         exchange_age = now - self._last_exchange_at
         err_name = type(err).__name__ if err is not None else "None"
-        logger.error(
+        # A deliberate close is expected: keep it at debug. A real link loss is
+        # reported once at warning; callers decide how loudly to surface it.
+        level = logging.DEBUG if getattr(self, "_closing", False) else logging.WARNING
+        logger.log(
+            level,
             "Session disconnect: err=%s state=%s host=%s port=%s rx_age=%.3fs tx_age=%.3fs "
             "exchange_age=%.3fs rx_count=%s last_rx_seq=%s last_rx_domain=%s last_tx_seq=%s "
             "last_tx_domain=%s",

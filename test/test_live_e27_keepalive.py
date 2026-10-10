@@ -23,10 +23,10 @@ async def test_live_system_r_u_alive(live_e27_client: Elke27Client) -> None:
 
     fired = asyncio.Event()
     result_box: dict[str, bool] = {}
-    original = cast(Callable[[], Awaitable[bool]], get_private(kernel, "_send_keepalive_request"))
+    original = cast(Callable[..., Awaitable[bool]], get_private(kernel, "_send_keepalive_request"))
 
-    async def _wrapped_keepalive() -> bool:
-        ok = await original()
+    async def _wrapped_keepalive(**kw: bool) -> bool:
+        ok = await original(**kw)
         result_box["ok"] = ok
         fired.set()
         return ok
