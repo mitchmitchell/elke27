@@ -830,6 +830,8 @@ class Elke27Client:
                 area_id=area_id,
                 name=area.name,
                 arm_mode=self._arm_mode_from_string(arm_value),
+                arm_cmd_mode=self._arm_mode_from_string(area.arm_cmd_state),
+                ee_timer=area.ee_timer,
                 ready=_area_ready(area.ready, area.ready_status),
                 alarm_active=area.alarm_state is not None
                 and str(area.alarm_state).lower() != "no_alarm_active",

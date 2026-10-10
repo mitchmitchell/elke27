@@ -58,6 +58,8 @@ class AreaState:
     alarm_state: str | None = None
     alarm_event: str | None = None
     arm_state: str | None = None
+    arm_cmd_state: str | None = None
+    ee_timer: int | None = None
     ready_status: str | None = None
 
     # Common flags

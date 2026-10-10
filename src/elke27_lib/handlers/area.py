@@ -79,6 +79,7 @@ class _ConfiguredOutcome:
 _EXPECTED_TYPES: dict[str, type | tuple[type, ...]] = {
     # strings
     "arm_state": str,
+    "arm_cmd_state": str,
     "armed_state": str,
     "alarm_state": str,
     "alarm_event": str,
@@ -97,6 +98,7 @@ _EXPECTED_TYPES: dict[str, type | tuple[type, ...]] = {
     "num_not_ready_zones": int,
     "num_bypassed_zones": int,
     "zones_bypassed": int,
+    "ee_timer": int,
     "error_code": int,
 }
 
@@ -107,6 +109,7 @@ def _coerce_int(value: object) -> int | None:
 
 _FIELD_MAP: dict[str, str] = {
     "arm_state": "arm_state",
+    "arm_cmd_state": "arm_cmd_state",
     "armed_state": "armed_state",
     "alarm_state": "alarm_state",
     "alarm_event": "alarm_event",
@@ -123,6 +126,7 @@ _FIELD_MAP: dict[str, str] = {
     "num_not_ready_zones": "num_not_ready_zones",
     "num_bypassed_zones": "num_bypassed_zones",
     "zones_bypassed": "num_bypassed_zones",
+    "ee_timer": "ee_timer",
     # response field; stored on state as last_error_code
     "error_code": "last_error_code",
 }

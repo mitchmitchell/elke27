@@ -55,6 +55,10 @@ a breaking change.
 - `panel_info`
 - `table_info`
 - `areas`
+  - Each area snapshot includes `arm_mode` (current `arm_state`), optional
+    `arm_cmd_mode` (`arm_cmd_state` while arming), optional `ee_timer` (exit
+    delay seconds when reported), and `arming` (`True` when `arm_mode` is
+    disarmed and `arm_cmd_mode` is an armed mode during exit delay).
 - `zones`
 - `outputs`
 - `lights`

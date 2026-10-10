@@ -191,10 +191,21 @@ class AreaState:
     area_id: int
     name: str | None = None
     arm_mode: ArmMode | None = None
+    arm_cmd_mode: ArmMode | None = None
+    ee_timer: int | None = None
     ready: bool | None = None
     alarm_active: bool | None = None
     chime: bool | None = None
     ready_status: str | None = None
+
+    @property
+    def arming(self) -> bool:
+        """True during exit delay: disarmed while a stay/away arm command is pending."""
+        if self.arm_mode is not ArmMode.DISARMED:
+            return False
+        if self.arm_cmd_mode is None:
+            return False
+        return self.arm_cmd_mode is not ArmMode.DISARMED
 
 
 @dataclass(frozen=True, slots=True)

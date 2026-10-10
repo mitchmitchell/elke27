@@ -107,6 +107,10 @@ The library exposes read-only accessors for:
 - panel_info
 - table_info / capabilities
 - areas
+  - Area snapshots surface `arm_mode`, optional `arm_cmd_mode` and `ee_timer`
+    from `area.get_status` / status broadcasts (exit delay: disarmed
+    `arm_state` with armed `arm_cmd_state` and countdown `ee_timer`), plus
+    derived `arming` for pending arm commands.
 - zones
 - outputs
 - lights

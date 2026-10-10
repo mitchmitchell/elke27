@@ -1,5 +1,10 @@
   UNRELEASED
 
+  - Area exit delay: `area.get_status` and periodic status broadcasts expose
+    `arm_cmd_state` and `ee_timer` during the arm exit countdown. Internal
+    `AreaState` stores both; public snapshots add `arm_cmd_mode`, `ee_timer`,
+    and derived `arming` (disarmed with a pending away/stay arm command).
+
   - Reconnect `async_connect` attempts while the panel is unreachable no longer
     log `Connect failed (attempt n/2)` at ERROR every few seconds (#21). After
     `Panel connection lost`, further transient failures log at DEBUG; the first
