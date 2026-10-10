@@ -646,6 +646,7 @@ class Elke27Client:
 
     def _raise_v2_error(self, exc: BaseException, *, phase: str) -> None:
         del phase
+        saw_kernel_wrapper = False
         for err in _iter_causes(exc):
             if isinstance(err, E27ProvisioningRequired):
                 raise Elke27LinkRequiredError(
@@ -653,6 +654,11 @@ class Elke27Client:
                 ) from None
             if isinstance(err, KernelMissingContextError):
                 raise Elke27InvalidArgument("Missing required context for operation.") from None
+            if isinstance(err, (KernelInvalidPanelError, KernelNotLinkedError)):
+                raise Elke27ProtocolErrorV2("Protocol error.") from None
+            if isinstance(err, KernelError):
+                saw_kernel_wrapper = True
+                continue
             if isinstance(
                 err, (E27ProvisioningTimeout, InvalidCredentials, E27AuthFailed, InvalidPinError)
             ):
@@ -671,10 +677,11 @@ class Elke27Client:
                 raise Elke27ConnectionError("Connection error.") from None
             if isinstance(err, (TimeoutError, asyncio.TimeoutError)):
                 raise Elke27TimeoutError("Operation timed out.") from None
-            if isinstance(
-                err, (KernelError, E27MissingContext, KernelInvalidPanelError, KernelNotLinkedError)
-            ):
+            if isinstance(err, E27MissingContext):
                 raise Elke27ProtocolErrorV2("Protocol error.") from None
+
+        if saw_kernel_wrapper:
+            raise Elke27ProtocolErrorV2("Protocol error.") from None
 
         raise Elke27ProtocolErrorV2("Operation failed.") from None
 

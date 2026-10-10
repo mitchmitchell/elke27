@@ -1,5 +1,11 @@
   UNRELEASED
 
+  - `async_connect` no longer retries panel auth or link refusals (wrong
+    credentials, invalid link keys, and related non-transient errors); those fail
+    on the first attempt (#14). Transport-class failures may still be retried
+    once. `asyncio.CancelledError` propagates instead of being swallowed during
+    connect. A transport failure that will be retried logs `Connect failed
+    (attempt 1/2)` at DEBUG only; the final attempt keeps the policy below.
   - Reconnect `async_connect` attempts while the panel is unreachable no longer
     log `Connect failed (attempt n/2)` at ERROR every few seconds (#21). After
     `Panel connection lost`, further transient failures log at DEBUG; the first
@@ -9,6 +15,9 @@
     after warned transient failures logs INFO (`Panel connection established
     after connect failures`); link restore still uses `Panel connection restored`.
     See ADR-0013 keepalive / connection logging notes.
+  - Connect error mapping: `E27Timeout` during connect now raises
+    `Elke27TimeoutError` (previously `Elke27ProtocolError`). `E27NotReady`
+    during connect now raises `Elke27ConnectionError`.
 
   Fast Dead-Link Detection, Quieter Connection Logs, async_execute Panel Errors (0.3.11)
 

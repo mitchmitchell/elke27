@@ -569,10 +569,34 @@ class E27Kernel:
         def _do_connect_sync() -> session_mod.SessionInfo:
             return s.connect()
 
+        connect_done = threading.Event()
+        connect_error: list[BaseException] = []
+
+        def _run_connect() -> None:
+            try:
+                _do_connect_sync()
+            except BaseException as exc:
+                connect_error.append(exc)
+            finally:
+                connect_done.set()
+
+        connect_thread = threading.Thread(
+            target=_run_connect, name="e27-session-connect", daemon=True
+        )
+        connect_thread.start()
         try:
-            await asyncio.to_thread(_do_connect_sync)
-        except Exception as e:
-            raise KernelError(f"Session connect failed for {host}:{port}: {e}") from e
+            while not connect_done.is_set():
+                await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            connect_done.wait()
+            connect_thread.join()
+            with contextlib.suppress(Exception):
+                s.close()
+            raise
+        connect_thread.join()
+        if connect_error:
+            err = connect_error[0]
+            raise KernelError(f"Session connect failed for {host}:{port}: {err}") from err
 
         self._session = s
 

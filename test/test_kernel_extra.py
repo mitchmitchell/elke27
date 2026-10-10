@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -217,6 +218,63 @@ async def test_connect_validations(monkeypatch: pytest.MonkeyPatch) -> None:
             panel={"host": "h", "port": 1},
             client_identity=_identity(),
         )
+
+
+@pytest.mark.asyncio
+async def test_connect_cancellation_waits_and_closes_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    kernel = E27Kernel()
+    monkeypatch.setattr(kernel, "load_features_blocking", lambda _modules=None: None)
+
+    allow_connect = threading.Event()
+    connect_started = threading.Event()
+    sessions: list[_FakeSession] = []
+
+    class _SlowSession(_FakeSession):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            self.sock: _FakeSocket | None = None
+            sessions.append(self)
+
+        def connect(self) -> session_mod.SessionInfo:  # type: ignore[override]
+            connect_started.set()
+            allow_connect.wait(timeout=5.0)
+            sock = _FakeSocket()
+            sock.connected = True
+            self.sock = sock
+            return self.info
+
+        def close(self) -> None:  # type: ignore[override]
+            if self.sock is not None:
+                self.sock.close()
+            super().close()
+
+    monkeypatch.setattr(session_mod, "Session", _SlowSession)
+
+    task = asyncio.create_task(
+        kernel.connect(
+            linking.E27LinkKeys("aa", "bb", "cc"),
+            panel={"host": "h", "port": 1},
+            client_identity=_identity(),
+        )
+    )
+    await asyncio.sleep(0.05)
+    assert connect_started.is_set()
+    task.cancel()
+
+    async def _release_connect() -> None:
+        await asyncio.sleep(0.01)
+        allow_connect.set()
+
+    release = asyncio.create_task(_release_connect())
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await release
+    assert kernel._session is None
+    assert len(sessions) == 1
+    assert sessions[0].sock is not None
+    assert cast(_FakeSocket, sessions[0].sock).closed is True
 
 
 @pytest.mark.asyncio
