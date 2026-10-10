@@ -239,19 +239,21 @@ class Session:
         Close the socket. Safe to call multiple times.
         """
         self._closing = True
-        self._stop_receiver()
-        if self._outbound is not None:
-            self._outbound.stop(fail_exc=SessionIOError("Session closed."))
-            self._outbound = None
-        if self.sock is not None:
-            with contextlib.suppress(OSError):
-                self.sock.close()
-        self.sock = None
-        self._deframe_state = None
-        self._pending_frames = deque()
-        self.info = None
-        self.state = SessionState.DISCONNECTED
-        self._closing = False
+        try:
+            self._stop_receiver()
+            if self._outbound is not None:
+                self._outbound.stop(fail_exc=SessionIOError("Session closed."))
+                self._outbound = None
+            if self.sock is not None:
+                with contextlib.suppress(OSError):
+                    self.sock.close()
+            self.sock = None
+            self._deframe_state = None
+            self._pending_frames = deque()
+            self.info = None
+            self.state = SessionState.DISCONNECTED
+        finally:
+            self._closing = False
 
     def handle_disconnect(self, err: Exception | None) -> None:
         self._handle_disconnect(err)
@@ -660,9 +662,9 @@ class Session:
         tx_age = now - self._last_tx_at
         exchange_age = now - self._last_exchange_at
         err_name = type(err).__name__ if err is not None else "None"
-        # A deliberate close is expected: keep it at debug. A real link loss is
-        # reported once at warning; callers decide how loudly to surface it.
-        level = logging.DEBUG if getattr(self, "_closing", False) else logging.WARNING
+        # A deliberate close is expected: debug. A real link loss: info, because
+        # the client logs the single user-facing "Panel connection lost" warning.
+        level = logging.DEBUG if getattr(self, "_closing", False) else logging.INFO
         logger.log(
             level,
             "Session disconnect: err=%s state=%s host=%s port=%s rx_age=%.3fs tx_age=%.3fs "

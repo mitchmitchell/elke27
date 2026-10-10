@@ -281,6 +281,7 @@ class E27Kernel:
     _keepalive_inflight: bool
     _keepalive_probe_requested: bool
     _keepalive_wake: asyncio.Event | None
+    _keepalive_send_wait_s: float
     _active_sent_at: float | None
 
     DEFAULT_FEATURES: Sequence[str] = (
@@ -373,6 +374,9 @@ class E27Kernel:
         self._keepalive_interval_s = 30.0
         self._keepalive_timeout_s = 5.0
         self._keepalive_max_missed = 1
+        # Max wait for a probe to leave the outbound queue (covers one in-flight
+        # command's reply timeout).
+        self._keepalive_send_wait_s = 30.0
         self._keepalive_missed = 0
         now = self.now()
         self._last_exchange_at = now
@@ -380,7 +384,6 @@ class E27Kernel:
         self._keepalive_inflight = False
         self._keepalive_probe_requested = False
         self._keepalive_wake = None
-        self._active_sent_at = None
 
         # Always register dispatcher error envelope handler
         self.register_handler(("__error__", "__all__"), self._handle_dispatch_error_envelope)
@@ -662,10 +665,14 @@ class E27Kernel:
             return
         if self._keepalive_task is not None and not self._keepalive_task.done():
             return
+        # Fresh event per keepalive run: an Event created under an earlier
+        # (possibly closed) event loop must not be reused after reconnect.
+        self._keepalive_wake = asyncio.Event()
         self._keepalive_task = self._loop.create_task(self._keepalive_loop())
 
     def _stop_keepalive(self) -> None:
         if self._keepalive_task is None:
+            self._keepalive_wake = None
             return
         if not self._keepalive_task.done():
             self._keepalive_task.cancel()
@@ -673,6 +680,7 @@ class E27Kernel:
         self._keepalive_missed = 0
         self._keepalive_inflight = False
         self._keepalive_probe_requested = False
+        self._keepalive_wake = None
 
     def request_link_check(self) -> None:
         """Probe the panel now instead of waiting for the next keepalive.
@@ -815,14 +823,29 @@ class E27Kernel:
             except Exception:
                 self._pending_responses.drop(seq)
                 return False
-            await sent_event.wait()
+            queued_at = self.now()
+            try:
+                # A HIGH-priority probe can wait behind one in-flight command
+                # (up to its own reply timeout); never wait forever on a wedged
+                # outbound queue.
+                await asyncio.wait_for(sent_event.wait(), timeout=self._keepalive_send_wait_s)
+            except TimeoutError:
+                self._pending_responses.drop(seq)
+                self._log.info(
+                    "E27 keepalive probe could not be sent within %.1fs: seq=%s",
+                    self._keepalive_send_wait_s,
+                    seq,
+                )
+                return self._last_rx_at > queued_at
             sent_at = self.now()
             try:
                 await future
                 return True
             except E27Timeout:
-                if self._log.isEnabledFor(logging.WARNING):
-                    self._log.warning(
+                # Info, not warning: if this means the link is dead, the client
+                # logs the single "Panel connection lost" warning.
+                if self._log.isEnabledFor(logging.INFO):
+                    self._log.info(
                         "E27 keepalive response missing for seq=%s session_id=%s",
                         seq,
                         self.state.panel.session_id,
@@ -1317,7 +1340,9 @@ class E27Kernel:
             # Nothing at all came back from the panel since this request was
             # sent: treat it as evidence of a dead link and probe right away.
             self.request_link_check()
-        if self._log.isEnabledFor(logging.WARNING):
+        if route == ("system", "r_u_alive"):
+            self._log.debug("E27 keepalive reply timeout: seq=%s", seq)
+        elif self._log.isEnabledFor(logging.WARNING):
             if route is not None:
                 self._log.warning(
                     "E27 reply timeout: route=%s.%s seq=%s",
