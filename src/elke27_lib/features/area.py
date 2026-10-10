@@ -32,6 +32,7 @@ from elke27_lib.handlers.area import (
     make_area_get_status_handler,
     make_area_get_table_info_handler,
     make_area_get_troubles_handler,
+    make_area_set_arm_state_handler,
     make_area_set_status_handler,
 )
 
@@ -43,6 +44,7 @@ ROUTE_AREA_TABLE_INFO = ("area", "table_info")
 ROUTE_AREA_GET_TROUBLES = ("area", "get_troubles")
 ROUTE_AREA_GET_TROUBLE = ("area", "get_trouble")
 ROUTE_AREA_SET_STATUS = ("area", "set_status")  # inbound-only (no outbound builder)
+ROUTE_AREA_SET_ARM_STATE = ("area", "set_arm_state")  # inbound-only (command reply)
 ROUTE_AREA_ROOT = ("area", "__root__")
 
 
@@ -97,6 +99,10 @@ def register(elk: E27Kernel) -> None:
     elk.register_handler(
         ROUTE_AREA_SET_STATUS,
         make_area_set_status_handler(elk.state, elk.emit, elk.now),
+    )
+    elk.register_handler(
+        ROUTE_AREA_SET_ARM_STATE,
+        make_area_set_arm_state_handler(elk.state, elk.emit, elk.now),
     )
     elk.register_handler(
         ROUTE_AREA_ROOT,

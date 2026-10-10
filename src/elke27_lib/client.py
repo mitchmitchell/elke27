@@ -1178,6 +1178,22 @@ class Elke27Client:
             return
         self._safe_request(("zone", "get_all_zones_status"))
 
+    async def _refresh_snapshot_from_panel_status(
+        self, command_key: str, params: Mapping[str, Any]
+    ) -> Result[Mapping[str, Any]] | None:
+        """Pull a fresh entity status from the panel after a successful write."""
+        if command_key == "area_set_arm_state":
+            area_id = params.get("area_id")
+            if not isinstance(area_id, int) or area_id < 1:
+                return None
+            return await self.async_execute("area_get_status", area_id=area_id)
+        if command_key == "zone_set_status":
+            zone_id = params.get("zone_id")
+            if not isinstance(zone_id, int) or zone_id < 1:
+                return None
+            return await self.async_execute("zone_get_status", zone_id=zone_id)
+        return None
+
     def _record_local_zone_bypass(self, zone_id: int) -> None:
         zone = self._kernel.state.zones.get(zone_id)
         if zone is None or zone.area_id is None:
@@ -2229,6 +2245,16 @@ class Elke27Client:
                 return _err(self._panel_error_for_async_execute(command_key, error_code))
 
             response_payload = self._extract_response_payload(msg, expected_route)
+            refresh_result = await self._refresh_snapshot_from_panel_status(command_key, params)
+            if refresh_result is not None and not refresh_result.ok:
+                detail = f"command_key={command_key} phase=status_refresh"
+                if refresh_result.error is not None:
+                    return _err(
+                        self._normalize_error(refresh_result.error, phase="execute", detail=detail)
+                    )
+                return _err(
+                    ProtocolError(f"{command_key} succeeded but panel status refresh failed.")
+                )
             return _ok(response_payload)
 
         if spec.response_mode != "paged_blocks":

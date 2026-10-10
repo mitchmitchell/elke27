@@ -670,6 +670,97 @@ def make_area_set_status_handler(state: PanelState, emit: EmitFn, now: NowFn):
     return handler_area_set_status
 
 
+def make_area_set_arm_state_handler(state: PanelState, emit: EmitFn, now: NowFn):
+    """
+    Handler for ("area","set_arm_state") command replies and broadcasts.
+    """
+
+    def handler_area_set_arm_state(msg: Mapping[str, Any], ctx: DispatchContext) -> bool:
+        area_obj = _as_mapping(msg.get("area"))
+        if area_obj is None:
+            return False
+
+        payload = _as_mapping(area_obj.get("set_arm_state"))
+        if payload is None:
+            return False
+
+        error_code = _extract_error_code(payload)
+        if error_code is not None and error_code != 0:
+            area_id = payload.get("area_id")
+            emit(
+                ApiError(
+                    kind=ApiError.KIND,
+                    at=UNSET_AT,
+                    seq=UNSET_SEQ,
+                    classification=UNSET_CLASSIFICATION,
+                    route=UNSET_ROUTE,
+                    session_id=UNSET_SESSION_ID,
+                    error_code=error_code,
+                    scope="area",
+                    entity_id=area_id if isinstance(area_id, int) else None,
+                    message=None,
+                ),
+                ctx,
+            )
+            return True
+
+        outcome = _reconcile_area_state(state, payload, now=now(), _source="delta")
+
+        if outcome.area_id < 1:
+            emit(
+                DispatchRoutingError(
+                    kind=DispatchRoutingError.KIND,
+                    at=UNSET_AT,
+                    seq=UNSET_SEQ,
+                    classification=UNSET_CLASSIFICATION,
+                    route=UNSET_ROUTE,
+                    session_id=UNSET_SESSION_ID,
+                    code="schema_invalid_area_id",
+                    message="area.set_arm_state missing/invalid area_id; ignoring payload.",
+                    keys=tuple(payload.keys()),
+                    severity="warning",
+                ),
+                ctx,
+            )
+            return False
+
+        if outcome.changed_fields:
+            emit(
+                AreaStatusUpdated(
+                    kind=AreaStatusUpdated.KIND,
+                    at=UNSET_AT,
+                    seq=UNSET_SEQ,
+                    classification=UNSET_CLASSIFICATION,
+                    route=UNSET_ROUTE,
+                    session_id=UNSET_SESSION_ID,
+                    area_id=outcome.area_id,
+                    changed_fields=outcome.changed_fields,
+                ),
+                ctx,
+            )
+
+        if outcome.warnings:
+            emit(
+                DispatchRoutingError(
+                    kind=DispatchRoutingError.KIND,
+                    at=UNSET_AT,
+                    seq=UNSET_SEQ,
+                    classification=UNSET_CLASSIFICATION,
+                    route=UNSET_ROUTE,
+                    session_id=UNSET_SESSION_ID,
+                    code="schema_warnings",
+                    message="area.set_arm_state payload contained type/schema warnings.",
+                    keys=outcome.warnings,
+                    severity="info",
+                ),
+                ctx,
+            )
+
+        return True
+
+    return handler_area_set_arm_state
+
+
 def make_area_get_troubles_handler(state: PanelState, emit: EmitFn, now: NowFn):
     """
     Handler for ("area","get_troubles").
