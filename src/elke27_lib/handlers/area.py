@@ -84,6 +84,7 @@ _EXPECTED_TYPES: dict[str, type | tuple[type, ...]] = {
     "alarm_state": str,
     "alarm_event": str,
     "ready_status": str,
+    "alarm_zone": str,
     # bools
     "ready": bool,
     "stay": bool,
@@ -114,6 +115,7 @@ _FIELD_MAP: dict[str, str] = {
     "alarm_state": "alarm_state",
     "alarm_event": "alarm_event",
     "ready_status": "ready_status",
+    "alarm_zone": "alarm_zone",
     "ready": "ready",
     "stay": "stay",
     "away": "away",
@@ -132,6 +134,51 @@ _FIELD_MAP: dict[str, str] = {
 }
 
 
+def _is_disarmed_arm_state(value: str | None) -> bool:
+    if value is None:
+        return False
+    return value.upper() == "DISARMED"
+
+
+def _clear_area_exit_delay_pending(area: AreaState, changed: set[str]) -> None:
+    if area.arm_cmd_state is not None:
+        area.arm_cmd_state = None
+        changed.add("arm_cmd_state")
+    if area.ee_timer is not None:
+        area.ee_timer = None
+        changed.add("ee_timer")
+
+
+def apply_area_exit_delay_clearing_rules(
+    area: AreaState, payload: Mapping[str, Any], changed: set[str]
+) -> None:
+    """
+    Drop stale exit-delay fields after applying an area status/arm payload.
+
+    Shared by get_status, set_status, and set_arm_state reconcile paths (PR #29).
+    """
+    arm_state_in_payload = "arm_state" in payload
+    arm_cmd_in_payload = "arm_cmd_state" in payload
+    raw_arm_state = payload.get("arm_state")
+    arm_state_applied = isinstance(raw_arm_state, str)
+
+    should_clear = False
+    if arm_state_in_payload and arm_state_applied and not arm_cmd_in_payload:
+        should_clear = True
+    if not _is_disarmed_arm_state(area.arm_state):
+        should_clear = True
+
+    if should_clear:
+        _clear_area_exit_delay_pending(area, changed)
+
+
+def clear_all_area_exit_delay_pending(state: PanelState) -> None:
+    """Clear exit-delay pending fields on every area (reconnect / snapshot reset)."""
+    for area in state.areas.values():
+        changed: set[str] = set()
+        _clear_area_exit_delay_pending(area, changed)
+
+
 def _reconcile_area_state(
     state: PanelState, payload: Mapping[str, Any], *, now: float, _source: str
 ) -> _AreaOutcome:
@@ -140,7 +187,9 @@ def _reconcile_area_state(
 
     v0 semantics:
     - Requires payload["area_id"] (int >= 1); otherwise returns warnings and no state changes.
-    - Patch-style: only fields present in payload are applied; absent fields are not cleared.
+    - Patch-style: only fields present in payload are applied; absent fields are
+      not cleared except exit-delay pending fields via
+      apply_area_exit_delay_clearing_rules().
     - Strict typing: if a field type mismatches, ignore it and add a warning.
     - Always updates timestamps when area_id is valid:
         - state.panel.last_message_at
@@ -177,6 +226,8 @@ def _reconcile_area_state(
         if old != value:
             setattr(area, attr, value)
             changed.add(attr)
+
+    apply_area_exit_delay_clearing_rules(area, payload, changed)
 
     # timestamps (monotonic)
     area.last_update_at = now

@@ -66,6 +66,7 @@ from .events import (
     Event,
     stamp_event,
 )
+from .handlers.area import clear_all_area_exit_delay_pending
 from .outbound import OutboundPriority
 from .pending import PendingResponseManager
 from .states import PanelState
@@ -595,6 +596,7 @@ class E27Kernel:
         self.state.table_info_by_domain.clear()
         self.state.table_info_known.clear()
         self.state.bootstrap_counts_ready = False
+        clear_all_area_exit_delay_pending(self.state)
         self._reset_inventory_state()
         for domain in ("area", "zone", "output", "light", "barrier", "lock", "tstat"):
             self.state.table_info_by_domain.setdefault(

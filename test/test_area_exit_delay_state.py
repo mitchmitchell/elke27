@@ -1,7 +1,16 @@
 from __future__ import annotations
 
+import asyncio
+from typing import Any
+
+import pytest
+
+from elke27_lib import linking
+from elke27_lib import session as session_mod
 from elke27_lib.client import Elke27Client
 from elke27_lib.const import E27ErrorCode
+from elke27_lib.events import ConnectionStateChanged
+from elke27_lib.handlers import area as area_handler
 from elke27_lib.handlers.area import make_area_get_status_handler, make_area_set_status_handler
 from elke27_lib.kernel import E27Kernel
 from elke27_lib.states import AreaState, PanelState
@@ -31,13 +40,13 @@ def _base_status_payload(**overrides: object) -> dict[str, object]:
         "alarms": [],
         "alarm_mem": [],
         "zones_bypassed": 0,
-        "arm_cmd_state": "DISARMED",
+        "arm_cmd_state": "ARMED_AWAY",
         "troubles": [],
         "chime_count": 0,
         "Chime": False,
         "xzn_id": 0,
         "xzn_time": 0,
-        "ee_timer": 0,
+        "ee_timer": 45,
         "alrm_snd": False,
         "auto_arm_timer": 0,
         "error_code": E27ErrorCode.ELKERR_NONE,
@@ -46,34 +55,32 @@ def _base_status_payload(**overrides: object) -> dict[str, object]:
     return payload
 
 
+def _snapshot_for(area: AreaState):
+    client = Elke27Client(kernel=E27Kernel())
+    client._kernel.state.areas[area.area_id] = area
+    return client._build_area_map()[area.area_id]
+
+
 def test_exit_delay_payload_updates_internal_and_public_snapshot() -> None:
     state = PanelState()
     handler = _status_handler(state)
-    msg = {
-        "area": {
-            "get_status": _base_status_payload(
-                arm_state="DISARMED",
-                arm_cmd_state="ARMED_AWAY",
-                ee_timer=45,
-            )
-        }
-    }
+    msg = {"area": {"get_status": _base_status_payload()}}
     assert handler(msg, make_ctx()) is True
     area = state.areas[1]
     assert area.arm_state == "DISARMED"
     assert area.arm_cmd_state == "ARMED_AWAY"
     assert area.ee_timer == 45
+    assert area.alarm_zone == ""
 
-    client = Elke27Client(kernel=E27Kernel())
-    client._kernel.state.areas[1] = area
-    snapshot_area = client._build_area_map()[1]
+    snapshot_area = _snapshot_for(area)
     assert snapshot_area.arm_mode is ArmMode.DISARMED
     assert snapshot_area.arm_cmd_mode is ArmMode.ARMED_AWAY
     assert snapshot_area.ee_timer == 45
+    assert snapshot_area.alarm_zone == ""
     assert snapshot_area.arming is True
 
 
-def test_fully_armed_payload_arm_cmd_matches() -> None:
+def test_fully_armed_payload_clears_exit_delay_pending_fields() -> None:
     state = PanelState()
     handler = _status_handler(state)
     msg = {
@@ -88,15 +95,13 @@ def test_fully_armed_payload_arm_cmd_matches() -> None:
     assert handler(msg, make_ctx()) is True
     area = state.areas[1]
     assert area.arm_state == "ARMED_STAY"
-    assert area.arm_cmd_state == "ARMED_STAY"
-    assert area.ee_timer == 0
+    assert area.arm_cmd_state is None
+    assert area.ee_timer is None
 
-    client = Elke27Client(kernel=E27Kernel())
-    client._kernel.state.areas[1] = area
-    snapshot_area = client._build_area_map()[1]
+    snapshot_area = _snapshot_for(area)
     assert snapshot_area.arm_mode is ArmMode.ARMED_STAY
-    assert snapshot_area.arm_cmd_mode is ArmMode.ARMED_STAY
-    assert snapshot_area.ee_timer == 0
+    assert snapshot_area.arm_cmd_mode is None
+    assert snapshot_area.ee_timer is None
     assert snapshot_area.arming is False
 
 
@@ -118,12 +123,115 @@ def test_missing_exit_delay_fields_remain_none() -> None:
     assert area.arm_cmd_state is None
     assert area.ee_timer is None
 
-    client = Elke27Client(kernel=E27Kernel())
-    client._kernel.state.areas[1] = area
-    snapshot_area = client._build_area_map()[1]
+    snapshot_area = _snapshot_for(area)
     assert snapshot_area.arm_cmd_mode is None
     assert snapshot_area.ee_timer is None
     assert snapshot_area.arming is False
+
+
+def test_disarm_reply_without_arm_cmd_clears_stale_exit_delay() -> None:
+    state = PanelState()
+    state.areas[1] = AreaState(
+        area_id=1,
+        arm_state="DISARMED",
+        arm_cmd_state="ARMED_AWAY",
+        ee_timer=12,
+        alarm_zone="",
+    )
+    handler = _status_handler(state)
+    msg = {
+        "area": {
+            "get_status": {
+                "area_id": 1,
+                "arm_state": "DISARMED",
+                "error_code": E27ErrorCode.ELKERR_NONE,
+            }
+        }
+    }
+    assert handler(msg, make_ctx()) is True
+    area = state.areas[1]
+    assert area.arm_cmd_state is None
+    assert area.ee_timer is None
+    assert _snapshot_for(area).arming is False
+
+
+def test_set_arm_state_shaped_payload_clears_when_armed() -> None:
+    state = PanelState()
+    state.areas[1] = AreaState(
+        area_id=1,
+        arm_state="DISARMED",
+        arm_cmd_state="ARMED_AWAY",
+        ee_timer=20,
+    )
+    area_handler._reconcile_area_state(
+        state,
+        {
+            "area_id": 1,
+            "arm_state": "ARMED_AWAY",
+            "error_code": E27ErrorCode.ELKERR_NONE,
+        },
+        now=1.0,
+        _source="set_arm_state",
+    )
+    area = state.areas[1]
+    assert area.arm_state == "ARMED_AWAY"
+    assert area.arm_cmd_state is None
+    assert area.ee_timer is None
+
+
+def test_set_arm_state_shaped_disarm_reply_via_reconcile() -> None:
+    state = PanelState()
+    state.areas[1] = AreaState(
+        area_id=1,
+        arm_state="DISARMED",
+        arm_cmd_state="ARMED_STAY",
+        ee_timer=8,
+    )
+    handler = _status_handler(state)
+    msg = {
+        "area": {
+            "get_status": {
+                "area_id": 1,
+                "arm_state": "DISARMED",
+                "error_code": E27ErrorCode.ELKERR_NONE,
+            }
+        }
+    }
+    assert handler(msg, make_ctx()) is True
+    assert state.areas[1].arm_cmd_state is None
+    assert state.areas[1].ee_timer is None
+
+
+def test_ee_timer_zero_not_arming() -> None:
+    state = PanelState()
+    handler = _status_handler(state)
+    msg = {
+        "area": {
+            "get_status": _base_status_payload(
+                arm_cmd_state="ARMED_AWAY",
+                ee_timer=0,
+            )
+        }
+    }
+    assert handler(msg, make_ctx()) is True
+    assert _snapshot_for(state.areas[1]).arming is False
+
+
+def test_non_empty_alarm_zone_not_arming() -> None:
+    state = PanelState()
+    handler = _status_handler(state)
+    msg = {
+        "area": {
+            "get_status": _base_status_payload(
+                alarm_zone="3",
+                ee_timer=30,
+            )
+        }
+    }
+    assert handler(msg, make_ctx()) is True
+    area = state.areas[1]
+    assert area.alarm_zone == "3"
+    assert _snapshot_for(area).arming is False
 
 
 def test_set_status_route_applies_exit_delay_fields() -> None:
@@ -136,6 +244,7 @@ def test_set_status_route_applies_exit_delay_fields() -> None:
                 "arm_state": "DISARMED",
                 "arm_cmd_state": "ARMED_STAY",
                 "ee_timer": 30,
+                "alarm_zone": "",
                 "error_code": E27ErrorCode.ELKERR_NONE,
             }
         }
@@ -144,6 +253,7 @@ def test_set_status_route_applies_exit_delay_fields() -> None:
     area = state.areas[1]
     assert area.arm_cmd_state == "ARMED_STAY"
     assert area.ee_timer == 30
+    assert _snapshot_for(area).arming is True
 
 
 def test_invalid_exit_delay_field_types_are_ignored() -> None:
@@ -161,8 +271,81 @@ def test_invalid_exit_delay_field_types_are_ignored() -> None:
             }
         }
     }
-    outcome = handler(msg, make_ctx())
-    assert outcome is True
+    assert handler(msg, make_ctx()) is True
     area = state.areas[1]
     assert area.arm_cmd_state is None
     assert area.ee_timer is None
+
+
+@pytest.mark.asyncio
+async def test_reconnect_clears_exit_delay_pending_on_kernel_connect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    kernel = E27Kernel()
+    kernel.state.areas[1] = AreaState(
+        area_id=1,
+        arm_cmd_state="ARMED_AWAY",
+        ee_timer=15,
+    )
+    monkeypatch.setattr(kernel, "load_features_blocking", lambda _modules=None: None)
+
+    async def _to_thread(fn, *a, **k):  # type: ignore[no-untyped-def]
+        return fn(*a, **k)
+
+    monkeypatch.setattr(asyncio, "to_thread", _to_thread)
+
+    class _SessionOk:
+        def __init__(self, cfg, client_identity, link_key_hex) -> None:  # type: ignore[no-untyped-def]
+            _ = cfg, client_identity, link_key_hex
+            self.state = session_mod.SessionState.ACTIVE
+            self.info = session_mod.SessionInfo(
+                session_id=11, session_key_hex="00", session_hmac_hex="11"
+            )
+
+        def connect(self) -> session_mod.SessionInfo:
+            return self.info
+
+        def enable_outbound_queue(self, **_kwargs: object) -> None:
+            return None
+
+        def start_auto_receive(self) -> None:
+            return None
+
+    monkeypatch.setattr(session_mod, "Session", _SessionOk)
+    monkeypatch.setattr(kernel, "_bootstrap_requests", lambda: None)
+    monkeypatch.setattr(kernel, "_start_keepalive", lambda: None)
+
+    await kernel.connect(
+        linking.E27LinkKeys("aa", "bb", "cc"),
+        panel={"host": "h", "port": 1},
+        client_identity=linking.E27Identity("mn", "sn", "fw", "hw", "os"),
+        session_config=session_mod.SessionConfig(host="h", port=1),
+    )
+    assert kernel.state.areas[1].arm_cmd_state is None
+    assert kernel.state.areas[1].ee_timer is None
+
+
+def _event_base(kind: str) -> dict[str, Any]:
+    return dict(
+        kind=kind,
+        at=0.0,
+        seq=None,
+        classification="LOCAL",
+        route=("__local__", kind),
+        session_id=1,
+    )
+
+
+def test_disconnect_snapshot_reset_clears_exit_delay_pending() -> None:
+    kernel = E27Kernel()
+    kernel.state.areas[1] = AreaState(
+        area_id=1,
+        arm_cmd_state="ARMED_STAY",
+        ee_timer=9,
+    )
+    client = Elke27Client(kernel=kernel)
+    client._handle_kernel_event(
+        ConnectionStateChanged(**_event_base(ConnectionStateChanged.KIND), connected=False)
+    )
+    assert kernel.state.areas[1].arm_cmd_state is None
+    assert kernel.state.areas[1].ee_timer is None

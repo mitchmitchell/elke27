@@ -57,8 +57,12 @@ a breaking change.
 - `areas`
   - Each area snapshot includes `arm_mode` (current `arm_state`), optional
     `arm_cmd_mode` (`arm_cmd_state` while arming), optional `ee_timer` (exit
-    delay seconds when reported), and `arming` (`True` when `arm_mode` is
-    disarmed and `arm_cmd_mode` is an armed mode during exit delay).
+    delay seconds when reported), optional `alarm_zone`, and `arming` (`True`
+    only when `arm_mode` is disarmed, `arm_cmd_mode` is away/stay, `ee_timer`
+    > 0, and `alarm_zone` is empty). Pending exit-delay fields are cleared when
+    status payloads omit `arm_cmd_state` but include `arm_state`, when
+    `arm_state` is not disarmed, and when the session reconnects or the client
+    resets bootstrap snapshot state.
 - `zones`
 - `outputs`
 - `lights`

@@ -107,10 +107,13 @@ The library exposes read-only accessors for:
 - panel_info
 - table_info / capabilities
 - areas
-  - Area snapshots surface `arm_mode`, optional `arm_cmd_mode` and `ee_timer`
-    from `area.get_status` / status broadcasts (exit delay: disarmed
-    `arm_state` with armed `arm_cmd_state` and countdown `ee_timer`), plus
-    derived `arming` for pending arm commands.
+  - Area snapshots surface `arm_mode`, optional `arm_cmd_mode`, `ee_timer`, and
+    `alarm_zone` from `area.get_status` / status broadcasts. `arming` is `True`
+    only during an active exit delay (disarmed `arm_state`, away/stay
+    `arm_cmd_state`, `ee_timer` > 0, empty `alarm_zone`). The library clears
+    stale `arm_cmd_state` / `ee_timer` when a payload includes `arm_state`
+    without `arm_cmd_state`, when the area is not disarmed, and on reconnect /
+    client snapshot reset so HA never treats a prior exit delay as still pending.
 - zones
 - outputs
 - lights
