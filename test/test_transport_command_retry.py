@@ -338,6 +338,31 @@ async def test_kernel_close_cancels_retry_timers_and_queues() -> None:
 
 
 @pytest.mark.asyncio
+async def test_async_execute_timeout_retry_then_success() -> None:
+    session = _FakeSession()
+    client = _make_client(session, max_retries=1)
+    kernel = get_kernel(client)
+    cast(Any, kernel)._request_timeout_s = 0.02
+    cast(Any, kernel)._request_max_backoff_s = 0.0
+
+    task = asyncio.create_task(client.async_execute("zone_get_status", zone_id=1))
+    for _ in range(20):
+        if session.sent or task.done():
+            break
+        await asyncio.sleep(0)
+    seq = session.sent[0]["seq"]
+    on_reply_timeout = get_private(kernel, "_on_reply_timeout")
+    on_reply_timeout(seq)
+    await asyncio.sleep(0)
+    assert len(session.sent) == 2
+    assert session.sent[0]["seq"] == session.sent[1]["seq"]
+    on_message = get_private(kernel, "_on_message")
+    on_message({"seq": seq, "zone": {"get_status": {"zone_id": 1, "status": "OK"}}})
+    result = await asyncio.wait_for(task, timeout=0.5)
+    assert result.ok
+
+
+@pytest.mark.asyncio
 async def test_async_execute_waits_for_kernel_disarm_transport_retry() -> None:
     session = _FakeSession()
     client = _make_client(session, max_retries=1)

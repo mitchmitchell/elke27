@@ -4,8 +4,10 @@
     the existing `request_max_retries` / `request_max_backoff_s` kernel settings
     (#12). Retries apply to reply timeouts and send failures while the session
     stays up, and to panel busy (`ELKERR_ZWAVE_BUSY`, 11039) on `async_execute`.
-    Session loss fails queued and in-flight commands immediately (no stale resend
-    after reconnect). Each command gets an absolute deadline; `async_execute`
+    Session loss fails queued and in-flight commands immediately for every command
+    (reads included), surfaces as `Elke27DisconnectedError` on v2 exception paths,
+    and is never automatically resent after reconnect. Each command gets an
+    absolute deadline; `async_execute`
     waits for the full transport budget (~16.5 s with defaults: `(retries+1) ×
     5 s timeout + 0.5 s + 1 s backoff`) and cancels kernel retries if the
     caller times out. Transport retries reuse the same JSON `seq` on resend.

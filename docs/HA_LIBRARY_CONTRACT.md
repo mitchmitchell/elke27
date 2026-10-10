@@ -165,8 +165,11 @@ The library returns:
 
 Home Assistant:
 - does not retry mutating commands automatically
-- may retry read-only commands
+- may retry read-only commands after explicit integration policy
 - maps typed failures to HA UX (errors, reauth flows, service errors)
+- when the session is lost during a command, the library fails that command
+  immediately (reads included), raises `Elke27DisconnectedError`, and never
+  resends it after reconnect; HA decides whether to retry
 
 
 8. Error Semantics

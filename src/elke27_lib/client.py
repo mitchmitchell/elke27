@@ -757,6 +757,16 @@ class Elke27Client:
     def _command_transport_wait_budget_s(self, per_attempt_timeout_s: float) -> float:
         return self._kernel.command_transport_wait_budget_s(per_attempt_timeout_s)
 
+    @staticmethod
+    def _asyncio_cancellation_pending() -> bool:
+        task = asyncio.current_task()
+        if task is None:
+            return False
+        cancelling = getattr(task, "cancelling", None)
+        if callable(cancelling):
+            return bool(cancelling())
+        return False
+
     async def _await_kernel_command_response(
         self,
         *,
@@ -766,19 +776,20 @@ class Elke27Client:
         future: asyncio.Future[Mapping[str, Any]],
         per_attempt_timeout_s: float,
     ) -> Result[Mapping[str, Any]]:
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + self._command_transport_wait_budget_s(per_attempt_timeout_s)
-
-        def _remaining_s() -> float:
-            return max(0.0, deadline - loop.time())
-
+        budget_s = self._command_transport_wait_budget_s(per_attempt_timeout_s)
         try:
-            await asyncio.wait_for(sent_event.wait(), timeout=_remaining_s())
-            msg = await asyncio.wait_for(future, timeout=_remaining_s())
-        except TimeoutError:
-            timeout_exc = E27Timeout(f"async_execute timeout waiting for {command_key} seq={seq}")
-            self._kernel.cancel_command_transport(seq, timeout_exc)
-            return _err(timeout_exc)
+            async with asyncio.timeout(budget_s):
+                await sent_event.wait()
+                msg = await future
+        except TimeoutError as timeout_exc:
+            if self._asyncio_cancellation_pending():
+                self._kernel.cancel_command_transport(
+                    seq, E27Timeout(f"async_execute cancelled for {command_key} seq={seq}")
+                )
+                raise asyncio.CancelledError() from timeout_exc
+            timeout_error = E27Timeout(f"async_execute timeout waiting for {command_key} seq={seq}")
+            self._kernel.cancel_command_transport(seq, timeout_error)
+            return _err(timeout_error)
         except asyncio.CancelledError:
             self._kernel.cancel_command_transport(
                 seq, E27Timeout(f"async_execute cancelled for {command_key} seq={seq}")
@@ -835,6 +846,8 @@ class Elke27Client:
             raise Elke27PermissionError("Permission denied for this operation.") from None
         if isinstance(err, (E27AuthFailed, InvalidPinError, InvalidCredentials)):
             raise Elke27AuthError("Authentication failed for this operation.") from None
+        if isinstance(err, ConnectionLost):
+            raise Elke27DisconnectedError("Panel connection lost during command.") from None
         if isinstance(err, (E27Timeout, E27TransportError, TimeoutError, asyncio.TimeoutError)):
             raise Elke27TimeoutError("Operation timed out.") from None
         if isinstance(err, E27NotReady):
