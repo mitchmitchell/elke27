@@ -1,5 +1,18 @@
   UNRELEASED
 
+  - Command transport failures are retried with bounded exponential backoff using
+    the existing `request_max_retries` / `request_max_backoff_s` kernel settings
+    (#12). Retries apply to reply timeouts, send failures, session disconnect
+    while a command is pending, and panel busy (`error_code` 11039) on
+    `async_execute`. Panel refusals (any other non-zero `error_code`, permission,
+    auth, or invalid argument) are never retried. Mutating commands where a
+    timeout may still have changed panel state (`area.set_arm_state` arming,
+    `zone.set_status`, `output.set_status`) are only retried when the outbound
+    frame was not confirmed sent; other routes may retry after a reply timeout.
+    Disarm uses high outbound priority, is requeued immediately on transport
+    retry (no backoff), and is not delayed behind other commands waiting to
+    retry.
+
   - Reconnect `async_connect` attempts while the panel is unreachable no longer
     log `Connect failed (attempt n/2)` at ERROR every few seconds (#21). After
     `Panel connection lost`, further transient failures log at DEBUG; the first
