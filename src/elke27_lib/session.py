@@ -319,7 +319,7 @@ class Session:
                     sent = 0
                     view = memoryview(data)
                     while sent < total:
-                        chunk = send_fn(view[sent:])
+                        chunk = cast(int, send_fn(view[sent:]))
                         if chunk == 0:
                             raise SessionIOError(
                                 f"Socket write stalled to {self.cfg.host}:{self.cfg.port} "
