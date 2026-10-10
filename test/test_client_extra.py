@@ -17,6 +17,7 @@ from elke27_lib.errors import (
     E27AuthFailed,
     E27Error,
     E27ErrorContext,
+    E27HelloTimeout,
     E27LinkInvalid,
     E27NotReady,
     E27ProtocolError,
@@ -1185,7 +1186,7 @@ async def test_async_connect_hello_timeout_then_success(
     async def _connect(*_a: Any, **_k: Any) -> None:
         attempts["count"] += 1
         if attempts["count"] == 1:
-            hello_timeout = E27ProtocolError(
+            hello_timeout = E27HelloTimeout(
                 "Hello response not found in cleartext JSON stream.",
                 context=E27ErrorContext(phase="hello_recv"),
             )
@@ -1204,6 +1205,32 @@ async def test_async_connect_hello_timeout_then_success(
     connect_msgs = _connect_fail_msgs(caplog)
     assert connect_msgs == [(logging.DEBUG, connect_msgs[0][1])]
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+@pytest.mark.asyncio
+async def test_async_connect_malformed_hello_single_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = Elke27Client(kernel=E27Kernel())
+    attempts = {"count": 0}
+
+    async def _connect(*_a: Any, **_k: Any) -> None:
+        attempts["count"] += 1
+        malformed = E27ProtocolError(
+            "Hello response not found in cleartext JSON stream.",
+            context=E27ErrorContext(phase="hello_recv"),
+        )
+        hello_failed = SessionProtocolError(
+            "HELLO failed for h:1: Hello response not found in cleartext JSON stream."
+        )
+        hello_failed.__cause__ = malformed
+        raise KernelError("Session connect failed") from hello_failed
+
+    monkeypatch.setattr(client._kernel, "connect", _connect)
+    keys = LinkKeys("aa", "bb", "cc")
+    with pytest.raises(Elke27ProtocolErrorV2):
+        await client.async_connect("h", 1, keys)
+    assert attempts["count"] == 1
 
 
 @pytest.mark.asyncio

@@ -685,19 +685,8 @@ class Elke27Client:
 
         raise Elke27ProtocolErrorV2("Operation failed.") from None
 
-    @staticmethod
-    def _is_hello_connect_timeout_error(err: E27ProtocolError) -> bool:
-        context = err.context
-        if context is None or context.phase != "hello_recv":
-            return False
-        return "Hello response not found" in str(err)
-
     def _is_transient_connect_error(self, exc: BaseException) -> bool:
         for err in _iter_causes(exc):
-            if isinstance(err, E27ProtocolError):
-                if self._is_hello_connect_timeout_error(err):
-                    return True
-                return False
             if isinstance(
                 err,
                 (
@@ -710,6 +699,7 @@ class Elke27Client:
                     E27LinkInvalid,
                     InvalidLinkKeys,
                     CryptoError,
+                    E27ProtocolError,
                     E27MissingContext,
                     KernelInvalidPanelError,
                     KernelNotLinkedError,
