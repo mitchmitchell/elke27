@@ -9,6 +9,16 @@ import pytest
 
 from elke27_lib.client import ArmMode, Elke27Client, Result
 from elke27_lib.const import E27ErrorCode
+from elke27_lib.events import (
+    UNSET_AT,
+    UNSET_CLASSIFICATION,
+    UNSET_ROUTE,
+    UNSET_SEQ,
+    UNSET_SESSION_ID,
+    AreaStatusUpdated,
+    PanelAttribsUpdated,
+)
+from elke27_lib.types import EventType, PanelInfo
 from test.helpers.fake_panel_replies import synthetic_success_reply
 from test.helpers.internal import get_kernel, get_private
 from test.test_panel_errors_ready_night import _FakeSession, _make_client
@@ -211,3 +221,62 @@ async def test_arm_ok_when_status_read_returns_panel_error() -> None:
     assert result.ok is True
     assert result.status_refresh_ok is False
     assert client.snapshot.stale is True
+
+
+def test_unrelated_snapshot_update_preserves_stale_flag() -> None:
+    client = Elke27Client()
+    client._replace_snapshot(panel_info=PanelInfo(model="M1"))
+    client._mark_snapshot_stale()
+    assert client.snapshot.stale is True
+
+    client._handle_kernel_event(
+        PanelAttribsUpdated(
+            kind=PanelAttribsUpdated.KIND,
+            at=UNSET_AT,
+            seq=UNSET_SEQ,
+            classification=UNSET_CLASSIFICATION,
+            route=UNSET_ROUTE,
+            session_id=UNSET_SESSION_ID,
+            changed_fields=("panel_name",),
+        )
+    )
+
+    assert client.snapshot.stale is True
+
+
+def test_mark_snapshot_stale_notifies_subscribers() -> None:
+    client = Elke27Client()
+    client._replace_snapshot(panel_info=PanelInfo(model="M1"))
+    seen: list[object] = []
+    client.subscribe(lambda evt: seen.append(evt))
+
+    client._mark_snapshot_stale()
+
+    assert len(seen) == 1
+    evt = seen[0]
+    assert getattr(evt, "event_type", None) == EventType.PANEL
+    assert getattr(evt, "data", {}).get("stale") is True
+
+
+def test_area_arm_status_reconciliation_clears_stale_flag() -> None:
+    client = Elke27Client()
+    kernel = get_kernel(client)
+    kernel.state.get_or_create_area(1).arm_state = "ARMED_AWAY"
+    client._replace_snapshot(areas=client._build_area_map())
+    client._mark_snapshot_stale()
+    assert client.snapshot.stale is True
+
+    client._handle_kernel_event(
+        AreaStatusUpdated(
+            kind=AreaStatusUpdated.KIND,
+            at=UNSET_AT,
+            seq=UNSET_SEQ,
+            classification=UNSET_CLASSIFICATION,
+            route=UNSET_ROUTE,
+            session_id=UNSET_SESSION_ID,
+            area_id=1,
+            changed_fields=("arm_state",),
+        )
+    )
+
+    assert client.snapshot.stale is False

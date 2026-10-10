@@ -964,6 +964,38 @@ class Elke27Client:
                 )
         return types_mod.MappingProxyType(out)
 
+    @staticmethod
+    def _should_clear_snapshot_stale(evt: Event) -> bool:
+        if isinstance(evt, AreaStatusUpdated):
+            return bool(set(evt.changed_fields) & {"arm_state", "armed_state"})
+        if isinstance(evt, ZoneStatusUpdated):
+            return "bypassed" in evt.changed_fields
+        if isinstance(evt, ZonesStatusBulkUpdated):
+            return bool(evt.updated_ids)
+        return False
+
+    def _notify_snapshot_listeners(self) -> None:
+        snap = self._snapshot
+        timestamp = datetime.now(UTC)
+        v2_evt = Elke27Event(
+            event_type=EventType.PANEL,
+            data={"snapshot_version": snap.version, "stale": snap.stale},
+            seq=snap.version,
+            timestamp=timestamp,
+            raw_type="snapshot_updated",
+        )
+        self._enqueue_event(v2_evt)
+        with self._subscriber_lock:
+            callbacks = list(self._subscriber_callbacks)
+        for cb in callbacks:
+            try:
+                cb(v2_evt)
+            except Exception as exc:  # noqa: BLE001
+                exc_type = type(exc)
+                if exc_type not in self._subscriber_error_types:
+                    self._subscriber_error_types.add(exc_type)
+                    self._log.warning("Subscriber callback failed: %s", exc_type.__name__)
+
     def _replace_snapshot(
         self,
         *,
@@ -978,9 +1010,11 @@ class Elke27Client:
         barriers: Mapping[int, V2BarrierState] | None = None,
         locks: Mapping[int, V2LockState] | None = None,
         thermostats: Mapping[int, V2ThermostatState] | None = None,
+        stale: bool | None = None,
     ) -> None:
         self._snapshot_version += 1
         now = datetime.now(UTC)
+        stale_flag = self._snapshot.stale if stale is None else stale
         self._snapshot = PanelSnapshot(
             panel=panel_info or self._snapshot.panel,
             table_info=table_info or self._snapshot.table_info,
@@ -995,7 +1029,7 @@ class Elke27Client:
             thermostats=thermostats or self._snapshot.thermostats,
             version=self._snapshot_version,
             updated_at=now,
-            stale=False,
+            stale=stale_flag,
         )
         self._maybe_set_ready()
 
@@ -1021,6 +1055,7 @@ class Elke27Client:
             updated_at=now,
             stale=True,
         )
+        self._notify_snapshot_listeners()
 
     def _bootstrap_ready(self) -> bool:
         return all(self._inventory_ready.values()) and all(self._status_ready.values())
@@ -1529,6 +1564,9 @@ class Elke27Client:
             if evt.kind == AreaStatusUpdated.KIND and skip_snapshot_update:
                 self._maybe_set_ready()
             else:
+                stale_override: bool | None = (
+                    False if self._should_clear_snapshot_stale(evt) else None
+                )
                 self._replace_snapshot(
                     panel_info=self._build_panel_info(),
                     table_info=self._build_table_info(),
@@ -1541,6 +1579,7 @@ class Elke27Client:
                     barriers=self._build_barrier_map(),
                     locks=self._build_lock_map(),
                     thermostats=self._build_thermostat_map(),
+                    stale=stale_override,
                 )
         self._maybe_set_ready()
 
