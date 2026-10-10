@@ -6,6 +6,12 @@
     panel state when the command returns. The write still succeeds if that read
     fails; `Result.status_refresh_ok` is `False` and the snapshot is marked
     `stale` (#15).
+  - Behavior change: commands sent while not connected (no session / encryption
+    key) now raise `Elke27DisconnectedError` (transient) from v2 command helpers
+    instead of `Elke27PermissionError`. `ConnectionLost` during a command now
+    raises `Elke27DisconnectedError` instead of `Elke27TimeoutError`. Callers
+    that catch those errors for these cases must update (#13).
+
   - Reconnect `async_connect` attempts while the panel is unreachable no longer
     log `Connect failed (attempt n/2)` at ERROR every few seconds (#21). After
     `Panel connection lost`, further transient failures log at DEBUG; the first
