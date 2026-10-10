@@ -160,6 +160,9 @@ async def test_disconnected_commands_raise_disconnected_not_permission() -> None
     with pytest.raises(Elke27DisconnectedError):
         await client.async_set_zone_bypass(1, bypassed=True, pin="1234")
 
+    with pytest.raises(Elke27DisconnectedError):
+        await client.async_disarm_area(1, pin="1234")
+
     result = await client.async_execute("light_get_status", light_id=1)
     assert result.ok is False
     assert isinstance(result.error, NotAuthenticatedError)
