@@ -1,5 +1,43 @@
   UNRELEASED
 
+  - Area exit delay: `area.get_status` and periodic status broadcasts expose
+    `arm_cmd_state`, `ee_timer`, and `alarm_zone` during the arm exit countdown.
+    Public `arming` is `True` only when all four fields are present on the
+    snapshot, `alarm_zone == ""` exactly (missing/`None` is not empty),
+    `ee_timer` > 0, and the area is disarmed with a pending away/stay command.
+    Partial payloads clear any of the four exit-delay fields not included, except
+    an `ee_timer`-only tick after a complete four-field payload: accept when
+    `0 < new <= previous` (duplicates allowed), ignore when `new > previous`,
+    and clear when `new == 0`. A restarted exit timer requires a fresh full
+    four-field payload. Reconnect and client snapshot reset clear pending
+    exit-delay fields. A stay→away command change without a fresh full
+    `get_status` leaves `arming` false; consumers should treat exit-delay skip
+    logic only after a full four-field status read.
+
+  - HELLO: restore the socket read timeout after the short pre-HELLO probe;
+    `Session.connect()` reapplies `io_timeout_s` when HELLO finishes so the
+    receive pump keeps the configured cadence (#33). Pre-HELLO greeting bytes
+    log at DEBUG instead of WARNING.
+
+  - Session transport: serialize outbound `send()` with a send-only lock (recv
+    stays unlocked on its worker thread), enforce write deadlines with a
+    monotonic `io_write_timeout_s` without changing socket `settimeout` (so
+    read cadence stays at `io_timeout_s`), log partial sends, tear down the
+    session on kernel outbound `SessionIOError` (including no-reply sends), and
+    emit a single disconnect when both teardown and the recv thread observe a
+    dead socket (#8).
+
+  - Behavior change: commands sent while not connected (no session / encryption
+    key) now raise `Elke27DisconnectedError` (transient) from v2 command helpers
+    instead of `Elke27PermissionError`. `ConnectionLost` during a command now
+    raises `Elke27DisconnectedError` instead of `Elke27TimeoutError`. Callers
+    that catch those errors for these cases must update (#13).
+  - `async_connect` no longer retries panel auth or link refusals (wrong
+    credentials, invalid link keys, and related non-transient errors); those fail
+    on the first attempt (#14). Transport-class failures may still be retried
+    once. `asyncio.CancelledError` propagates instead of being swallowed during
+    connect. A transport failure that will be retried logs `Connect failed
+    (attempt 1/2)` at DEBUG only; the final attempt keeps the policy below.
   - Reconnect `async_connect` attempts while the panel is unreachable no longer
     log `Connect failed (attempt n/2)` at ERROR every few seconds (#21). After
     `Panel connection lost`, further transient failures log at DEBUG; the first
@@ -9,6 +47,14 @@
     after warned transient failures logs INFO (`Panel connection established
     after connect failures`); link restore still uses `Panel connection restored`.
     See ADR-0013 keepalive / connection logging notes.
+  - Connect error mapping: `E27Timeout` during connect now raises
+    `Elke27TimeoutError` (previously `Elke27ProtocolError`). `E27NotReady`
+    during connect now raises `Elke27ConnectionError`. Failures wrapped by the
+    kernel during connect now map to `Elke27ConnectionError`,
+    `Elke27TimeoutError`, `Elke27AuthError`, or `Elke27CryptoError` when the
+    underlying cause matches (previously `Elke27ProtocolError`).
+  - A HELLO deadline timeout is now retried as transient (`E27HelloTimeout`); a
+    malformed HELLO is still permanent.
 
   Fast Dead-Link Detection, Quieter Connection Logs, async_execute Panel Errors (0.3.11)
 
