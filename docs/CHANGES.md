@@ -23,11 +23,9 @@
   - Connection loss logs `Panel connection lost` once at WARNING (not the only
     message: `E27 reply timeout`, an in-flight request abort or an interrupted
     keepalive check may also log a WARNING, and each failed reconnect attempt logs
-    `Connect failed (attempt n/2)`: first transient failure at WARNING then DEBUG,
-    or DEBUG only after `Panel connection lost`; permanent or unrecognized connect
-    errors stay at ERROR with traceback (#21; list not exhaustive); restore logs at
-    INFO; a deliberate close/unload logs at DEBUG. `Session disconnect` and
-    `keepalive response missing` are INFO (#19, #20).
+    `Connect failed (attempt n/2)` at ERROR, #21; list not exhaustive); restore
+    logs at INFO; a deliberate close/unload logs at DEBUG. `Session disconnect`
+    and `keepalive response missing` are INFO (#19, #20).
 
   - `async_execute` now returns `Elke27PanelError` (with `panel_error_code`,
     `reason`, and a warning log) when the panel answers with a non-zero
