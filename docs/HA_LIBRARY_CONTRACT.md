@@ -107,6 +107,17 @@ The library exposes read-only accessors for:
 - panel_info
 - table_info / capabilities
 - areas
+  - Area snapshots surface `arm_mode`, optional `arm_cmd_mode`, `ee_timer`, and
+    `alarm_zone` from `area.get_status` / status broadcasts. `arming` is `True`
+    only when all four fields are present on the snapshot, `alarm_zone == ""`
+    (not missing), `ee_timer` > 0, disarmed, and pending away/stay. Partial
+    payloads clear absent exit-delay fields except `ee_timer`-only ticks after a
+    complete four-field read (`0 < new <= previous`, ignore out-of-order
+    increases, clear on zero; timer restarts need a full read). Reconnect /
+    snapshot reset clears
+    pending exit-delay state. Stay→away without a full status payload leaves
+    `arming` false; HA should run skip/entry logic only after a fresh full
+    `get_status`, not on partial broadcasts alone.
 - zones
 - outputs
 - lights

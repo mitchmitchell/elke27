@@ -132,7 +132,7 @@ from .events import (
     ZoneTableInfoUpdated,
 )
 from .generators.registry import COMMANDS, CommandSpec, MergeStrategy
-from .handlers.area import make_area_configured_merge
+from .handlers.area import clear_all_area_exit_delay_pending, make_area_configured_merge
 from .handlers.zone import make_zone_configured_merge
 from .kernel import (
     DiscoverResult,
@@ -834,6 +834,9 @@ class Elke27Client:
                 area_id=area_id,
                 name=area.name,
                 arm_mode=self._arm_mode_from_string(arm_value),
+                arm_cmd_mode=self._arm_mode_from_string(area.arm_cmd_state),
+                ee_timer=area.ee_timer,
+                alarm_zone=area.alarm_zone,
                 ready=_area_ready(area.ready, area.ready_status),
                 alarm_active=area.alarm_state is not None
                 and str(area.alarm_state).lower() != "no_alarm_active",
@@ -1012,10 +1015,13 @@ class Elke27Client:
         self._ready_event = asyncio.Event()
 
     def _reset_bootstrap_state(self) -> None:
+        clear_all_area_exit_delay_pending(self._kernel.state)
         self._inventory_ready = {"area": False, "zone": False, "output": False}
         self._status_pending = {"area": set(), "zone": set(), "output": set()}
         self._status_ready = {"area": False, "zone": False, "output": False}
         self._reset_ready_event()
+        if self._snapshot.version != 0:
+            self._replace_snapshot(areas=self._build_area_map())
 
     def _mark_inventory_ready(self, domain: str) -> None:
         if self._inventory_ready.get(domain):
