@@ -107,7 +107,7 @@ def _get_or_create_report_path(cfg: pytest.Config) -> pathlib.Path:
     cfg_any = cast(Any, cfg)
     p = getattr(cfg_any, "_e27_report_path", None)
     if p is None:
-        base_dir = pathlib.Path(cfg.getoption("--e27-artifacts-dir"))
+        base_dir = pathlib.Path(str(cfg.getoption("--e27-artifacts-dir")))
         #        artifacts_dir = base_dir / "test_runs"
         artifacts_dir = base_dir
         artifacts_dir.mkdir(parents=True, exist_ok=True)

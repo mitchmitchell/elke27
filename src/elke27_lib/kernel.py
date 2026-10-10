@@ -41,6 +41,11 @@ from typing import (
 )
 
 LOG = logging.getLogger(__name__)
+
+_CONNECT_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="e27-connect"
+)
+
 from . import discovery, linking
 from . import session as session_mod
 from .const import REDACT_DIAGNOSTICS
@@ -570,13 +575,8 @@ class E27Kernel:
         def _do_connect_sync() -> session_mod.SessionInfo:
             return s.connect()
 
-        loop = self._loop
-        assert loop is not None
-        if loop._default_executor is None:
-            loop.set_default_executor(concurrent.futures.ThreadPoolExecutor())
-        executor = loop._default_executor
-        assert executor is not None
-        connect_cf: concurrent.futures.Future[session_mod.SessionInfo] = executor.submit(
+        loop = asyncio.get_running_loop()
+        connect_cf: concurrent.futures.Future[session_mod.SessionInfo] = _CONNECT_EXECUTOR.submit(
             _do_connect_sync
         )
         try:
@@ -590,7 +590,10 @@ class E27Kernel:
                     with contextlib.suppress(Exception):
                         s.close()
 
-                loop.call_soon_threadsafe(_close)
+                try:
+                    loop.call_soon_threadsafe(_close)
+                except RuntimeError:
+                    s.close()
 
             connect_cf.add_done_callback(_close_after_connect)
             raise
