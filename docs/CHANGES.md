@@ -1,5 +1,13 @@
   UNRELEASED
 
+  - New public helper `async_discover_host(host, timeout=3.0)` (E1a, panel MAC
+    from discovery): sends a unicast `{"FIND":"ELKWCID"}` to the host's UDP 2362 on
+    its own socket, never touching a client session, and returns a
+    `DiscoveredPanel` (MAC_ADDR, IPV4_ADDR, ports, NAME, SERIAL) or `None` when no
+    valid reply arrives within the timeout or the host cannot be resolved.
+    `panel_mac` is normalized to 12 uppercase hex characters with no separators.
+    Also exported: `normalize_panel_mac(value)`.
+
   - HELLO errors (refs Tester hardware report 2026-10-13): a HELLO reply that
     carries `error_code` is checked before `session_id` is parsed. 11006
     (`invalid_id`: the client sn is not linked, or its link was revoked) and 11008

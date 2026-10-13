@@ -223,3 +223,12 @@ when the panel responds with error_code `11008` for auth-gated calls.
 
 - The library must not write files or store link keys on disk.
 - Persistence is Home Assistant's responsibility.
+
+
+## async_discover_host
+- `async_discover_host(host, timeout)` is a module-level helper, not a client
+  method. It must not open, close or alter any session.
+- Result: `DiscoveredPanel` with `panel_mac` as 12 uppercase hex (no separators)
+  or `None`; the whole result is `None` on timeout, resolution failure or socket
+  error. It never raises for network conditions; only invalid arguments raise
+  `Elke27InvalidArgument`.

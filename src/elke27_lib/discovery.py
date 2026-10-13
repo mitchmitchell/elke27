@@ -6,12 +6,16 @@ import asyncio
 import ctypes
 import json
 import logging
+import math
 import socket
 import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
+
+from .errors import Elke27InvalidArgument
+from .types import DiscoveredPanel
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -254,7 +258,7 @@ class AIOELKDiscovery:
         self,
         transport: asyncio.DatagramTransport,
         destinations: list[tuple[str, int]],
-        timeout: int,
+        timeout: float,
         found_all_future: asyncio.Future[bool],
     ) -> None:
         """Send the scans."""
@@ -282,7 +286,7 @@ class AIOELKDiscovery:
 
     async def async_scan(
         self,
-        timeout: int = 10,
+        timeout: float = 10,
         address: str | None = None,
         *,
         sock: socket.socket | None = None,
@@ -319,3 +323,74 @@ class AIOELKDiscovery:
 
         self.found_devices = list(response_list.values())
         return self.found_devices
+
+
+def normalize_panel_mac(value: object) -> str | None:
+    """Return a MAC as 12 uppercase hex characters with no separators, or None.
+
+    Accepts ``aa:bb:cc:dd:ee:ff``, ``AA-BB-CC-DD-EE-FF``, ``aabb.ccdd.eeff`` and
+    bare 12-hex forms. Anything else (wrong length, non-hex, all zeros) is None.
+    """
+    if not isinstance(value, str):
+        return None
+    cleaned = "".join(ch for ch in value.strip() if ch not in ":-. ").upper()
+    if len(cleaned) != 12 or any(ch not in "0123456789ABCDEF" for ch in cleaned):
+        return None
+    if cleaned == "000000000000":
+        return None
+    return cleaned
+
+
+async def async_discover_host(
+    host: str,
+    timeout: float = 3.0,
+    *,
+    socket_factory: Callable[[], socket.socket] | None = None,
+) -> DiscoveredPanel | None:
+    """Send a unicast discovery request to ``host`` and return its reply.
+
+    Uses its own UDP socket and never touches a client session, so it is safe
+    to call while connected. Returns ``None`` when no valid reply arrives within
+    ``timeout`` seconds or the host cannot be resolved. ``panel_mac`` in the
+    result is normalized to 12 uppercase hex characters (``None`` if invalid).
+    """
+    if not isinstance(host, str) or not host.strip():
+        raise Elke27InvalidArgument("host must be a non-empty string.")
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or not math.isfinite(timeout)
+        or timeout <= 0
+    ):
+        raise Elke27InvalidArgument("timeout must be a finite positive number.")
+    host = host.strip()
+    loop = asyncio.get_running_loop()
+    try:
+        infos = await loop.getaddrinfo(host, None, family=socket.AF_INET, type=socket.SOCK_DGRAM)
+        address = str(infos[0][4][0])
+    except (OSError, IndexError) as exc:
+        _LOGGER.debug("discover_host: cannot resolve %s: %s", host, exc)
+        return None
+
+    scanner = AIOELKDiscovery()
+    try:
+        found = await scanner.async_scan(
+            timeout=timeout,
+            address=address,
+            socket_factory=socket_factory,
+        )
+    except OSError as exc:
+        _LOGGER.debug("discover_host: %s failed: %s", host, exc)
+        return None
+    if not found:
+        return None
+    # Prefer the reply that names the requested address; fall back to the first.
+    system = next((s for s in found if s.panel_host == address), found[0])
+    return DiscoveredPanel(
+        host=system.panel_host or address,
+        port=int(system.port),
+        tls_port=int(system.tls_port) if system.tls_port else None,
+        panel_name=system.panel_name or None,
+        panel_serial=system.panel_serial or None,
+        panel_mac=normalize_panel_mac(system.panel_mac),
+    )

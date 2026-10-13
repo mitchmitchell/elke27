@@ -129,3 +129,16 @@ Lock control payload semantics follow the Dealer API:
 
 - `lock_set_status(..., status="ON")` locks
 - `lock_set_status(..., status="OFF")` unlocks
+
+
+## Unicast discovery of one host
+
+`elke27_lib.async_discover_host(host, timeout=3.0) -> DiscoveredPanel | None`
+
+Sends one unicast discovery request (resent within the timeout) to `host` on UDP
+2362 using its own socket. It never touches a client or session, so it is safe
+while connected. Returns `None` if no valid reply arrives or `host` cannot be
+resolved; raises `Elke27InvalidArgument` for an empty host or non-positive
+timeout. `panel_mac` is the discovery `MAC_ADDR` normalized by
+`normalize_panel_mac()` to 12 uppercase hex characters (`None` if invalid or all
+zeros). Discovery is the only source of the panel MAC.
