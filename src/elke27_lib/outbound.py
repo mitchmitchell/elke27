@@ -47,6 +47,7 @@ class OutboundQueue:
     _last_refill: float
     _sending: bool
     _current_seq: int | None
+    _current_cancelled: bool
 
     def __init__(
         self,
@@ -70,6 +71,7 @@ class OutboundQueue:
         self._last_refill = self._loop.time()
         self._sending = False
         self._current_seq = None
+        self._current_cancelled = False
 
     def start(self) -> None:
         if self._worker is None or self._worker.done():
@@ -115,8 +117,12 @@ class OutboundQueue:
         """Drop a queued frame before send. Returns True if removed from a queue."""
 
         def _cancel_on_loop() -> bool:
-            if self._current_seq == seq and self._sending:
-                return False
+            if self._current_seq == seq:
+                if self._sending:
+                    return False
+                # Dequeued but still throttling: mark it so _run skips the send.
+                self._current_cancelled = True
+                return True
             removed = False
             for queue in (self._high_q, self._normal_q):
                 kept: list[OutboundItem] = []
@@ -192,10 +198,20 @@ class OutboundQueue:
             item = await self._next_item()
             if item is None:
                 continue
-            await self._throttle()
-            self._sending = True
+            # Mark the item current before throttling so cancel_pending_seq can
+            # still find (and cancel) it during the throttle sleep.
             self._current_seq = item.seq
+            self._current_cancelled = False
             try:
+                await self._throttle()
+                if self._current_cancelled:
+                    self._log.debug(
+                        "Outbound send skipped (cancelled while throttling): seq=%s kind=%s",
+                        item.seq,
+                        item.kind,
+                    )
+                    continue
+                self._sending = True
                 await asyncio.to_thread(self._send_fn, item.payload)
                 sent_at = time.monotonic()
                 if item.on_sent is not None:
@@ -222,6 +238,7 @@ class OutboundQueue:
             finally:
                 self._sending = False
                 self._current_seq = None
+                self._current_cancelled = False
                 self._high_q.task_done() if item.priority is OutboundPriority.HIGH else self._normal_q.task_done()
 
     async def _next_item(self) -> OutboundItem | None:
