@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, cast
 
@@ -127,3 +128,124 @@ async def test_identity_cleared_when_connecting_to_a_different_panel(
     assert (panel.serial, panel.mac, panel.model, panel.firmware) == (None, None, None, None)
     snap = client.snapshot.panel
     assert (snap.serial, snap.mac, snap.model, snap.firmware) == (None, None, None, None)
+
+
+# --- Hardware RC report 2026-10-13: placeholder serial, real field mapping ---
+
+_HW_REPLY = {
+    "sn": "00000001",
+    "hw": 260,
+    "boot": 536,
+    "app": 1540,
+    "SSP": "2.6.1",
+    "BUILD_DATETIME": "2026/03/02,15:54:54",
+    "schema": 1,
+    "db1": "ELK 900 MHz",
+    "db1ver": [1795, 65545, 66151],
+    "error_code": 0,
+}
+
+
+def test_hardware_reply_maps_model_firmware_and_drops_placeholder_serial() -> None:
+    state, emitted = _run_handler(dict(_HW_REPLY))
+    assert state.panel.serial is None  # "00000001" is a factory placeholder
+    assert state.panel.mac is None  # MAC only comes from UDP discovery
+    assert state.panel.model == "260"
+    assert state.panel.firmware == "2.6.1"
+    changed = [e.changed_fields for e in emitted if hasattr(e, "changed_fields")]
+    assert changed == [("firmware", "model")]
+
+
+@pytest.mark.parametrize(
+    "sn", ["", "  ", "0", "00000000", "00000001", "1", "0001", "FFFFFFFF", "ffff"]
+)
+def test_placeholder_serials_stay_none(sn: str) -> None:
+    from elke27_lib.handlers.control import is_placeholder_serial
+
+    assert is_placeholder_serial(sn)
+    state, _ = _run_handler({"sn": sn, "error_code": 0})
+    assert state.panel.serial is None
+
+
+@pytest.mark.parametrize("sn", ["00000002", "1234ABCD", "A0000001", "10", "\u00b2", "9" * 5000])
+def test_real_serials_are_kept(sn: str) -> None:
+    state, _ = _run_handler({"sn": sn, "error_code": 0})
+    assert state.panel.serial == sn
+
+
+@pytest.mark.asyncio
+async def test_version_info_request_registers_reply_correlation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, requests = _client_with_fake_connect(monkeypatch)
+    await client.async_connect("h", 1, _KEYS)
+    kw = next(kw for r, kw in requests if r == ("control", "get_version_info"))
+    assert kw["pending"] is True
+    assert kw["expected_route"] == ("control", "get_version_info")
+
+
+def test_fire_and_forget_pending_reply_is_classified_response() -> None:
+    from types import SimpleNamespace
+
+    from elke27_lib.kernel import E27Kernel
+    from elke27_lib.session import SessionState
+
+    kernel = E27Kernel()
+    cast(Any, kernel)._session = SimpleNamespace(
+        state=SessionState.ACTIVE, send_json=lambda *_a, **_k: None
+    )
+    route = ("control", "get_version_info")
+    kernel._send_request_with_seq(
+        17, *route, {}, pending=True, opaque=None, expected_route=route, expects_reply=False
+    )
+    result = kernel.dispatcher.dispatch(
+        {"seq": 17, "session_id": 1, "control": {"get_version_info": dict(_HW_REPLY)}}
+    )
+    assert result.classification == "RESPONSE"
+
+
+def test_unicode_digit_serial_does_not_drop_reply() -> None:
+    state, _ = _run_handler({"sn": "\u00b2", "hw": 260, "SSP": "2.6.1", "error_code": 0})
+    assert state.panel.serial == "\u00b2"
+    assert (state.panel.model, state.panel.firmware) == ("260", "2.6.1")
+
+
+def test_fire_and_forget_correlation_is_dropped_on_close_and_connect() -> None:
+    from types import SimpleNamespace
+
+    from elke27_lib.kernel import E27Kernel
+    from elke27_lib.session import SessionState
+
+    kernel = E27Kernel()
+    cast(Any, kernel)._session = SimpleNamespace(
+        state=SessionState.ACTIVE, send_json=lambda *_a, **_k: None
+    )
+    route = ("control", "get_version_info")
+    kernel._send_request_with_seq(
+        17, *route, {}, pending=True, opaque=None, expected_route=route, expects_reply=False
+    )
+    assert kernel.dispatcher.pending_count() == 1
+    cast(Any, kernel)._session = None
+    asyncio.run(kernel.close())  # teardown (also runs at the start of every connect)
+    assert kernel.dispatcher.pending_count() == 0
+    # A later message reusing seq 17 is no longer read as our RESPONSE.
+    result = kernel.dispatcher.dispatch(
+        {"seq": 17, "session_id": 1, "control": {"get_version_info": dict(_HW_REPLY)}}
+    )
+    assert result.classification == "UNSOLICITED"
+
+
+@pytest.mark.asyncio
+async def test_connect_drops_stale_fire_and_forget_correlation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from elke27_lib.dispatcher import PendingRequest
+    from elke27_lib.kernel import E27Kernel, KernelMissingContextError
+
+    kernel = E27Kernel()
+    kernel.dispatcher.add_pending(PendingRequest(seq=5))
+    cast(Any, kernel)._fire_and_forget_pending_seqs.add(5)
+    monkeypatch.setattr(kernel, "load_features_blocking", lambda *_a: None)
+    with pytest.raises(KernelMissingContextError):
+        await kernel.connect(cast(Any, None))  # fails after the cleanup step
+    assert kernel.dispatcher.pending_count() == 0

@@ -1,5 +1,12 @@
   UNRELEASED
 
+  - Panel identity (E1 follow-up, refs #40): a placeholder serial from
+    `control.get_version_info` (empty, all zeros, `00000001`, all F) is ignored
+    and `PanelInfo.serial` stays `None`, so it is never used as an identity. On
+    hardware the panel reports `sn` "00000001". `model` comes from `hw` and
+    `firmware` from `SSP`; `mac` stays `None` (the MAC is only in UDP discovery).
+    The version-info reply is now classified RESPONSE, not UNSOLICITED.
+
   - Panel identity (E1): after HELLO, `async_connect` sends `control.get_version_info`
     (fire-and-forget: no reply wait, retry or queue slot). The reply fills `PanelSnapshot.panel` `serial`, `mac` (new on
     `PanelMetaState`), `model` and `firmware`. A send failure, an error reply or
