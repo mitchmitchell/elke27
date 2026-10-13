@@ -1,10 +1,12 @@
-  Command Reliability, Fresh Status After Arm/Bypass, Panel Identity (0.3.12)
+  UNRELEASED
 
   - Session: a receiver stopped by a deliberate close no longer reports a link
     loss when its blocked `recv` fails after the socket closes (refs #8). Before,
     it could log `Session disconnect: err=SessionIOError` with stale `rx_age`/`tx_age`
     and call `on_disconnected`, which could tear down a session that had already
     reconnected.
+
+  Command Reliability, Fresh Status After Arm/Bypass, Panel Identity (0.3.12)
 
   - Panel identity (E1 follow-up, refs #40): a placeholder serial from
     `control.get_version_info` (empty, all zeros, `00000001`, all F) is ignored
