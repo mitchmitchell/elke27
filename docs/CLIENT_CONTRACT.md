@@ -169,6 +169,14 @@ the command still succeeds; `async_execute` sets `Result.status_refresh_ok` to
   included); the library does not resend it after reconnect. V2 helpers surface
   this as `Elke27DisconnectedError`.
 - `ProtocolError` / `CryptoError`: framing/CRC/crypto/parse failure.
+- `Elke27CommandOutcomeUnknownError` (subclass of `Elke27TimeoutError`, `.route =
+  (domain, command)`): a write was confirmed sent (a real `on_sent`, not just a woken
+  waiter) but no reply arrived before the command deadline. The panel may have applied
+  it; re-read the entity. Reads (explicit `elke27_lib.command_kinds.READ_ONLY_ROUTES`)
+  and timeouts before the frame was sent stay plain `Elke27TimeoutError`.
+- Caller cancellation after a confirmed send: `asyncio.CancelledError` still
+  propagates (never replaced), with `Elke27CommandOutcomeUnknownError` as its
+  `__cause__`. Cancellation before the send is a plain `CancelledError`.
 
 ## Command transport retries (#12)
 
@@ -177,7 +185,7 @@ the command still succeeds; `async_execute` sets `Result.status_refresh_ok` to
 - After the frame is confirmed sent (`on_sent`), reply-timeout retries are
   allowlisted only: `get_*` read routes and disarm (`area.set_arm_state` with
   `arm_state=DISARMED`). All other commands are at-most-once on reply timeout
-  (fail with `Elke27TimeoutError` / `E27Timeout`, no resend). Pre-send transport
+  (fail with `Elke27CommandOutcomeUnknownError`, no resend). Pre-send transport
   failures use the normal retry policy for every route.
 - Panel refusals and session loss are never retried; session loss fails fast for
   every pending command and is not resent after reconnect (`Elke27DisconnectedError`
