@@ -3,6 +3,7 @@
 import importlib
 from typing import Any
 
+from .discovery import async_discover_host, normalize_panel_mac
 from .errors import (
     Elke27AuthError,
     Elke27CommandOutcomeUnknownError,
@@ -95,4 +96,6 @@ __all__ = [
     "Elke27InvalidArgument",
     "Elke27Hub",
     "redact_for_diagnostics",
+    "async_discover_host",
+    "normalize_panel_mac",
 ]
