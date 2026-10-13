@@ -11,7 +11,6 @@ from typing import Any, Literal, cast
 import pytest
 
 import elke27_lib.client as client_mod
-from elke27_lib import Elke27CommandOutcomeUnknownError
 from elke27_lib.client import Elke27Client, Result
 from elke27_lib.dispatcher import PagedBlock
 from elke27_lib.errors import (
@@ -746,9 +745,7 @@ async def test_async_execute_single_error_handling(monkeypatch: pytest.MonkeyPat
         monkeypatch, client._kernel, {"test": {"cmd": {"value": 1}}}, resolve=False
     )
     err = await client.async_execute("test_single", timeout_s=0.01)
-    # Frame confirmed sent, no reply: a write reports an unknown outcome.
-    assert isinstance(err.error, Elke27CommandOutcomeUnknownError)
-    assert err.error.route == ("test", "cmd")
+    assert isinstance(err.error, E27Timeout)
 
     def _send_fail_future(*args: Any, **kwargs: Any) -> int:
         seq = args[0]

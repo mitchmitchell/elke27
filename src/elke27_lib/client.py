@@ -55,6 +55,7 @@ else:
 
 from . import discovery as discovery_mod
 from . import linking as linking_mod
+from .command_kinds import is_read_only_route
 from .const import E27ErrorCode as PanelErrorCode
 from .dispatcher import PagedBlock, RouteKey
 from .errors import (
@@ -818,7 +819,9 @@ class Elke27Client:
         def _outcome_unknown(reason: str) -> Elke27CommandOutcomeUnknownError | None:
             # Frame confirmed sent (on_sent fired) but no reply: the panel may have
             # applied it, so report "outcome unknown" rather than a plain timeout.
-            if route is None or not sent_event.is_set():
+            # sent_event is also set when a queued command is failed, so use the
+            # kernel's record of a real on_sent confirmation.
+            if route is None or not self._kernel.was_request_sent(seq):
                 return None
             return Elke27CommandOutcomeUnknownError(
                 route,
@@ -858,6 +861,8 @@ class Elke27Client:
                     return _err(outcome)
             detail = f"command_key={command_key} seq={seq}"
             return _err(self._normalize_error(exc, phase="execute", detail=detail))
+        finally:
+            self._kernel.forget_request_sent(seq)
 
         return _ok(msg)
 
@@ -2651,7 +2656,9 @@ class Elke27Client:
                     future=future,
                     per_attempt_timeout_s=timeout_value,
                     # Reads have no side effect, so only writes report an unknown outcome.
-                    route=None if spec.command.startswith("get_") else (spec.domain, spec.command),
+                    route=None
+                    if is_read_only_route(spec.domain, spec.command)
+                    else (spec.domain, spec.command),
                 )
                 if not wait_result.ok:
                     return wait_result
