@@ -36,7 +36,9 @@
     `get_*` read routes and `area.set_arm_state` with `arm_state=DISARMED` may
     retry on reply timeout; every other command (locks, lights, thermostats,
     barriers, other arm states, all `set_*` writes, system mutations, etc.) is
-    at-most-once and fails with the timeout without resend. Pre-send transport
+    at-most-once and fails without resend: writes with
+    `Elke27CommandOutcomeUnknownError` (#35), reads in `READ_ONLY_ROUTES` that are
+    not `get_*` with plain `Elke27TimeoutError`. Pre-send transport
     failures keep the normal retry policy. Disarm is
     always `OutboundPriority.HIGH`, is requeued immediately on transport retry
     (no backoff), and is not delayed behind other commands waiting to retry.
