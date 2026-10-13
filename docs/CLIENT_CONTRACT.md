@@ -174,7 +174,10 @@ the command still succeeds; `async_execute` sets `Result.status_refresh_ok` to
   linked or link revoked; 11008 `noauth`) raise `Elke27LinkRequiredError` with
   `.panel_error_code` / `.panel_error_message`, are not retried, and should start
   reauth (re-link). Any other code raises `Elke27ProtocolError` naming the code.
-  Both are logged at WARNING without a traceback.
+  The rejection is logged once at WARNING without a traceback. On the `Result`
+  API (`connect()`), a link rejection is returned as `E27HelloLinkRequired` (an
+  `E27ProvisioningRequired`, not `AuthorizationRequired`) with the same
+  `.panel_error_code` / `.panel_error_message`.
 - `Elke27CommandOutcomeUnknownError` (subclass of `Elke27TimeoutError`, `.route =
   (domain, command)`): a write was confirmed sent (a real `on_sent`, not just a woken
   waiter) but no reply arrived before the command deadline. The panel may have applied

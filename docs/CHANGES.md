@@ -7,7 +7,9 @@
     `panel_error_code` / `panel_error_message`) so callers start reauth instead of
     retrying. Other codes raise `Elke27ProtocolError` naming the code. Before, the
     reply surfaced as `Malformed hello response JSON: hello.session_id must be an
-    int…` with an ERROR traceback; it is now one WARNING line.
+    int…` with an ERROR traceback; it is now one WARNING line. The `Result`
+    `connect()` path returns `E27HelloLinkRequired` with the codes, not
+    `AuthorizationRequired`.
 
   - Session: a receiver stopped by a deliberate close no longer reports a link
     loss when its blocked `recv` fails after the socket closes (refs #8). Before,

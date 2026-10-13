@@ -763,8 +763,8 @@ class Elke27Client:
             if any(
                 isinstance(e, (E27HelloLinkRequired, E27HelloRejected)) for e in _iter_causes(exc)
             ):
-                # Expected panel rejection, already explained: no traceback.
-                self._log.warning(message, attempt, exc)
+                # Expected panel rejection, already logged at WARNING by hello.py.
+                self._log.debug(message, attempt, exc)
                 return
             self._log.error(message, attempt, exc, exc_info=True)
             return
@@ -3093,6 +3093,13 @@ class Elke27Client:
         detail: str | None = None,
     ) -> E27Error:
         context = self._error_context(phase=phase, detail=detail)
+
+        # Panel rejected HELLO (client sn not linked / link revoked): re-link, not
+        # authenticate. Checked across the whole cause chain first because the session
+        # wraps it in SessionProtocolError. Keeps panel_error_code / panel_error_message.
+        for err in _iter_causes(exc):
+            if isinstance(err, E27HelloLinkRequired):
+                return err
 
         for err in _iter_causes(exc):
             if isinstance(err, E27ProvisioningRequired):

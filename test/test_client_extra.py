@@ -1396,5 +1396,25 @@ def test_raise_v2_error_maps_hello_rejections(caplog: pytest.LogCaptureFixture) 
     caplog.set_level(logging.DEBUG)
     client._log_connect_attempt_failure(1, exc)
     recs = [r for r in caplog.records if "Connect failed" in r.getMessage()]
-    assert recs and all(r.levelname == "WARNING" and r.exc_info is None for r in recs)
+    assert recs and all(r.levelname == "DEBUG" and r.exc_info is None for r in recs)
     assert not client._is_retryable_connect_error(exc)
+
+
+def test_normalize_error_keeps_hello_link_rejection() -> None:
+    from elke27_lib.errors import AuthorizationRequired, E27HelloLinkRequired
+    from elke27_lib.session import SessionProtocolError
+
+    client = Elke27Client(kernel=E27Kernel())
+    try:
+        raise SessionProtocolError("HELLO failed") from E27HelloLinkRequired(11006, "invalid_id")
+    except SessionProtocolError as wrapped:
+        err = client._normalize_error(wrapped, phase="connect")
+    assert isinstance(err, E27HelloLinkRequired)
+    assert not isinstance(err, AuthorizationRequired)
+    assert err.panel_error_code == 11006
+    assert err.panel_error_message == "invalid_id"
+    # Plain missing-credentials provisioning still maps to AuthorizationRequired.
+    assert isinstance(
+        client._normalize_error(E27ProvisioningRequired("x"), phase="connect"),
+        AuthorizationRequired,
+    )
