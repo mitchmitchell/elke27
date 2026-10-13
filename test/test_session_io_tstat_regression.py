@@ -614,3 +614,46 @@ async def test_tstat_get_status_send_io_error_while_polling() -> None:
     kernel.request(("tstat", "get_status"), tstat_id=2)
     await asyncio.sleep(0.05)
     assert len(fake.disconnected) == 1
+
+
+@pytest.mark.parametrize("exc", [SessionIOError("Socket read failed: [Errno 9]"), OSError("boom")])
+def test_stopped_receiver_error_after_close_does_not_disconnect(exc: Exception) -> None:
+    """#8: a receiver stopped by a deliberate close must not report a link loss.
+
+    In the to_thread receiver mode close() only sets the stop event; the worker
+    is still blocked in recv. When the socket closes, recv fails after close()
+    has already reset ``_closing`` (or a reconnect reset ``_disconnect_handled``),
+    which used to log ``Session disconnect: err=SessionIOError`` with stale
+    rx/tx ages and fire ``on_disconnected`` against the (possibly new) session.
+    """
+    sess = Session(
+        SessionConfig(host="127.0.0.1", port=2101, io_timeout_s=0.01),
+        client_identity=_identity(),
+        link_key_hex="00" * 16,
+    )
+    sess.state = SessionState.ACTIVE
+    disconnected: list[Exception | None] = []
+    sess.on_disconnected = disconnected.append
+    stop_event = threading.Event()
+    entered = threading.Event()
+    release = threading.Event()
+
+    def _recv_json(*, timeout_s: float) -> Any:
+        entered.set()
+        release.wait(2.0)
+        raise exc
+
+    cast(Any, sess).recv_json = _recv_json
+    worker = threading.Thread(target=sess._recv_loop, args=(stop_event,), daemon=True)
+    worker.start()
+    assert entered.wait(1.0)
+
+    stop_event.set()  # deliberate close stopped this receiver
+    assert sess._closing is False  # close() already returned
+    assert sess._disconnect_handled is False  # e.g. reset by a reconnect
+    release.set()
+    worker.join(2.0)
+
+    assert not worker.is_alive()
+    assert disconnected == []
+    assert sess.state is SessionState.ACTIVE

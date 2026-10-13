@@ -813,12 +813,16 @@ class Session:
             except SessionNotReadyError:
                 break
             except (SessionIOError, SessionProtocolError) as e:
-                if self._is_disconnect_handled() or self._closing:
+                # stop_event: this receiver was stopped by a deliberate close (#8).
+                # Its blocked recv fails once the socket closes; that is not a link
+                # loss, and after close() resets _closing (or a reconnect resets
+                # _disconnect_handled) it must not tear down the session again.
+                if stop_event.is_set() or self._is_disconnect_handled() or self._closing:
                     break
                 self._handle_disconnect(e)
                 break
             except Exception as e:
-                if self._is_disconnect_handled() or self._closing:
+                if stop_event.is_set() or self._is_disconnect_handled() or self._closing:
                     break
                 self._handle_disconnect(e)
                 logger.warning("Session receive loop error: %s", e, exc_info=True)
