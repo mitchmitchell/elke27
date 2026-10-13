@@ -10,13 +10,17 @@ from typing import Any, cast
 import pytest
 
 from elke27_lib import Elke27PanelError
+from elke27_lib import session as session_mod
 from elke27_lib.client import ArmMode, Elke27Client
 from elke27_lib.const import E27ErrorCode
 from elke27_lib.errors import Elke27InvalidArgument
+from test.helpers.fake_panel_replies import synthetic_success_reply
 from test.helpers.internal import get_kernel, get_private
 
 
 class _FakeSession:
+    state = session_mod.SessionState.ACTIVE
+
     def __init__(self) -> None:
         self.sent: list[dict[str, Any]] = []
 
@@ -37,6 +41,7 @@ class _FakeSession:
 def _make_client() -> tuple[Elke27Client, _FakeSession]:
     client = Elke27Client()
     kernel = get_kernel(client)
+    kernel.load_features_blocking()
     session = _FakeSession()
     cast(Any, kernel)._session = session
     kernel.state.panel.session_id = 1
@@ -56,15 +61,18 @@ async def _run_async_execute(
     **params: Any,
 ) -> Any:
     task = asyncio.create_task(client.async_execute(command_key, **params))
-    for _ in range(20):
-        if session.sent or task.done():
-            break
-        await asyncio.sleep(0)
-    if task.done():
-        return await task
-    sent = session.sent[0]
     on_message = get_private(get_kernel(client), "_on_message")
-    on_message({"seq": sent["seq"], reply_domain: {reply_command: reply_payload}})
+    seen = 0
+    client._event_loop = asyncio.get_running_loop()
+    while not task.done():
+        await asyncio.sleep(0)
+        while seen < len(session.sent):
+            sent = session.sent[seen]
+            if seen == 0:
+                on_message({"seq": sent["seq"], reply_domain: {reply_command: reply_payload}})
+            else:
+                on_message(synthetic_success_reply(sent, sent_history=session.sent[:seen]))
+            seen += 1
     return await task
 
 

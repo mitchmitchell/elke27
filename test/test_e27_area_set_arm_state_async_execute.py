@@ -7,6 +7,7 @@ from typing import Any, cast
 import pytest
 from _pytest.monkeypatch import MonkeyPatch
 
+from elke27_lib import session as session_mod
 from elke27_lib.client import Elke27Client
 from elke27_lib.const import E27ErrorCode
 from elke27_lib.errors import (
@@ -16,10 +17,13 @@ from elke27_lib.errors import (
 )
 from elke27_lib.generators.registry import COMMANDS, CommandSpec
 from elke27_lib.permissions import PermissionLevel
+from test.helpers.fake_panel_replies import synthetic_success_reply
 from test.helpers.internal import get_kernel, get_private
 
 
 class _FakeSession:
+    state = session_mod.SessionState.ACTIVE
+
     def __init__(self) -> None:
         self.sent: list[dict[str, Any]] = []
 
@@ -39,6 +43,31 @@ class _FakeSession:
 
 def _set_session(kernel: object, session: _FakeSession) -> None:
     cast(Any, kernel)._session = session
+
+
+def _prepare_kernel(kernel: object) -> None:
+    cast(Any, kernel).load_features_blocking()
+
+
+async def _await_execute_replies(
+    client: Elke27Client,
+    kernel: object,
+    fake_session: _FakeSession,
+    task: asyncio.Task[Any],
+    *,
+    start_seen: int = 0,
+) -> Any:
+    _prepare_kernel(kernel)
+    client._event_loop = asyncio.get_running_loop()
+    on_message = get_private(kernel, "_on_message")
+    seen = start_seen
+    while not task.done():
+        await asyncio.sleep(0)
+        while seen < len(fake_session.sent):
+            sent = fake_session.sent[seen]
+            on_message(synthetic_success_reply(sent, sent_history=fake_session.sent[:seen]))
+            seen += 1
+    return await task
 
 
 @pytest.mark.asyncio
@@ -63,11 +92,7 @@ async def test_area_set_arm_state_payload_defaults() -> None:
         "exit_delay_cancel": False,
     }
 
-    on_message = get_private(kernel, "_on_message")
-    on_message(
-        {"seq": sent["seq"], "area": {"set_arm_state": {"error_code": E27ErrorCode.ELKERR_NONE}}}
-    )
-    result = await task
+    result = await _await_execute_replies(client, kernel, fake_session, task)
     assert result.ok is True
 
 
@@ -99,11 +124,7 @@ async def test_area_set_arm_state_payload_auto_stay_cancel_true() -> None:
         "exit_delay_cancel": False,
     }
 
-    on_message = get_private(kernel, "_on_message")
-    on_message(
-        {"seq": sent["seq"], "area": {"set_arm_state": {"error_code": E27ErrorCode.ELKERR_NONE}}}
-    )
-    result = await task
+    result = await _await_execute_replies(client, kernel, fake_session, task)
     assert result.ok is True
 
 
@@ -135,11 +156,7 @@ async def test_area_set_arm_state_payload_exit_delay_cancel_true() -> None:
         "exit_delay_cancel": True,
     }
 
-    on_message = get_private(kernel, "_on_message")
-    on_message(
-        {"seq": sent["seq"], "area": {"set_arm_state": {"error_code": E27ErrorCode.ELKERR_NONE}}}
-    )
-    result = await task
+    result = await _await_execute_replies(client, kernel, fake_session, task)
     assert result.ok is True
 
 
@@ -172,11 +189,7 @@ async def test_area_set_arm_state_payload_both_cancel_flags_true() -> None:
         "exit_delay_cancel": True,
     }
 
-    on_message = get_private(kernel, "_on_message")
-    on_message(
-        {"seq": sent["seq"], "area": {"set_arm_state": {"error_code": E27ErrorCode.ELKERR_NONE}}}
-    )
-    result = await task
+    result = await _await_execute_replies(client, kernel, fake_session, task)
     assert result.ok is True
 
 
@@ -269,6 +282,7 @@ async def test_area_set_arm_state_ack_vs_broadcast() -> None:
     kernel = get_kernel(client)
     fake_session = _FakeSession()
     _set_session(kernel, fake_session)
+    _prepare_kernel(kernel)
     kernel.state.panel.session_id = 1
 
     task = asyncio.create_task(
@@ -284,7 +298,6 @@ async def test_area_set_arm_state_ack_vs_broadcast() -> None:
     await asyncio.sleep(0)
     assert not task.done()
 
-    on_message = get_private(kernel, "_on_message")
     on_message({"seq": seq, "area": {"set_arm_state": {"error_code": E27ErrorCode.ELKERR_NONE}}})
-    result = await task
+    result = await _await_execute_replies(client, kernel, fake_session, task, start_seen=1)
     assert result.ok is True

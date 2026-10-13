@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 
+from elke27_lib.const import E27ErrorCode
 from elke27_lib.dispatcher import DispatchContext, PagedBlock
 from elke27_lib.events import (
     ApiError,
@@ -222,6 +223,38 @@ def test_area_get_configured_handler_and_merge() -> None:
         2,
     )
     assert merged["areas"] == [1, 2]
+
+
+def test_area_set_arm_state_handler() -> None:
+    state = PanelState()
+    emit = _EmitSpy()
+    set_arm = area_handler.make_area_set_arm_state_handler(state, emit, now=lambda: 6.5)
+
+    assert set_arm({"nope": {}}, make_ctx()) is False
+    assert set_arm({"area": {}}, make_ctx()) is False
+
+    emit.events.clear()
+    msg = {
+        "area": {
+            "set_arm_state": {
+                "area_id": 1,
+                "error_code": int(E27ErrorCode.ELKERR_INVALID_PIN),
+            }
+        }
+    }
+    assert set_arm(msg, make_ctx(classification="BROADCAST")) is True
+    assert _any_event(emit, ApiError)
+
+    emit.events.clear()
+    msg = {"area": {"set_arm_state": {"area_id": 0, "arm_state": "ARMED_AWAY"}}}
+    assert set_arm(msg, make_ctx()) is False
+    assert _any_event(emit, DispatchRoutingError)
+
+    emit.events.clear()
+    msg = {"area": {"set_arm_state": {"area_id": 1, "arm_state": "ARMED_AWAY"}}}
+    assert set_arm(msg, make_ctx()) is True
+    assert _any_event(emit, AreaStatusUpdated)
+    assert state.areas[1].arm_state == "ARMED_AWAY"
 
 
 def test_area_set_status_and_troubles() -> None:

@@ -1,5 +1,15 @@
   UNRELEASED
 
+  - After a successful `area_set_arm_state` or `zone_set_status`, the client issues
+    a follow-up `area_get_status` / `zone_get_status` (unless the command reply
+    already included confirmed arm or bypass fields) so `get_snapshot()` reflects
+    panel state when the command returns. The write still succeeds if that read
+    fails; `Result.status_refresh_ok` is `False` and the affected area or zone id
+    is tracked in `PanelSnapshot.stale_area_ids` / `stale_zone_ids` (with
+    `PanelSnapshot.stale` true when any id is stale). Arm/bypass helpers wait
+    for the touched entity's status event (not any snapshot version bump), within
+    the command timeout (#15).
+
   - Command transport failures are retried with bounded exponential backoff using
     the existing `request_max_retries` / `request_max_backoff_s` kernel settings
     (#12). Retries apply to reply timeouts and send failures while the session

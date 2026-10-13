@@ -11,7 +11,11 @@ from elke27_lib.client import Elke27Client
 from elke27_lib.const import E27ErrorCode
 from elke27_lib.events import AreaStatusUpdated, ConnectionStateChanged
 from elke27_lib.handlers import area as area_handler
-from elke27_lib.handlers.area import make_area_get_status_handler, make_area_set_status_handler
+from elke27_lib.handlers.area import (
+    make_area_get_status_handler,
+    make_area_set_arm_state_handler,
+    make_area_set_status_handler,
+)
 from elke27_lib.kernel import E27Kernel
 from elke27_lib.states import AreaState, PanelState
 from elke27_lib.types import ArmMode
@@ -205,6 +209,35 @@ def test_stale_alarm_zone_cleared_on_disarm_reply() -> None:
     }
     assert handler(msg, make_ctx()) is True
     assert state.areas[1].alarm_zone is None
+
+
+def test_set_arm_state_handler_applies_exit_delay_clearing_rules() -> None:
+    """PR #29 handler must reconcile via apply_area_exit_delay_clearing_rules (#32)."""
+    state = PanelState()
+    state.areas[1] = AreaState(
+        area_id=1,
+        arm_state="DISARMED",
+        arm_cmd_state="ARMED_AWAY",
+        ee_timer=20,
+        alarm_zone="",
+        exit_delay_payload_complete=True,
+    )
+    handler = make_area_set_arm_state_handler(state, _NoEmit(), now=lambda: 2.0)
+    msg = {
+        "area": {
+            "set_arm_state": {
+                "area_id": 1,
+                "arm_state": "ARMED_AWAY",
+                "error_code": E27ErrorCode.ELKERR_NONE,
+            }
+        }
+    }
+    assert handler(msg, make_ctx()) is True
+    area = state.areas[1]
+    assert area.arm_state == "ARMED_AWAY"
+    assert area.arm_cmd_state is None
+    assert area.ee_timer is None
+    assert area.alarm_zone is None
 
 
 def test_set_arm_state_shaped_payload_clears_when_armed() -> None:

@@ -900,7 +900,13 @@ async def test_disarm_uses_high_priority() -> None:
         await asyncio.sleep(0)
     sent = session.sent[0]
     on_message = get_private(get_kernel(client), "_on_message")
-    on_message({"seq": sent["seq"], "area": {"set_arm_state": {"area_id": 1, "error_code": 0}}})
+    # Reply confirms arm_state so #29 needs no follow-up area_get_status read.
+    on_message(
+        {
+            "seq": sent["seq"],
+            "area": {"set_arm_state": {"area_id": 1, "error_code": 0, "arm_state": "DISARMED"}},
+        }
+    )
     result = await task
     assert result.ok
     assert priorities == [OutboundPriority.HIGH]
