@@ -2028,6 +2028,8 @@ class Elke27Client:
         for field in ("serial", "mac", "model", "firmware"):
             if hasattr(panel, field):
                 setattr(panel, field, None)
+        # Publish the cleared identity; panel_info=None would keep the old PanelInfo.
+        self._replace_snapshot(panel_info=self._build_panel_info())
 
     def _request_panel_version_info(self) -> None:
         """Ask the panel for serial/MAC/model/firmware after HELLO (E1).

@@ -115,6 +115,8 @@ async def test_identity_cleared_when_connecting_to_a_different_panel(
     await client.async_connect("panel-a", 2101, _KEYS)
     panel = client._kernel.state.panel
     panel.serial, panel.mac, panel.model, panel.firmware = "A1", "aa:aa", "E27", "1.0"
+    client._replace_snapshot(panel_info=client._build_panel_info())
+    assert client.snapshot.panel.serial == "A1"
 
     # Reconnect to the same panel keeps identity until a new reply arrives.
     await client.async_connect("panel-a", 2101, _KEYS)
@@ -123,3 +125,5 @@ async def test_identity_cleared_when_connecting_to_a_different_panel(
     # A different panel must not inherit A's identity.
     await client.async_connect("panel-b", 2101, _KEYS)
     assert (panel.serial, panel.mac, panel.model, panel.firmware) == (None, None, None, None)
+    snap = client.snapshot.panel
+    assert (snap.serial, snap.mac, snap.model, snap.firmware) == (None, None, None, None)
