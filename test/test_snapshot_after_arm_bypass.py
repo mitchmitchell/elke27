@@ -823,3 +823,82 @@ async def test_arm_write_path_does_not_poll_all_zones() -> None:
     await asyncio.sleep(0.05)
     assert not [m for m in session.sent if "get_all_zones_status" in m.get("zone", {})]
     assert client._arm_write_inflight_area_ids == {}
+
+
+def _run_area_set_status(payload: dict[str, Any]) -> list[AreaStatusUpdated]:
+    from elke27_lib.handlers.area import make_area_set_status_handler
+    from elke27_lib.states import PanelState
+
+    state = PanelState()
+    emitted: list[Any] = []
+    handler = make_area_set_status_handler(
+        state, lambda evt, _ctx: emitted.append(evt), lambda: 0.0
+    )
+    handler({"area": {"set_status": payload}}, cast(Any, object()))
+    first = [e for e in emitted if isinstance(e, AreaStatusUpdated)]
+    emitted.clear()
+    handler({"area": {"set_status": payload}}, cast(Any, object()))
+    return first + [e for e in emitted if isinstance(e, AreaStatusUpdated)]
+
+
+def test_area_set_status_confirms_only_with_arm_fields() -> None:
+    """PR #29 Bugbot Medium: set_status without arm fields is not a confirmation."""
+    updates = _run_area_set_status({"area_id": 1, "error_code": 0, "Chime": True})
+    assert updates and updates[0].status_confirmed is False
+    updates = _run_area_set_status({"area_id": 1, "error_code": 0, "arm_state": "DISARMED"})
+    assert updates and updates[0].status_confirmed is True
+
+
+def test_area_set_status_duplicate_does_not_emit() -> None:
+    """PR #29 Bugbot Low: a duplicate set_status broadcast emits nothing (no zone poll)."""
+    updates = _run_area_set_status({"area_id": 1, "error_code": 0, "arm_state": "DISARMED"})
+    assert len(updates) == 1  # first applies a change; the identical repeat is silent
+
+
+def test_other_entity_updates_leave_stale_flags_set() -> None:
+    """Codex P1 4238451936: only a status for the same entity clears its stale flag."""
+    client = Elke27Client()
+    get_kernel(client)
+    client._mark_area_stale(1)
+    client._mark_zone_stale(3)
+
+    client._handle_kernel_event(
+        AreaStatusUpdated(
+            kind=AreaStatusUpdated.KIND,
+            at=UNSET_AT,
+            seq=UNSET_SEQ,
+            classification=UNSET_CLASSIFICATION,
+            route=UNSET_ROUTE,
+            session_id=UNSET_SESSION_ID,
+            area_id=2,
+            changed_fields=("arm_state",),
+        )
+    )
+    client._handle_kernel_event(
+        ZoneStatusUpdated(
+            kind=ZoneStatusUpdated.KIND,
+            at=UNSET_AT,
+            seq=UNSET_SEQ,
+            classification=UNSET_CLASSIFICATION,
+            route=UNSET_ROUTE,
+            session_id=UNSET_SESSION_ID,
+            zone_id=4,
+            changed_fields=("bypassed",),
+        )
+    )
+    client._handle_kernel_event(
+        ZonesStatusBulkUpdated(
+            kind=ZonesStatusBulkUpdated.KIND,
+            at=UNSET_AT,
+            seq=UNSET_SEQ,
+            classification=UNSET_CLASSIFICATION,
+            route=UNSET_ROUTE,
+            session_id=UNSET_SESSION_ID,
+            updated_count=1,
+            updated_ids=(5,),
+        )
+    )
+
+    assert client.snapshot.stale is True
+    assert client.snapshot.stale_area_ids == frozenset({1})
+    assert client.snapshot.stale_zone_ids == frozenset({3})

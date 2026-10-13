@@ -750,6 +750,7 @@ def _finalize_area_delta_outcome(
     schema_warning_message: str,
     emit_outcome_api_error: bool,
     status_confirmed: bool = True,
+    emit_only_if_changed: bool = False,
 ) -> bool:
     if outcome.area_id < 1:
         emit(
@@ -769,20 +770,21 @@ def _finalize_area_delta_outcome(
         )
         return False
 
-    emit(
-        AreaStatusUpdated(
-            kind=AreaStatusUpdated.KIND,
-            at=UNSET_AT,
-            seq=UNSET_SEQ,
-            classification=UNSET_CLASSIFICATION,
-            route=UNSET_ROUTE,
-            session_id=UNSET_SESSION_ID,
-            area_id=outcome.area_id,
-            changed_fields=outcome.changed_fields,
-            status_confirmed=status_confirmed,
-        ),
-        ctx,
-    )
+    if outcome.changed_fields or not emit_only_if_changed:
+        emit(
+            AreaStatusUpdated(
+                kind=AreaStatusUpdated.KIND,
+                at=UNSET_AT,
+                seq=UNSET_SEQ,
+                classification=UNSET_CLASSIFICATION,
+                route=UNSET_ROUTE,
+                session_id=UNSET_SESSION_ID,
+                area_id=outcome.area_id,
+                changed_fields=outcome.changed_fields,
+                status_confirmed=status_confirmed,
+            ),
+            ctx,
+        )
 
     if emit_outcome_api_error and outcome.error_code is not None and outcome.error_code != 0:
         _emit_area_api_error(
@@ -837,6 +839,11 @@ def make_area_set_status_handler(state: PanelState, emit: EmitFn, now: NowFn):
             invalid_area_message="area.set_status missing/invalid area_id; ignoring payload.",
             schema_warning_message="area.set_status payload contained type/schema warnings.",
             emit_outcome_api_error=True,
+            # PR #29 Bugbot: set_status only confirms arm status when it carries
+            # arm fields, and (as on main) emits only on change so duplicate
+            # broadcasts don't trigger a full zone poll.
+            status_confirmed="arm_state" in payload or "armed_state" in payload,
+            emit_only_if_changed=True,
         )
 
     return handler_area_set_status
