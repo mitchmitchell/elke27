@@ -1,4 +1,4 @@
-  UNRELEASED
+  Command Reliability, Fresh Status After Arm/Bypass, Panel Identity (0.3.12)
 
   - Panel identity (E1): after HELLO, `async_connect` sends `control.get_version_info`
     (fire-and-forget: no reply wait, retry or queue slot). The reply fills `PanelSnapshot.panel` `serial`, `mac` (new on
