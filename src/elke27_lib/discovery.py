@@ -6,6 +6,7 @@ import asyncio
 import ctypes
 import json
 import logging
+import math
 import socket
 import sys
 import time
@@ -257,7 +258,7 @@ class AIOELKDiscovery:
         self,
         transport: asyncio.DatagramTransport,
         destinations: list[tuple[str, int]],
-        timeout: int,
+        timeout: float,
         found_all_future: asyncio.Future[bool],
     ) -> None:
         """Send the scans."""
@@ -285,7 +286,7 @@ class AIOELKDiscovery:
 
     async def async_scan(
         self,
-        timeout: int = 10,
+        timeout: float = 10,
         address: str | None = None,
         *,
         sock: socket.socket | None = None,
@@ -355,8 +356,13 @@ async def async_discover_host(
     """
     if not isinstance(host, str) or not host.strip():
         raise Elke27InvalidArgument("host must be a non-empty string.")
-    if timeout <= 0:
-        raise Elke27InvalidArgument("timeout must be positive.")
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or not math.isfinite(timeout)
+        or timeout <= 0
+    ):
+        raise Elke27InvalidArgument("timeout must be a finite positive number.")
     host = host.strip()
     loop = asyncio.get_running_loop()
     try:
@@ -369,7 +375,7 @@ async def async_discover_host(
     scanner = AIOELKDiscovery()
     try:
         found = await scanner.async_scan(
-            timeout=timeout,  # type: ignore[arg-type]
+            timeout=timeout,
             address=address,
             socket_factory=socket_factory,
         )

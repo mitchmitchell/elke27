@@ -88,8 +88,14 @@ async def test_discover_host_invalid_args() -> None:
         await async_discover_host("192.0.2.5", timeout=0)
 
 
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf"), "3", None, True])
+async def test_discover_host_rejects_non_finite_or_non_numeric_timeout(bad: object) -> None:
+    with pytest.raises(Elke27InvalidArgument):
+        await async_discover_host("192.0.2.5", timeout=bad)  # type: ignore[arg-type]
+
+
 @pytest.mark.asyncio
-async def test_discover_host_real_udp_roundtrip() -> None:
+async def test_discover_host_real_udp_roundtrip(monkeypatch: pytest.MonkeyPatch) -> None:
     """End to end over loopback with a fake panel responder."""
     loop = asyncio.get_running_loop()
     reply = json.dumps(
@@ -112,8 +118,7 @@ async def test_discover_host_real_udp_roundtrip() -> None:
 
     transport, _ = await loop.create_datagram_endpoint(Responder, local_addr=("127.0.0.1", 0))
     port = transport.get_extra_info("sockname")[1]
-    orig = AIOELKDiscovery.DISCOVERY_PORT
-    AIOELKDiscovery.DISCOVERY_PORT = port
+    monkeypatch.setattr(AIOELKDiscovery, "DISCOVERY_PORT", port)
     try:
 
         def factory() -> socket.socket:
@@ -124,7 +129,6 @@ async def test_discover_host_real_udp_roundtrip() -> None:
 
         panel = await async_discover_host("127.0.0.1", timeout=2, socket_factory=factory)
     finally:
-        AIOELKDiscovery.DISCOVERY_PORT = orig
         transport.close()
     assert panel is not None
     assert panel.panel_mac == "2CCF67CA1AE0"
