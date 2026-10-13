@@ -80,6 +80,7 @@ async def test_timeout_before_send_stays_plain_timeout() -> None:
     assert not result.ok
     assert not isinstance(result.error, Elke27CommandOutcomeUnknownError)
     with pytest.raises(Elke27TimeoutError) as exc_info:
+        assert result.error is not None
         client._raise_v2_command_error(result.error)
     assert not isinstance(exc_info.value, Elke27CommandOutcomeUnknownError)
 
@@ -144,6 +145,7 @@ async def test_queued_command_failed_by_deadline_stays_plain_timeout() -> None:
     assert not result.ok
     assert not isinstance(result.error, Elke27CommandOutcomeUnknownError)
     with pytest.raises(Elke27TimeoutError) as exc_info:
+        assert result.error is not None
         client._raise_v2_command_error(result.error)
     assert type(exc_info.value) is Elke27TimeoutError
 
