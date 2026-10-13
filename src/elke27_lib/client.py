@@ -943,7 +943,7 @@ class Elke27Client:
     def _build_panel_info(self) -> PanelInfo:
         panel = self._kernel.state.panel
         return PanelInfo(
-            mac=None,
+            mac=getattr(panel, "mac", None),
             model=panel.model,
             firmware=panel.firmware,
             serial=panel.serial,
@@ -1995,6 +1995,7 @@ class Elke27Client:
         self._connect_failures_warning_logged = False
         self._connected = True
         self._clear_all_entity_stale()
+        self._request_panel_version_info()
         if self._snapshot.version == 0:
             self._replace_snapshot(
                 panel_info=self._build_panel_info(),
@@ -2010,6 +2011,27 @@ class Elke27Client:
                 thermostats=self._build_thermostat_map(),
             )
         self._maybe_set_ready()
+
+    def _request_panel_version_info(self) -> None:
+        """Ask the panel for serial/MAC/model/firmware after HELLO (E1).
+
+        Best effort: the reply fills ``PanelInfo`` via ``PanelVersionInfoUpdated``.
+        A send failure, an error reply or missing fields never break connect; the
+        fields stay ``None`` and the failure is logged at DEBUG.
+        """
+        route = ("control", "get_version_info")
+        try:
+            if self._kernel.requests.get(route) is None:
+                self._log.debug(
+                    "control.get_version_info not registered; panel identity stays unset"
+                )
+                return
+            self._kernel.request(route, pending=False)
+        except Exception as exc:  # noqa: BLE001
+            self._log.debug(
+                "control.get_version_info request failed; panel identity stays unset: %s",
+                type(exc).__name__,
+            )
 
     async def async_disconnect(self) -> None:
         """Disconnect the current session (v2 public API)."""

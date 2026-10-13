@@ -39,6 +39,7 @@ class PanelMetaState:
     model: str | None = None
     firmware: str | None = None
     serial: str | None = None
+    mac: str | None = None
 
 
 # -------------------------
