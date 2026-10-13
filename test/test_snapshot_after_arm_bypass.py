@@ -691,8 +691,9 @@ async def test_arm_refresh_and_publication_wait_share_command_deadline() -> None
     assert isinstance(result, Result)
     assert result.ok is True
     assert result.status_refresh_ok is False
-    # Previously ~2x timeout_s (write + a full-timeout refresh); now bounded by one.
-    assert elapsed < timeout_s * 1.5
+    # Previously write + a fresh full budget for the refresh (~2x); now one budget.
+    budget = client._command_transport_wait_budget_s(timeout_s)
+    assert elapsed < budget * 1.5
 
 
 def _area_status_evt(*, confirmed: bool) -> AreaStatusUpdated:

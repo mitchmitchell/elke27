@@ -165,7 +165,23 @@ the command still succeeds; `async_execute` sets `Result.status_refresh_ok` to
 - `InvalidPin`: PIN rejected by the panel during authenticate.
 - `MissingContext`: panel/client_identity/session context missing for connect.
 - `ConnectionLost`: socket dropped/reset while connected.
+- Session loss while a command is pending fails that command immediately (reads
+  included); the library does not resend it after reconnect. V2 helpers surface
+  this as `Elke27DisconnectedError`.
 - `ProtocolError` / `CryptoError`: framing/CRC/crypto/parse failure.
+
+## Command transport retries (#12)
+
+- While the session stays up, the kernel retries transient transport failures
+  (reply timeout, send failure, panel busy 11039) within `request_max_retries`.
+- After the frame is confirmed sent (`on_sent`), reply-timeout retries are
+  allowlisted only: `get_*` read routes and disarm (`area.set_arm_state` with
+  `arm_state=DISARMED`). All other commands are at-most-once on reply timeout
+  (fail with `Elke27TimeoutError` / `E27Timeout`, no resend). Pre-send transport
+  failures use the normal retry policy for every route.
+- Panel refusals and session loss are never retried; session loss fails fast for
+  every pending command and is not resent after reconnect (`Elke27DisconnectedError`
+  on v2 exception paths).
 
 Errors are surfaced via raised exceptions from command helpers or `Result.unwrap()`.
 AuthorizationRequired may also be emitted as a semantic event (`AuthorizationRequiredEvent`)

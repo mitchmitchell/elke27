@@ -135,3 +135,61 @@ async def test_outbound_queue_stop_fails_pending() -> None:
 
     queue.stop(fail_exc=RuntimeError("transport gone"))
     await asyncio.wait_for(failed.wait(), timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_outbound_queue_cancel_pending_seq() -> None:
+    loop = asyncio.get_running_loop()
+
+    def _send(_payload: bytes) -> None:
+        return None
+
+    queue = OutboundQueue(loop=loop, send_fn=_send, min_interval_s=10.0, max_burst=1)
+    queue.start()
+    for seq in (10, 11):
+        queue.enqueue(
+            OutboundItem(
+                payload=b"x",
+                seq=seq,
+                kind="request",
+                priority=OutboundPriority.NORMAL,
+                enqueued_at=time.monotonic(),
+            )
+        )
+    await asyncio.sleep(0)
+    assert queue.cancel_pending_seq(11) is True
+    assert queue.cancel_pending_seq(11) is False
+    assert queue.cancel_pending_seq(10) is True
+
+
+@pytest.mark.asyncio
+async def test_cancel_pending_seq_during_throttle_skips_send() -> None:
+    """Codex P1 (#31): a frame dequeued but still throttling must be cancellable."""
+    loop = asyncio.get_running_loop()
+    sent: list[bytes] = []
+
+    queue = OutboundQueue(loop=loop, send_fn=sent.append, min_interval_s=0.2, max_burst=1)
+    queue.start()
+    for seq, payload in ((1, b"first"), (2, b"second")):
+        queue.enqueue(
+            OutboundItem(
+                payload=payload,
+                seq=seq,
+                kind="request",
+                priority=OutboundPriority.NORMAL,
+                enqueued_at=time.monotonic(),
+            )
+        )
+
+    # Wait until seq 2 has been dequeued and is sleeping in _throttle().
+    for _ in range(200):
+        if queue._current_seq == 2 and not queue._sending:
+            break
+        await asyncio.sleep(0.005)
+    assert queue._current_seq == 2
+
+    assert queue.cancel_pending_seq(2) is True
+    await asyncio.sleep(0.4)
+    assert sent == [b"first"]
+    assert await queue.wait_idle(timeout_s=1.0)
+    queue.stop()
