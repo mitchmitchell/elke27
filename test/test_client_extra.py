@@ -248,9 +248,22 @@ def test_handle_kernel_event_area_paths(
         "_refresh_all_zone_statuses_for_bypass_change",
         lambda _area: called.__setitem__("refresh", called["refresh"] + 1),
     )
+    # Outside the #29 write path, main's rule holds: unchanged -> zone poll.
     evt = AreaStatusUpdated(**_event_base(AreaStatusUpdated.KIND), area_id=1, changed_fields=())
     client._handle_kernel_event(evt)
     assert called["refresh"] == 1
+
+    # During an in-flight arm write, unchanged events do not poll; bypass changes do.
+    client._arm_write_inflight_area_ids[1] += 1
+    client._handle_kernel_event(evt)
+    assert called["refresh"] == 1
+    client._pending_bypass_by_area.pop(1, None)
+    evt = AreaStatusUpdated(
+        **_event_base(AreaStatusUpdated.KIND), area_id=1, changed_fields=("bypass",)
+    )
+    client._handle_kernel_event(evt)
+    assert called["refresh"] == 2
+    del client._arm_write_inflight_area_ids[1]
 
     caplog.set_level(logging.WARNING, logger="elke27_lib.client")
     evt = AreaStatusUpdated(
@@ -834,16 +847,28 @@ async def test_async_authenticate_timeout(monkeypatch: pytest.MonkeyPatch) -> No
     client._kernel.state.panel.session_id = 1
 
     class _Pending:
-        def create(self, *_a, **_k):  # type: ignore[no-untyped-def]
+        def create(self, seq: int, **_k: object) -> asyncio.Future[dict[str, object]]:
             fut = asyncio.get_running_loop().create_future()
+            self._futures[seq] = fut
             return fut
 
-        def drop(self, *_a, **_k):  # type: ignore[no-untyped-def]
-            return None
+        def __init__(self) -> None:
+            self._futures: dict[int, asyncio.Future[dict[str, object]]] = {}
+
+        def fail(self, seq: int, exc: BaseException) -> bool:
+            fut = self._futures.pop(seq, None)
+            if fut is not None and not fut.done():
+                fut.set_exception(exc)
+                return True
+            return False
+
+        def drop(self, seq: int, *_a: object, **_k: object) -> None:
+            self._futures.pop(seq, None)
 
     client._kernel._pending_responses = _Pending()  # type: ignore[attr-defined]
     client._kernel.register_sent_event = lambda _s, event: event.set()  # type: ignore[assignment]
     client._kernel.send_request_with_seq = lambda *_a, **_k: None  # type: ignore[assignment]
+    monkeypatch.setattr(client, "_command_transport_wait_budget_s", lambda _timeout: 0.0)
     res = await client._async_authenticate(pin=1234, timeout_s=0.0)
     assert res.ok is False and isinstance(res.error, E27Timeout)
 

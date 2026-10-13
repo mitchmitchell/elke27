@@ -716,6 +716,104 @@ def make_area_configured_merge(
     return _merge
 
 
+def _emit_area_api_error(
+    emit: EmitFn,
+    ctx: DispatchContext,
+    *,
+    error_code: int,
+    area_id: object,
+) -> None:
+    emit(
+        ApiError(
+            kind=ApiError.KIND,
+            at=UNSET_AT,
+            seq=UNSET_SEQ,
+            classification=UNSET_CLASSIFICATION,
+            route=UNSET_ROUTE,
+            session_id=UNSET_SESSION_ID,
+            error_code=error_code,
+            scope="area",
+            entity_id=area_id if isinstance(area_id, int) else None,
+            message=None,
+        ),
+        ctx,
+    )
+
+
+def _finalize_area_delta_outcome(
+    outcome: _AreaOutcome,
+    payload: Mapping[str, Any],
+    emit: EmitFn,
+    ctx: DispatchContext,
+    *,
+    invalid_area_message: str,
+    schema_warning_message: str,
+    emit_outcome_api_error: bool,
+    status_confirmed: bool = True,
+    emit_only_if_changed: bool = False,
+) -> bool:
+    if outcome.area_id < 1:
+        emit(
+            DispatchRoutingError(
+                kind=DispatchRoutingError.KIND,
+                at=UNSET_AT,
+                seq=UNSET_SEQ,
+                classification=UNSET_CLASSIFICATION,
+                route=UNSET_ROUTE,
+                session_id=UNSET_SESSION_ID,
+                code="schema_invalid_area_id",
+                message=invalid_area_message,
+                keys=tuple(payload.keys()),
+                severity="warning",
+            ),
+            ctx,
+        )
+        return False
+
+    if outcome.changed_fields or not emit_only_if_changed:
+        emit(
+            AreaStatusUpdated(
+                kind=AreaStatusUpdated.KIND,
+                at=UNSET_AT,
+                seq=UNSET_SEQ,
+                classification=UNSET_CLASSIFICATION,
+                route=UNSET_ROUTE,
+                session_id=UNSET_SESSION_ID,
+                area_id=outcome.area_id,
+                changed_fields=outcome.changed_fields,
+                status_confirmed=status_confirmed,
+            ),
+            ctx,
+        )
+
+    if emit_outcome_api_error and outcome.error_code is not None and outcome.error_code != 0:
+        _emit_area_api_error(
+            emit,
+            ctx,
+            error_code=outcome.error_code,
+            area_id=outcome.area_id,
+        )
+
+    if outcome.warnings:
+        emit(
+            DispatchRoutingError(
+                kind=DispatchRoutingError.KIND,
+                at=UNSET_AT,
+                seq=UNSET_SEQ,
+                classification=UNSET_CLASSIFICATION,
+                route=UNSET_ROUTE,
+                session_id=UNSET_SESSION_ID,
+                code="schema_warnings",
+                message=schema_warning_message,
+                keys=outcome.warnings,
+                severity="info",
+            ),
+            ctx,
+        )
+
+    return True
+
+
 def make_area_set_status_handler(state: PanelState, emit: EmitFn, now: NowFn):
     """
     Handler for ("area","set_status") ingest-only status reconcile.
@@ -733,77 +831,62 @@ def make_area_set_status_handler(state: PanelState, emit: EmitFn, now: NowFn):
             return False
 
         outcome = _reconcile_area_state(state, payload, now=now(), _source="delta")
-
-        if outcome.area_id < 1:
-            emit(
-                DispatchRoutingError(
-                    kind=DispatchRoutingError.KIND,
-                    at=UNSET_AT,
-                    seq=UNSET_SEQ,
-                    classification=UNSET_CLASSIFICATION,
-                    route=UNSET_ROUTE,
-                    session_id=UNSET_SESSION_ID,
-                    code="schema_invalid_area_id",
-                    message="area.set_status missing/invalid area_id; ignoring payload.",
-                    keys=tuple(payload.keys()),
-                    severity="warning",
-                ),
-                ctx,
-            )
-            return False
-
-        if outcome.changed_fields:
-            emit(
-                AreaStatusUpdated(
-                    kind=AreaStatusUpdated.KIND,
-                    at=UNSET_AT,
-                    seq=UNSET_SEQ,
-                    classification=UNSET_CLASSIFICATION,
-                    route=UNSET_ROUTE,
-                    session_id=UNSET_SESSION_ID,
-                    area_id=outcome.area_id,
-                    changed_fields=outcome.changed_fields,
-                ),
-                ctx,
-            )
-
-        if outcome.error_code is not None and outcome.error_code != 0:
-            emit(
-                ApiError(
-                    kind=ApiError.KIND,
-                    at=UNSET_AT,
-                    seq=UNSET_SEQ,
-                    classification=UNSET_CLASSIFICATION,
-                    route=UNSET_ROUTE,
-                    session_id=UNSET_SESSION_ID,
-                    error_code=outcome.error_code,
-                    scope="area",
-                    entity_id=outcome.area_id,
-                    message=None,
-                ),
-                ctx,
-            )
-
-        if outcome.warnings:
-            emit(
-                DispatchRoutingError(
-                    kind=DispatchRoutingError.KIND,
-                    at=UNSET_AT,
-                    seq=UNSET_SEQ,
-                    classification=UNSET_CLASSIFICATION,
-                    route=UNSET_ROUTE,
-                    session_id=UNSET_SESSION_ID,
-                    code="schema_warnings",
-                    message="area.set_status payload contained type/schema warnings.",
-                    keys=outcome.warnings,
-                    severity="info",
-                ),
-                ctx,
-            )
-
-        return True
+        return _finalize_area_delta_outcome(
+            outcome,
+            payload,
+            emit,
+            ctx,
+            invalid_area_message="area.set_status missing/invalid area_id; ignoring payload.",
+            schema_warning_message="area.set_status payload contained type/schema warnings.",
+            emit_outcome_api_error=True,
+            # PR #29 Bugbot: set_status only confirms arm status when it carries
+            # arm fields, and (as on main) emits only on change so duplicate
+            # broadcasts don't trigger a full zone poll.
+            status_confirmed="arm_state" in payload or "armed_state" in payload,
+            emit_only_if_changed=True,
+        )
 
     return handler_area_set_status
+
+
+def make_area_set_arm_state_handler(state: PanelState, emit: EmitFn, now: NowFn):
+    """
+    Handler for ("area","set_arm_state") command replies and broadcasts.
+    """
+
+    def handler_area_set_arm_state(msg: Mapping[str, Any], ctx: DispatchContext) -> bool:
+        area_obj = _as_mapping(msg.get("area"))
+        if area_obj is None:
+            return False
+
+        payload = _as_mapping(area_obj.get("set_arm_state"))
+        if payload is None:
+            return False
+
+        error_code = _extract_error_code(payload)
+        if error_code is not None and error_code != 0:
+            _emit_area_api_error(
+                emit,
+                ctx,
+                error_code=error_code,
+                area_id=payload.get("area_id"),
+            )
+            return True
+
+        outcome = _reconcile_area_state(state, payload, now=now(), _source="delta")
+        return _finalize_area_delta_outcome(
+            outcome,
+            payload,
+            emit,
+            ctx,
+            invalid_area_message="area.set_arm_state missing/invalid area_id; ignoring payload.",
+            schema_warning_message="area.set_arm_state payload contained type/schema warnings.",
+            emit_outcome_api_error=False,
+            # Ack-only replies do not confirm the area's status (PR #29 Bugbot).
+            status_confirmed="arm_state" in payload or "armed_state" in payload,
+        )
+
+    return handler_area_set_arm_state
 
 
 def make_area_get_troubles_handler(state: PanelState, emit: EmitFn, now: NowFn):

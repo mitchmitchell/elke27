@@ -73,6 +73,13 @@ a breaking change.
 - `locks`
 - `thermostats`
 - Snapshots return read-only views or dataclasses; do not deep-copy large structures.
+- `PanelSnapshot.stale` is `True` when any area or zone could not be confirmed
+  after a successful arm or bypass write (`stale_area_ids`, `stale_zone_ids`).
+  Treat fields for those ids as unreliable until a successful status read or
+  broadcast covering the id clears it. Stale clearing keys off the entity id on
+  ``AreaStatusUpdated`` / ``ZoneStatusUpdated`` only (not ``changed_fields``;
+  unchanged ``get_status`` replies still emit those events). All stale ids are
+  cleared on reconnect.
 
 ## Configured Inventory Filtering
 
@@ -132,12 +139,23 @@ Public methods:
 - `async_arm_area(area_id, *, mode, pin, auto_stay_cancel=False, exit_delay_cancel=False)`
 - `async_disarm_area(area_id, *, pin, auto_stay_cancel=False, exit_delay_cancel=False)`
 
+After the panel accepts arm/disarm (`area_set_arm_state`) or zone bypass
+(`zone_set_status`), the library performs a follow-up status read when the
+command reply did not already include confirmed arm/bypass fields, so
+`get_snapshot()` is up to date when the helper returns. If that read fails,
+the command still succeeds; `async_execute` sets `Result.status_refresh_ok` to
+`False` and marks the affected area or zone id stale in the snapshot metadata.
+
 ## Commands
 
 - Inventory-driven methods are exposed via `request(route, **kwargs)` and may also have
   explicit helper methods (e.g. `get_zone_status(id)`).
 - Commands return `Result[T]`:
-  - `Result(ok: bool, data: T | None, error: E27Error | None)`
+  - `Result(ok: bool, data: T | None, error: E27Error | None, status_refresh_ok: bool | None = None)`
+  - `status_refresh_ok` is set for `area_set_arm_state` and `zone_set_status`:
+    `True` when a follow-up status read succeeded or was skipped because the reply
+    already carried confirmed state; `False` when the write succeeded but the
+    read failed; `None` for other commands.
 - Commands raise typed errors when `Result.unwrap()` is used.
 
 ## Errors (typed)
@@ -147,7 +165,23 @@ Public methods:
 - `InvalidPin`: PIN rejected by the panel during authenticate.
 - `MissingContext`: panel/client_identity/session context missing for connect.
 - `ConnectionLost`: socket dropped/reset while connected.
+- Session loss while a command is pending fails that command immediately (reads
+  included); the library does not resend it after reconnect. V2 helpers surface
+  this as `Elke27DisconnectedError`.
 - `ProtocolError` / `CryptoError`: framing/CRC/crypto/parse failure.
+
+## Command transport retries (#12)
+
+- While the session stays up, the kernel retries transient transport failures
+  (reply timeout, send failure, panel busy 11039) within `request_max_retries`.
+- After the frame is confirmed sent (`on_sent`), reply-timeout retries are
+  allowlisted only: `get_*` read routes and disarm (`area.set_arm_state` with
+  `arm_state=DISARMED`). All other commands are at-most-once on reply timeout
+  (fail with `Elke27TimeoutError` / `E27Timeout`, no resend). Pre-send transport
+  failures use the normal retry policy for every route.
+- Panel refusals and session loss are never retried; session loss fails fast for
+  every pending command and is not resent after reconnect (`Elke27DisconnectedError`
+  on v2 exception paths).
 
 Errors are surfaced via raised exceptions from command helpers or `Result.unwrap()`.
 AuthorizationRequired may also be emitted as a semantic event (`AuthorizationRequiredEvent`)

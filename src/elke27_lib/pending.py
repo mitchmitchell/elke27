@@ -87,6 +87,18 @@ class PendingResponseManager:
         with self._lock:
             return len(self._pending)
 
+    def fail_all(self, exc: BaseException) -> None:
+        with self._lock:
+            entries = list(self._pending.values())
+            self._pending.clear()
+        for entry in entries:
+
+            def _set_exc(entry: PendingResponse = entry) -> None:
+                if not entry.future.done():
+                    entry.future.set_exception(exc)
+
+            self._call_in_loop(entry, _set_exc)
+
     def _pop(self, seq: int) -> PendingResponse | None:
         with self._lock:
             return self._pending.pop(seq, None)

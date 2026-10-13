@@ -16,14 +16,18 @@ from typing import Any, Literal, Union, cast
 import pytest
 
 from elke27_lib import client as client_mod
+from elke27_lib import session as session_mod
 from elke27_lib.client import ArmMode, Elke27Client
 from elke27_lib.const import E27ErrorCode
 from elke27_lib.errors import Elke27InvalidArgument
 from elke27_lib.generators.registry import COMMANDS
+from test.helpers.fake_panel_replies import synthetic_success_reply
 from test.helpers.internal import get_kernel, get_private
 
 
 class _FakeSession:
+    state = session_mod.SessionState.ACTIVE
+
     def __init__(self) -> None:
         self.sent: list[dict[str, Any]] = []
 
@@ -44,6 +48,7 @@ class _FakeSession:
 def _make_client() -> tuple[Elke27Client, _FakeSession]:
     client = Elke27Client()
     kernel = get_kernel(client)
+    kernel.load_features_blocking()
     session = _FakeSession()
     cast(Any, kernel)._session = session
     kernel.state.panel.session_id = 1
@@ -56,6 +61,7 @@ async def _run_and_ack(
     call: Coroutine[Any, Any, Any],
 ) -> tuple[dict[str, Any], Any]:
     task = asyncio.ensure_future(call)
+    client._event_loop = asyncio.get_running_loop()
     for _ in range(20):
         if session.sent or task.done():
             break
@@ -63,11 +69,23 @@ async def _run_and_ack(
     if task.done():
         task.result()  # re-raise anything that failed before sending
     assert session.sent, "request was never sent to the panel"
-    sent = session.sent[0]
     on_message = get_private(get_kernel(client), "_on_message")
-    on_message(
-        {"seq": sent["seq"], "area": {"set_arm_state": {"error_code": E27ErrorCode.ELKERR_NONE}}}
-    )
+    seen = 0
+    while not task.done():
+        await asyncio.sleep(0)
+        while seen < len(session.sent):
+            sent = session.sent[seen]
+            if seen == 0:
+                on_message(
+                    {
+                        "seq": sent["seq"],
+                        "area": {"set_arm_state": {"error_code": E27ErrorCode.ELKERR_NONE}},
+                    }
+                )
+            else:
+                on_message(synthetic_success_reply(sent, sent_history=session.sent[:seen]))
+            seen += 1
+    sent = session.sent[0]
     return sent["area"]["set_arm_state"], await task
 
 
