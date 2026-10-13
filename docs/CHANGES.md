@@ -1,4 +1,4 @@
-  UNRELEASED
+  Command Reliability, Fresh Status After Arm/Bypass, Panel Identity (0.3.12)
 
   - Panel identity (E1 follow-up, refs #40): a placeholder serial from
     `control.get_version_info` (empty, all zeros, `00000001`, all F) is ignored
@@ -12,8 +12,8 @@
     `PanelMetaState`), `model` and `firmware`. A send failure, an error reply or
     missing fields never break connect: the fields stay `None` and a send failure is
     logged at DEBUG. Connecting to a different host:port clears the cached
-    identity first. Field names follow the existing patch-style reconcile; real
-    payload keys still need a hardware check.
+    identity first. Payload keys were checked on hardware; see the follow-up
+    entry above for the field mapping.
 
   - New public `Elke27CommandOutcomeUnknownError` (subclass of
     `Elke27TimeoutError`, carries `route=(domain, command)`). `async_execute` and the
