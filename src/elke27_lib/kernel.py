@@ -1931,6 +1931,17 @@ class E27Kernel:
         if not expects_reply:
             msg = self._build_request_message(seq, domain, name, payload)
             self._log_outbound(domain, name, msg)
+            if pending:
+                # Register correlation only, so a reply is classified RESPONSE
+                # rather than UNSOLICITED. Nothing waits on it.
+                self.dispatcher.add_pending(
+                    PendingRequest(
+                        seq=seq,
+                        expected_route=expected_route,
+                        created_at=self.now(),
+                        opaque=opaque,
+                    )
+                )
             try:
                 self.session.send_json(
                     msg,
@@ -1939,6 +1950,8 @@ class E27Kernel:
                     on_fail=lambda exc: self._handle_send_failure(seq, exc),
                 )
             except Exception as exc:
+                if pending:
+                    self.dispatcher.drop_pending(seq)
                 self._handle_send_failure(seq, exc)
                 raise KernelError(
                     f"Failed to send request {domain}.{name} seq={seq}: {exc}"

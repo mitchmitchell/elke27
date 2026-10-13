@@ -62,6 +62,21 @@ def _as_mapping(obj: object) -> Mapping[str, Any] | None:
 # -------------------------
 
 
+def is_placeholder_serial(value: str) -> bool:
+    """Return True for serials that are not unique per panel.
+
+    Seen on hardware: ``sn`` = "00000001". Treat empty values, all zeros, a
+    numeric value of 0 or 1 (any zero padding) and all-F values as placeholders.
+    """
+    text = value.strip()
+    if not text:
+        return True
+    upper = text.upper()
+    if set(upper) <= {"0"} or set(upper) <= {"F"}:
+        return True
+    return upper.isdigit() and int(upper) <= 1
+
+
 @dataclass(frozen=True, slots=True)
 class _VersionInfoOutcome:
     changed_fields: tuple[str, ...]
@@ -128,7 +143,11 @@ def _reconcile_control_get_version_info(
 
     if serial is not None:
         if isinstance(serial, str):
-            if state.panel.serial != serial:
+            if is_placeholder_serial(serial):
+                # Panels report a factory placeholder (e.g. "00000001") that is not
+                # unique; never expose it as identity. Leave serial unset.
+                pass
+            elif state.panel.serial != serial:
                 state.panel.serial = serial
                 changed.add("serial")
         else:

@@ -2053,9 +2053,9 @@ class Elke27Client:
                 route[0],
                 route[1],
                 {},
-                pending=False,
+                pending=True,  # correlate the reply as RESPONSE, not UNSOLICITED
                 opaque=None,
-                expected_route=None,
+                expected_route=route,
                 expects_reply=False,
             )
         except Exception as exc:  # noqa: BLE001
