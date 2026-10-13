@@ -6,7 +6,8 @@
     reply arrived before the command deadline; the panel may have applied it, so
     re-read the entity. If the caller cancels after the confirmed send,
     `asyncio.CancelledError` still propagates, with this error as `__cause__`.
-    Timeouts before the frame was sent, and `get_*` read timeouts, stay plain
+    Timeouts before the frame was sent, and read timeouts (the explicit
+    `elke27_lib.command_kinds.READ_ONLY_ROUTES` list), stay plain
     `Elke27TimeoutError`. Existing `except Elke27TimeoutError` handlers keep working.
 
   - After a successful `area_set_arm_state` or `zone_set_status`, the client issues
@@ -35,7 +36,9 @@
     `get_*` read routes and `area.set_arm_state` with `arm_state=DISARMED` may
     retry on reply timeout; every other command (locks, lights, thermostats,
     barriers, other arm states, all `set_*` writes, system mutations, etc.) is
-    at-most-once and fails with the timeout without resend. Pre-send transport
+    at-most-once and fails without resend: writes with
+    `Elke27CommandOutcomeUnknownError` (#35), reads in `READ_ONLY_ROUTES` that are
+    not `get_*` with plain `Elke27TimeoutError`. Pre-send transport
     failures keep the normal retry policy. Disarm is
     always `OutboundPriority.HIGH`, is requeued immediately on transport retry
     (no backoff), and is not delayed behind other commands waiting to retry.
