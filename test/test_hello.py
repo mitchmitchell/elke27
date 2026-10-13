@@ -218,3 +218,61 @@ def test_perform_hello_bad_hmac_key_length(monkeypatch: pytest.MonkeyPatch) -> N
     )
     with pytest.raises(E27ProtocolError):
         hello.perform_hello(sock=sock, client_identity=_identity(), linkkey_hex="00", timeout_s=1)
+
+
+def _run_hello_with(monkeypatch: pytest.MonkeyPatch, hello_obj: dict) -> None:
+    sock = _FakeSocket()
+    monkeypatch.setattr(hello, "send_unframed_json", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(hello, "recv_cleartext_json_objects", lambda *_a, **_k: [hello_obj])
+    monkeypatch.setattr(hello.time, "monotonic", lambda: 0.0)
+    hello.perform_hello(sock=sock, client_identity=_identity(), linkkey_hex="00", timeout_s=1)
+
+
+@pytest.mark.parametrize("code", [11006, "11006", 11008])
+def test_perform_hello_link_error_code_raises_link_required(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, code: object
+) -> None:
+    from elke27_lib.errors import E27HelloLinkRequired, E27ProvisioningRequired
+
+    caplog.set_level("DEBUG")
+    hello_obj = {"hello": {"error_code": code, "error_message": "invalid_id"}}
+    with pytest.raises(E27HelloLinkRequired) as ei:
+        _run_hello_with(monkeypatch, hello_obj)
+    assert isinstance(ei.value, E27ProvisioningRequired)
+    assert ei.value.panel_error_code == int(str(code))
+    assert ei.value.panel_error_message == "invalid_id"
+    assert "Malformed" not in str(ei.value)
+    recs = [r for r in caplog.records if "rejected HELLO" in r.getMessage()]
+    assert recs and all(r.levelname == "WARNING" and r.exc_info is None for r in recs)
+
+
+def test_perform_hello_other_error_code_names_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    from elke27_lib.errors import E27HelloRejected
+
+    hello_obj = {"hello": {"error_code": 11016, "error_message": "in_use"}}
+    with pytest.raises(E27HelloRejected) as ei:
+        _run_hello_with(monkeypatch, hello_obj)
+    assert ei.value.panel_error_code == 11016
+    assert "11016" in str(ei.value) and "Malformed" not in str(ei.value)
+
+
+@pytest.mark.parametrize("code", [0, "0"])
+def test_perform_hello_error_code_zero_completes(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, code: object
+) -> None:
+    caplog.set_level("DEBUG")
+    sock = _FakeSocket()
+    hello_obj = {"hello": {"session_id": 7, "sk": "aa", "shm": "bb", "error_code": code}}
+    monkeypatch.setattr(hello, "send_unframed_json", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(hello, "recv_cleartext_json_objects", lambda *_a, **_k: [hello_obj])
+    monkeypatch.setattr(hello.time, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(
+        hello,
+        "decrypt_key_field_with_linkkey",
+        lambda **kw: b"\x01" * 16 if kw["ciphertext_hex"] == "aa" else b"\x02" * 32,
+    )
+    out = hello.perform_hello(sock=sock, client_identity=_identity(), linkkey_hex="00", timeout_s=1)
+    assert out.session_id == 7
+    assert out.session_key_hex == "01" * 16
+    assert out.hmac_key_hex == "02" * 32
+    assert not [r for r in caplog.records if "rejected HELLO" in r.getMessage()]
