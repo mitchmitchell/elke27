@@ -622,9 +622,22 @@ class Elke27AuthError(Elke27Error):
 
 
 class Elke27LinkRequiredError(Elke27Error):
+    """Link credentials are missing or were rejected; the caller should re-link (reauth).
+
+    `panel_error_code` / `panel_error_message` carry the panel's HELLO rejection
+    (for example 11006 / "invalid_id") when that is the cause, else None.
+    """
+
     def __init__(
-        self, message: str = "Linking required.", *, user_message: str | None = None
+        self,
+        message: str = "Linking required.",
+        *,
+        user_message: str | None = None,
+        panel_error_code: int | None = None,
+        panel_error_message: str | None = None,
     ) -> None:
+        self.panel_error_code: int | None = panel_error_code
+        self.panel_error_message: str | None = panel_error_message
         super().__init__(
             message, code="link_required", is_transient=False, user_message=user_message
         )
@@ -707,3 +720,45 @@ class Elke27InvalidArgument(ValueError):
     @override
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self.__str__()!r})"
+
+
+class E27HelloLinkRequired(E27ProvisioningRequired):
+    """The panel rejected HELLO with a link/auth error code (e.g. 11006 invalid_id).
+
+    The client sn is not linked on the panel or the link was revoked; recovery is
+    to re-link. Maps to the public `Elke27LinkRequiredError`.
+    """
+
+    def __init__(
+        self,
+        panel_error_code: int,
+        panel_error_message: str | None = None,
+        *,
+        context: E27ErrorContext | None = None,
+    ) -> None:
+        self.panel_error_code = panel_error_code
+        self.panel_error_message = panel_error_message
+        super().__init__(
+            f"Panel rejected HELLO: error_code={panel_error_code}"
+            f" ({panel_error_message or 'no message'}); linking required.",
+            context=context,
+        )
+
+
+class E27HelloRejected(E27ProtocolError):
+    """The panel rejected HELLO with a non-link error code."""
+
+    def __init__(
+        self,
+        panel_error_code: int,
+        panel_error_message: str | None = None,
+        *,
+        context: E27ErrorContext | None = None,
+    ) -> None:
+        self.panel_error_code = panel_error_code
+        self.panel_error_message = panel_error_message
+        super().__init__(
+            f"Panel rejected HELLO: error_code={panel_error_code}"
+            f" ({panel_error_message or 'no message'}).",
+            context=context,
+        )

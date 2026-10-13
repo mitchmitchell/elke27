@@ -27,6 +27,8 @@ from typing import cast
 
 from .errors import (
     E27ErrorContext,
+    E27HelloLinkRequired,
+    E27HelloRejected,
     E27HelloTimeout,
     E27ProtocolError,
     E27ProvisioningTimeout,
@@ -42,6 +44,12 @@ from .linking import (
 from .presentation import decrypt_key_field_with_linkkey
 
 LOG = logging.getLogger(__name__)
+
+# HELLO error codes that mean the client sn is not linked (or its link was revoked)
+# or not authorized: recovery is to re-link, not to retry.
+#   11006 ELKERR_INVALID_ID (seen on hardware for an unlinked/revoked sn)
+#   11008 ELKERR_NOAUTH
+HELLO_LINK_REQUIRED_ERROR_CODES: frozenset[int] = frozenset({11006, 11008})
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +174,10 @@ def perform_hello(
 
     hello_obj = _select_hello_object(objs)
 
+    # A rejected HELLO carries error_code (and no session_id/sk/shm); check it
+    # before parsing the session fields so it is not reported as malformed JSON.
+    _raise_for_hello_error(hello_obj)
+
     # Parse fields
     try:
         hello = _as_mapping(hello_obj.get("hello"))
@@ -178,8 +190,6 @@ def perform_hello(
     except (KeyError, TypeError, ValueError) as e:
         hello_payload = _as_mapping(hello_obj.get("hello")) or {}
         LOG.debug("Hello response payload: %s", hello_payload)
-        # Note: panels can reply with error_code=11006 (invalid_id) when the app entry
-        # has been removed; recovery is to re-link/register the panel before retrying.
         raise E27ProtocolError(
             f"Malformed hello response JSON: {e}",
             context=E27ErrorContext(phase="hello_parse"),
@@ -234,6 +244,34 @@ def perform_hello(
         session_key_hex=session_key_hex,
         hmac_key_hex=hmac_key_hex,
     )
+
+
+def _raise_for_hello_error(hello_obj: Mapping[str, object]) -> None:
+    hello = _as_mapping(hello_obj.get("hello"))
+    if hello is None:
+        return
+    raw_code = hello.get("error_code")
+    if raw_code in (None, 0, "0", ""):
+        return
+    try:
+        code = _coerce_intish(raw_code, field="error_code")
+    except ValueError:
+        return  # left to the regular parser
+    if code == 0:
+        return
+    raw_msg = hello.get("error_message")
+    message = raw_msg if isinstance(raw_msg, str) and raw_msg else None
+    context = E27ErrorContext(phase="hello_parse", detail=f"error_code={code}")
+    if code in HELLO_LINK_REQUIRED_ERROR_CODES:
+        LOG.warning(
+            "Panel rejected HELLO: error_code=%s (%s); the client is not linked or the "
+            "link was revoked, re-link required",
+            code,
+            message or "no message",
+        )
+        raise E27HelloLinkRequired(code, message, context=context)
+    LOG.warning("Panel rejected HELLO: error_code=%s (%s)", code, message or "no message")
+    raise E27HelloRejected(code, message, context=context)
 
 
 def _coerce_intish(value: object, *, field: str) -> int:

@@ -1,5 +1,14 @@
   UNRELEASED
 
+  - HELLO errors (refs Tester hardware report 2026-10-13): a HELLO reply that
+    carries `error_code` is checked before `session_id` is parsed. 11006
+    (`invalid_id`: the client sn is not linked, or its link was revoked) and 11008
+    (`noauth`) now raise `Elke27LinkRequiredError` (new optional attributes
+    `panel_error_code` / `panel_error_message`) so callers start reauth instead of
+    retrying. Other codes raise `Elke27ProtocolError` naming the code. Before, the
+    reply surfaced as `Malformed hello response JSON: hello.session_id must be an
+    int…` with an ERROR traceback; it is now one WARNING line.
+
   - Session: a receiver stopped by a deliberate close no longer reports a link
     loss when its blocked `recv` fails after the socket closes (refs #8). Before,
     it could log `Session disconnect: err=SessionIOError` with stale `rx_age`/`tx_age`

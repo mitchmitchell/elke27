@@ -1373,3 +1373,28 @@ async def test_connect_success_after_failures_resets_warning_cycle(
         (logging.DEBUG, msgs[0][1]),
         (logging.WARNING, msgs[1][1]),
     ]
+
+
+def test_raise_v2_error_maps_hello_rejections(caplog: pytest.LogCaptureFixture) -> None:
+    from elke27_lib.errors import E27HelloLinkRequired, E27HelloRejected, Elke27ProtocolError
+    from elke27_lib.session import SessionProtocolError
+
+    client = Elke27Client(kernel=E27Kernel())
+    try:
+        raise SessionProtocolError("HELLO failed") from E27HelloLinkRequired(11006, "invalid_id")
+    except SessionProtocolError as wrapped:
+        exc = wrapped
+    with pytest.raises(Elke27LinkRequiredError) as ei:
+        client._raise_v2_error(exc, phase="connect")
+    assert ei.value.panel_error_code == 11006
+    assert ei.value.panel_error_message == "invalid_id"
+
+    with pytest.raises(Elke27ProtocolError) as pe:
+        client._raise_v2_error(E27HelloRejected(11016, "in_use"), phase="connect")
+    assert "11016" in str(pe.value)
+
+    caplog.set_level(logging.DEBUG)
+    client._log_connect_attempt_failure(1, exc)
+    recs = [r for r in caplog.records if "Connect failed" in r.getMessage()]
+    assert recs and all(r.levelname == "WARNING" and r.exc_info is None for r in recs)
+    assert not client._is_retryable_connect_error(exc)

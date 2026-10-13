@@ -169,6 +169,12 @@ the command still succeeds; `async_execute` sets `Result.status_refresh_ok` to
   included); the library does not resend it after reconnect. V2 helpers surface
   this as `Elke27DisconnectedError`.
 - `ProtocolError` / `CryptoError`: framing/CRC/crypto/parse failure.
+- HELLO rejected by the panel (reply carries `error_code`): checked before the
+  session fields are parsed. Link/auth codes (11006 `invalid_id` = client sn not
+  linked or link revoked; 11008 `noauth`) raise `Elke27LinkRequiredError` with
+  `.panel_error_code` / `.panel_error_message`, are not retried, and should start
+  reauth (re-link). Any other code raises `Elke27ProtocolError` naming the code.
+  Both are logged at WARNING without a traceback.
 - `Elke27CommandOutcomeUnknownError` (subclass of `Elke27TimeoutError`, `.route =
   (domain, command)`): a write was confirmed sent (a real `on_sent`, not just a woken
   waiter) but no reply arrived before the command deadline. The panel may have applied

@@ -65,6 +65,8 @@ from .errors import (
     E27AuthFailed,
     E27Error,
     E27ErrorContext,
+    E27HelloLinkRequired,
+    E27HelloRejected,
     E27LinkInvalid,
     E27MissingContext,
     E27NotReady,
@@ -395,6 +397,18 @@ def _iter_causes(exc: BaseException) -> Iterable[BaseException]:
         current = current.__cause__ or current.__context__
 
 
+def _link_required_from(err: BaseException) -> Elke27LinkRequiredError:
+    code = getattr(err, "panel_error_code", None)
+    msg = getattr(err, "panel_error_message", None)
+    if isinstance(err, E27HelloLinkRequired):
+        return Elke27LinkRequiredError(
+            f"Panel rejected HELLO (error {code}: {msg or 'no message'}); linking required.",
+            panel_error_code=code,
+            panel_error_message=msg,
+        )
+    return Elke27LinkRequiredError("Linking required to perform this operation.")
+
+
 class _FilteredMapping(Mapping[int, Any]):
     def __init__(self, source: Mapping[int, Any], allowed: Collection[int]) -> None:
         self._source: Mapping[int, Any] = source
@@ -662,9 +676,9 @@ class Elke27Client:
         saw_kernel_wrapper = False
         for err in _iter_causes(exc):
             if isinstance(err, E27ProvisioningRequired):
-                raise Elke27LinkRequiredError(
-                    "Linking required to perform this operation."
-                ) from None
+                raise _link_required_from(err) from None
+            if isinstance(err, E27HelloRejected):
+                raise Elke27ProtocolErrorV2(str(err)) from None
             if isinstance(err, KernelMissingContextError):
                 raise Elke27InvalidArgument("Missing required context for operation.") from None
             if isinstance(err, (KernelInvalidPanelError, KernelNotLinkedError)):
@@ -746,6 +760,12 @@ class Elke27Client:
                 self._log.debug(message, attempt, exc)
             return
         if not self._is_transient_connect_error(exc):
+            if any(
+                isinstance(e, (E27HelloLinkRequired, E27HelloRejected)) for e in _iter_causes(exc)
+            ):
+                # Expected panel rejection, already explained: no traceback.
+                self._log.warning(message, attempt, exc)
+                return
             self._log.error(message, attempt, exc, exc_info=True)
             return
         if self._connection_lost_logged:
@@ -904,7 +924,7 @@ class Elke27Client:
             )
             raise Elke27PanelError(err.panel_error_code, reason) from None
         if isinstance(err, E27ProvisioningRequired):
-            raise Elke27LinkRequiredError("Linking required to perform this operation.") from None
+            raise _link_required_from(err) from None
         if isinstance(err, PanelNotDisarmedError):
             raise Elke27PermissionError("This action requires all areas to be disarmed.") from None
         if isinstance(err, NotAuthenticatedError):
