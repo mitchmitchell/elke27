@@ -5,6 +5,7 @@ from typing import Any
 
 from .errors import (
     Elke27AuthError,
+    Elke27CommandOutcomeUnknownError,
     Elke27ConnectionError,
     Elke27CryptoError,
     Elke27DisconnectedError,
@@ -81,6 +82,7 @@ __all__ = [
     "Elke27Error",
     "Elke27TransientError",
     "Elke27ConnectionError",
+    "Elke27CommandOutcomeUnknownError",
     "Elke27TimeoutError",
     "Elke27DisconnectedError",
     "Elke27AuthError",

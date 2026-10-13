@@ -1,5 +1,14 @@
   UNRELEASED
 
+  - New public `Elke27CommandOutcomeUnknownError` (subclass of
+    `Elke27TimeoutError`, carries `route=(domain, command)`). `async_execute` and the
+    command helpers return/raise it when a write was confirmed sent (`on_sent`) but no
+    reply arrived before the command deadline; the panel may have applied it, so
+    re-read the entity. If the caller cancels after the confirmed send,
+    `asyncio.CancelledError` still propagates, with this error as `__cause__`.
+    Timeouts before the frame was sent, and `get_*` read timeouts, stay plain
+    `Elke27TimeoutError`. Existing `except Elke27TimeoutError` handlers keep working.
+
   - After a successful `area_set_arm_state` or `zone_set_status`, the client issues
     a follow-up `area_get_status` / `zone_get_status` (unless the command reply
     already included confirmed arm or bypass fields) so `get_snapshot()` reflects
