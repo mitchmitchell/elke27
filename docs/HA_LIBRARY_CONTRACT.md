@@ -176,8 +176,13 @@ The library returns:
 
 Home Assistant:
 - does not retry mutating commands automatically
-- may retry read-only commands
+- may retry read-only commands after explicit integration policy
+- kernel transport retries after a confirmed send are limited to `get_*` reads
+  and disarm; other mutating routes are at-most-once on reply timeout
 - maps typed failures to HA UX (errors, reauth flows, service errors)
+- when the session is lost during a command, the library fails that command
+  immediately (reads included), raises `Elke27DisconnectedError`, and never
+  resends it after reconnect; HA decides whether to retry
 
 
 8. Error Semantics

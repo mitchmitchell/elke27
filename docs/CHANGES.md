@@ -1,5 +1,28 @@
   UNRELEASED
 
+  - Command transport failures are retried with bounded exponential backoff using
+    the existing `request_max_retries` / `request_max_backoff_s` kernel settings
+    (#12). Retries apply to reply timeouts and send failures while the session
+    stays up, and to panel busy (`ELKERR_ZWAVE_BUSY`, 11039) on `async_execute`.
+    Session loss fails queued and in-flight commands immediately for every command
+    (reads included), surfaces as `Elke27DisconnectedError` on v2 exception paths,
+    and is never automatically resent after reconnect. Each command gets an
+    absolute deadline; `async_execute`
+    waits for the full transport budget (~16.5 s with defaults: `(retries+1) ×
+    5 s timeout + 0.5 s + 1 s backoff`) and cancels kernel retries if the
+    caller times out. Transport retries reuse the same JSON `seq` on resend.
+    Panel refusals (any other non-zero `error_code`, permission, auth, or invalid
+    argument) are never retried. After a confirmed send (`on_sent`), only
+    `get_*` read routes and `area.set_arm_state` with `arm_state=DISARMED` may
+    retry on reply timeout; every other command (locks, lights, thermostats,
+    barriers, other arm states, all `set_*` writes, system mutations, etc.) is
+    at-most-once and fails with the timeout without resend. Pre-send transport
+    failures keep the normal retry policy. Disarm is
+    always `OutboundPriority.HIGH`, is requeued immediately on transport retry
+    (no backoff), and is not delayed behind other commands waiting to retry.
+    `kernel.close()` fails every pending command (including send-confirmation
+    waiters and transport backoff waiters) before clearing retry timers.
+
   - Area exit delay: `area.get_status` and periodic status broadcasts expose
     `arm_cmd_state`, `ee_timer`, and `alarm_zone` during the arm exit countdown.
     Public `arming` is `True` only when all four fields are present on the
@@ -26,7 +49,6 @@
     session on kernel outbound `SessionIOError` (including no-reply sends), and
     emit a single disconnect when both teardown and the recv thread observe a
     dead socket (#8).
-
   - Behavior change: commands sent while not connected (no session / encryption
     key) now raise `Elke27DisconnectedError` (transient) from v2 command helpers
     instead of `Elke27PermissionError`. `ConnectionLost` during a command now

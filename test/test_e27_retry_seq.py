@@ -7,8 +7,8 @@ from elke27_lib.kernel import E27Kernel
 from test.helpers.internal import get_private
 
 
-def test_no_retry_after_timeout() -> None:
-    kernel = E27Kernel(request_timeout_s=0.01, request_max_retries=1)
+def test_retries_after_timeout_when_configured() -> None:
+    kernel = E27Kernel(request_timeout_s=0.01, request_max_retries=1, request_max_backoff_s=0.0)
     sent: list[int] = []
 
     class _Session:
@@ -46,4 +46,4 @@ def test_no_retry_after_timeout() -> None:
     assert sent == [1]
     on_reply_timeout = cast(Callable[[int], None], get_private(kernel, "_on_reply_timeout"))
     on_reply_timeout(1)
-    assert sent == [1]
+    assert sent == [1, 1]

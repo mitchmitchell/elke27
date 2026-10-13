@@ -534,6 +534,11 @@ class Session:
         )
         self._outbound.enqueue(item)
 
+    def cancel_outbound_pending_seq(self, seq: int) -> bool:
+        if self._outbound is None:
+            return False
+        return self._outbound.cancel_pending_seq(seq)
+
     def enable_outbound_queue(
         self,
         *,
