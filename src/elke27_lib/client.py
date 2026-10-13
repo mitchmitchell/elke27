@@ -1022,7 +1022,8 @@ class Elke27Client:
         before_areas = frozenset(self._stale_area_ids)
         before_zones = frozenset(self._stale_zone_ids)
         if isinstance(evt, AreaStatusUpdated):
-            self._stale_area_ids.discard(evt.area_id)
+            if evt.status_confirmed:
+                self._stale_area_ids.discard(evt.area_id)
         elif isinstance(evt, ZoneStatusUpdated):
             self._stale_zone_ids.discard(evt.zone_id)
         elif isinstance(evt, ZonesStatusBulkUpdated):
@@ -1363,9 +1364,16 @@ class Elke27Client:
             return None
         if self._command_reply_includes_confirmed_status(command_key, response_payload):
             return True
-        refresh_result = await self._refresh_snapshot_from_panel_status(
-            command_key, params, timeout_s=timeout_s
-        )
+        refresh_result: Result[Mapping[str, Any]] | None
+        if timeout_s is not None and timeout_s <= 0:
+            # No budget left before the command deadline; don't start a read.
+            refresh_result = _err(
+                E27Timeout(f"No time left before command deadline to refresh {command_key}")
+            )
+        else:
+            refresh_result = await self._refresh_snapshot_from_panel_status(
+                command_key, params, timeout_s=timeout_s
+            )
         if refresh_result is None:
             return None
         if refresh_result.ok:
@@ -1596,7 +1604,8 @@ class Elke27Client:
         self._enqueue_event(v2_evt)
 
         if isinstance(evt, AreaStatusUpdated):
-            self._notify_entity_status_publication("area", evt.area_id)
+            if evt.status_confirmed:
+                self._notify_entity_status_publication("area", evt.area_id)
         elif isinstance(evt, ZoneStatusUpdated):
             self._notify_entity_status_publication("zone", evt.zone_id)
 
@@ -1632,7 +1641,12 @@ class Elke27Client:
             self._queue_bootstrap_attribs("keypad")
         elif isinstance(evt, AreaStatusUpdated):
             self._mark_status_seen("area", [evt.area_id])
-            if not evt.changed_fields:
+            # Only poll zones when the area bypass flag actually changed; an
+            # unchanged AreaStatusUpdated (emitted on every status reply since #29)
+            # must not trigger a full zone poll after each arm/disarm.
+            if "bypass" in evt.changed_fields and not self._should_suppress_area_bypass_refresh(
+                evt.area_id
+            ):
                 self._refresh_all_zone_statuses_for_bypass_change(evt.area_id)
             if "num_bypassed_zones" in evt.changed_fields:
                 suppress_refresh = self._should_suppress_area_bypass_refresh(evt.area_id)
@@ -2525,7 +2539,9 @@ class Elke27Client:
                 command_key,
                 params,
                 response_payload,
-                timeout_s=timeout_s,
+                # Remaining budget only, so write + refresh + publication wait
+                # together stay within one timeout_s (PR #29 Bugbot).
+                timeout_s=command_deadline - loop.time(),
             )
             if publication_wait is not None:
                 domain, entity_id, seen_before = publication_wait

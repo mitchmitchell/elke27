@@ -658,3 +658,91 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication() -> 
 
     await flush_task
     loop.call_soon_threadsafe = real_call_soon_threadsafe  # type: ignore[method-assign]
+
+
+@pytest.mark.asyncio
+async def test_arm_refresh_and_publication_wait_share_command_deadline() -> None:
+    """PR #29 Bugbot (a): refresh + wait use the time left, not a fresh timeout_s."""
+    client, session = _make_client()
+    kernel = get_kernel(client)
+    kernel.state.get_or_create_area(1).arm_state = "DISARMED"
+    client._replace_snapshot(areas=client._build_area_map())
+
+    timeout_s = 0.2
+    started = time.monotonic()
+    result = await _drive_until_done(
+        client,
+        session,
+        client.async_execute(
+            "area_set_arm_state",
+            area_id=1,
+            arm_state="ARMED_AWAY",
+            pin=1234,
+            timeout_s=timeout_s,
+        ),
+        first_reply={
+            "seq": 0,
+            "area": {"set_arm_state": {"area_id": 1, "error_code": E27ErrorCode.ELKERR_NONE}},
+        },
+        max_replies=1,
+    )
+    elapsed = time.monotonic() - started
+
+    assert isinstance(result, Result)
+    assert result.ok is True
+    assert result.status_refresh_ok is False
+    # Previously ~2x timeout_s (write + a full-timeout refresh); now bounded by one.
+    assert elapsed < timeout_s * 1.5
+
+
+def _area_status_evt(*, confirmed: bool) -> AreaStatusUpdated:
+    return AreaStatusUpdated(
+        kind=AreaStatusUpdated.KIND,
+        at=UNSET_AT,
+        seq=UNSET_SEQ,
+        classification=UNSET_CLASSIFICATION,
+        route=("area", "set_arm_state"),
+        session_id=UNSET_SESSION_ID,
+        area_id=1,
+        changed_fields=(),
+        status_confirmed=confirmed,
+    )
+
+
+def test_ack_only_arm_reply_does_not_clear_stale_or_release_wait() -> None:
+    """PR #29 Bugbot (b): an ack-only set_arm_state reply is not a status confirmation."""
+    client = Elke27Client()
+    get_kernel(client)
+    client._mark_area_stale(1)
+    seq_before = client._area_status_seq.get(1, 0)
+
+    client._handle_kernel_event(_area_status_evt(confirmed=False))
+    assert client.snapshot.stale_area_ids == frozenset({1})
+    assert client._area_status_seq.get(1, 0) == seq_before
+
+    client._handle_kernel_event(_area_status_evt(confirmed=True))
+    assert client.snapshot.stale_area_ids == frozenset()
+    assert client._area_status_seq.get(1, 0) == seq_before + 1
+
+
+@pytest.mark.parametrize(
+    ("payload", "confirmed"),
+    [
+        ({"area_id": 1, "error_code": 0}, False),
+        ({"area_id": 1, "error_code": 0, "arm_state": "ARMED_AWAY"}, True),
+    ],
+)
+def test_set_arm_state_handler_marks_status_confirmed(
+    payload: dict[str, Any], confirmed: bool
+) -> None:
+    from elke27_lib.handlers.area import make_area_set_arm_state_handler
+    from elke27_lib.states import PanelState
+
+    emitted: list[Any] = []
+    handler = make_area_set_arm_state_handler(
+        PanelState(), lambda evt, _ctx: emitted.append(evt), lambda: 0.0
+    )
+    handler({"area": {"set_arm_state": payload}}, cast(Any, object()))
+    updates = [e for e in emitted if isinstance(e, AreaStatusUpdated)]
+    assert len(updates) == 1
+    assert updates[0].status_confirmed is confirmed

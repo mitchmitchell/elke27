@@ -749,6 +749,7 @@ def _finalize_area_delta_outcome(
     invalid_area_message: str,
     schema_warning_message: str,
     emit_outcome_api_error: bool,
+    status_confirmed: bool = True,
 ) -> bool:
     if outcome.area_id < 1:
         emit(
@@ -778,6 +779,7 @@ def _finalize_area_delta_outcome(
             session_id=UNSET_SESSION_ID,
             area_id=outcome.area_id,
             changed_fields=outcome.changed_fields,
+            status_confirmed=status_confirmed,
         ),
         ctx,
     )
@@ -873,6 +875,8 @@ def make_area_set_arm_state_handler(state: PanelState, emit: EmitFn, now: NowFn)
             invalid_area_message="area.set_arm_state missing/invalid area_id; ignoring payload.",
             schema_warning_message="area.set_arm_state payload contained type/schema warnings.",
             emit_outcome_api_error=False,
+            # Ack-only replies do not confirm the area's status (PR #29 Bugbot).
+            status_confirmed="arm_state" in payload or "armed_state" in payload,
         )
 
     return handler_area_set_arm_state

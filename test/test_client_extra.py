@@ -248,7 +248,15 @@ def test_handle_kernel_event_area_paths(
         "_refresh_all_zone_statuses_for_bypass_change",
         lambda _area: called.__setitem__("refresh", called["refresh"] + 1),
     )
+    # Unchanged AreaStatusUpdated (e.g. after every arm/disarm) must not poll zones.
     evt = AreaStatusUpdated(**_event_base(AreaStatusUpdated.KIND), area_id=1, changed_fields=())
+    client._handle_kernel_event(evt)
+    assert called["refresh"] == 0
+
+    # Only a change to the area bypass field triggers the zone poll.
+    evt = AreaStatusUpdated(
+        **_event_base(AreaStatusUpdated.KIND), area_id=1, changed_fields=("bypass",)
+    )
     client._handle_kernel_event(evt)
     assert called["refresh"] == 1
 

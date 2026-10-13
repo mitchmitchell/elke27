@@ -80,6 +80,10 @@ class AreaStatusUpdated(Event):
 
     area_id: int
     changed_fields: tuple[str, ...]  # sorted tuple for deterministic tests/logs
+    # False for an ack-only ``set_arm_state`` reply (no arm state in the payload).
+    # Such an event updates the snapshot but must not release a post-write
+    # publication wait or clear the area's stale flag.
+    status_confirmed: bool = True
 
 
 @dataclass(frozen=True, slots=True)
