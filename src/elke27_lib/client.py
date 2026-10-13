@@ -943,7 +943,7 @@ class Elke27Client:
     def _build_panel_info(self) -> PanelInfo:
         panel = self._kernel.state.panel
         return PanelInfo(
-            mac=None,
+            mac=getattr(panel, "mac", None),
             model=panel.model,
             firmware=panel.firmware,
             serial=panel.serial,
@@ -1995,6 +1995,8 @@ class Elke27Client:
         self._connect_failures_warning_logged = False
         self._connected = True
         self._clear_all_entity_stale()
+        self._reset_panel_identity_if_new_panel(host, port)
+        self._request_panel_version_info()
         if self._snapshot.version == 0:
             self._replace_snapshot(
                 panel_info=self._build_panel_info(),
@@ -2010,6 +2012,57 @@ class Elke27Client:
                 thermostats=self._build_thermostat_map(),
             )
         self._maybe_set_ready()
+
+    def _reset_panel_identity_if_new_panel(self, host: str, port: int) -> None:
+        """Drop cached serial/MAC/model/firmware when connecting to a different panel.
+
+        Version info is applied patch-style, so a panel that errors or omits fields
+        would otherwise inherit the previous panel's identity. Reconnects to the
+        same host:port keep it until the new reply arrives.
+        """
+        key = (host, port)
+        if getattr(self, "_identity_panel_key", None) == key:
+            return
+        self._identity_panel_key = key
+        panel = self._kernel.state.panel
+        for field in ("serial", "mac", "model", "firmware"):
+            if hasattr(panel, field):
+                setattr(panel, field, None)
+        # Publish the cleared identity; panel_info=None would keep the old PanelInfo.
+        self._replace_snapshot(panel_info=self._build_panel_info())
+
+    def _request_panel_version_info(self) -> None:
+        """Ask the panel for serial/MAC/model/firmware after HELLO (E1).
+
+        Best effort: the reply fills ``PanelInfo`` via ``PanelVersionInfoUpdated``.
+        A send failure, an error reply or missing fields never break connect; the
+        fields stay ``None`` and the failure is logged at DEBUG.
+        """
+        route = ("control", "get_version_info")
+        try:
+            if self._kernel.requests.get(route) is None:
+                self._log.debug(
+                    "control.get_version_info not registered; panel identity stays unset"
+                )
+                return
+            # Truly fire-and-forget: expects_reply=False sends directly, with no reply
+            # timeout, no retries and no in-flight slot, so later commands are never
+            # held behind this optional probe. A reply is still dispatched by route.
+            self._kernel.send_request_with_seq(
+                self._kernel.next_seq(),
+                route[0],
+                route[1],
+                {},
+                pending=False,
+                opaque=None,
+                expected_route=None,
+                expects_reply=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._log.debug(
+                "control.get_version_info request failed; panel identity stays unset: %s",
+                type(exc).__name__,
+            )
 
     async def async_disconnect(self) -> None:
         """Disconnect the current session (v2 public API)."""

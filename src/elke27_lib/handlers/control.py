@@ -102,6 +102,7 @@ def _reconcile_control_get_version_info(
     model = _first_present(payload, ("model", "panel_model", "hw", "hwver"))
     firmware = _first_present(payload, ("firmware", "fw", "firmware_version", "sw_version", "SSP"))
     serial = _first_present(payload, ("serial", "serial_number", "sn"))
+    mac = _first_present(payload, ("mac", "MAC", "mac_address", "macaddr"))
 
     if model is not None:
         if isinstance(model, int):
@@ -134,6 +135,14 @@ def _reconcile_control_get_version_info(
             warnings.append(
                 f"field 'serial' wrong type (expected str, got {type(serial).__name__})"
             )
+
+    if mac is not None:
+        if isinstance(mac, str) and mac:
+            if state.panel.mac != mac:
+                state.panel.mac = mac
+                changed.add("mac")
+        else:
+            warnings.append(f"field 'mac' wrong type (expected str, got {type(mac).__name__})")
 
     return _VersionInfoOutcome(
         changed_fields=tuple(sorted(changed)),
