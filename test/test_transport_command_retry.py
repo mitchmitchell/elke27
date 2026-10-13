@@ -904,3 +904,39 @@ async def test_disarm_uses_high_priority() -> None:
     result = await task
     assert result.ok
     assert priorities == [OutboundPriority.HIGH]
+
+
+@pytest.mark.asyncio
+async def test_recv_thread_reply_marshals_retry_cleanup_to_loop() -> None:
+    """_on_message runs on the recv thread; retry-state cleanup must run on the loop."""
+    import threading
+
+    kernel = E27Kernel(request_timeout_s=0.02, request_max_retries=2, request_max_backoff_s=60.0)
+    session = _FakeSession()
+    _wire_kernel(kernel, session)
+    kernel_any = cast(Any, kernel)
+    loop = asyncio.get_running_loop()
+    loop_thread = threading.get_ident()
+    calls: list[tuple[int, int]] = []
+    original = kernel_any._clear_pending_transport_retry_for_seq
+
+    def _spy(seq: int) -> None:
+        calls.append((seq, threading.get_ident()))
+        original(seq)
+
+    kernel_any._clear_pending_transport_retry_for_seq = _spy
+
+    worker = threading.Thread(
+        target=kernel_any._clear_pending_transport_retry_for_seq_threadsafe, args=(77,)
+    )
+    worker.start()
+    worker.join()
+    assert calls == []  # not run on the recv thread
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert calls == [(77, loop_thread)]
+
+    # On the loop thread itself it runs inline.
+    kernel_any._clear_pending_transport_retry_for_seq_threadsafe(78)
+    assert calls[-1] == (78, loop_thread)
+    assert loop is asyncio.get_running_loop()

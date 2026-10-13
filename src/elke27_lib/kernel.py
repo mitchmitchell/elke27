@@ -1140,7 +1140,7 @@ class E27Kernel:
                             msg["session_id"] = auth_sid
         if isinstance(seq_val, int) and seq_val > 0:
             self._pending_responses.resolve(seq_val, msg)
-            self._clear_pending_transport_retry_for_seq(seq_val)
+            self._clear_pending_transport_retry_for_seq_threadsafe(seq_val)
 
         sid = msg.get("session_id")
         if isinstance(sid, int):
@@ -1467,6 +1467,29 @@ class E27Kernel:
         """Drop queued/backoff resends for seq after a reply arrives (including late)."""
         self._cancel_transport_retry_timer_for_seq(seq)
         self._remove_queued_seq(seq)
+
+    def _clear_pending_transport_retry_for_seq_threadsafe(self, seq: int) -> None:
+        """Marshal retry-state cleanup onto the event loop thread.
+
+        _on_message runs on the transport recv thread; the retry timer maps and
+        request deques are owned by the loop, so mutate them only there.
+        """
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            self._clear_pending_transport_retry_for_seq(seq)
+            return
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            self._clear_pending_transport_retry_for_seq(seq)
+            return
+        try:
+            loop.call_soon_threadsafe(self._clear_pending_transport_retry_for_seq, seq)
+        except RuntimeError:
+            # Loop closed between the check and the call; nothing left to race.
+            self._clear_pending_transport_retry_for_seq(seq)
 
     def _remove_queued_seq(self, seq: int) -> None:
         for queue in (self._request_queue_high, self._request_queue_normal):
