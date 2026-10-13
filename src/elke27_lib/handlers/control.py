@@ -74,7 +74,10 @@ def is_placeholder_serial(value: str) -> bool:
     upper = text.upper()
     if set(upper) <= {"0"} or set(upper) <= {"F"}:
         return True
-    return upper.isdigit() and int(upper) <= 1
+    # ASCII-only, no int(): Unicode digits such as "²" pass str.isdigit() but make
+    # int() raise, which would drop the whole reply. Value <= 1 means zero padding
+    # followed by a single trailing "1".
+    return upper.lstrip("0") == "1"
 
 
 @dataclass(frozen=True, slots=True)

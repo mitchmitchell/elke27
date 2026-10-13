@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, cast
 
@@ -166,7 +167,7 @@ def test_placeholder_serials_stay_none(sn: str) -> None:
     assert state.panel.serial is None
 
 
-@pytest.mark.parametrize("sn", ["00000002", "1234ABCD", "A0000001", "10"])
+@pytest.mark.parametrize("sn", ["00000002", "1234ABCD", "A0000001", "10", "\u00b2", "9" * 5000])
 def test_real_serials_are_kept(sn: str) -> None:
     state, _ = _run_handler({"sn": sn, "error_code": 0})
     assert state.panel.serial == sn
@@ -201,3 +202,50 @@ def test_fire_and_forget_pending_reply_is_classified_response() -> None:
         {"seq": 17, "session_id": 1, "control": {"get_version_info": dict(_HW_REPLY)}}
     )
     assert result.classification == "RESPONSE"
+
+
+def test_unicode_digit_serial_does_not_drop_reply() -> None:
+    state, _ = _run_handler({"sn": "\u00b2", "hw": 260, "SSP": "2.6.1", "error_code": 0})
+    assert state.panel.serial == "\u00b2"
+    assert (state.panel.model, state.panel.firmware) == ("260", "2.6.1")
+
+
+def test_fire_and_forget_correlation_is_dropped_on_close_and_connect() -> None:
+    from types import SimpleNamespace
+
+    from elke27_lib.kernel import E27Kernel
+    from elke27_lib.session import SessionState
+
+    kernel = E27Kernel()
+    cast(Any, kernel)._session = SimpleNamespace(
+        state=SessionState.ACTIVE, send_json=lambda *_a, **_k: None
+    )
+    route = ("control", "get_version_info")
+    kernel._send_request_with_seq(
+        17, *route, {}, pending=True, opaque=None, expected_route=route, expects_reply=False
+    )
+    assert kernel.dispatcher.pending_count() == 1
+    cast(Any, kernel)._session = None
+    asyncio.run(kernel.close())  # teardown (also runs at the start of every connect)
+    assert kernel.dispatcher.pending_count() == 0
+    # A later message reusing seq 17 is no longer read as our RESPONSE.
+    result = kernel.dispatcher.dispatch(
+        {"seq": 17, "session_id": 1, "control": {"get_version_info": dict(_HW_REPLY)}}
+    )
+    assert result.classification == "UNSOLICITED"
+
+
+@pytest.mark.asyncio
+async def test_connect_drops_stale_fire_and_forget_correlation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from elke27_lib.dispatcher import PendingRequest
+    from elke27_lib.kernel import E27Kernel, KernelMissingContextError
+
+    kernel = E27Kernel()
+    kernel.dispatcher.add_pending(PendingRequest(seq=5))
+    cast(Any, kernel)._fire_and_forget_pending_seqs.add(5)
+    monkeypatch.setattr(kernel, "load_features_blocking", lambda *_a: None)
+    with pytest.raises(KernelMissingContextError):
+        await kernel.connect(cast(Any, None))  # fails after the cleanup step
+    assert kernel.dispatcher.pending_count() == 0

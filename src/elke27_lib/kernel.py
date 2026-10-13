@@ -394,6 +394,9 @@ class E27Kernel:
         self._sent_events = {}
         self._sent_event_lock = threading.Lock()
         self._confirmed_sent_seqs: set[int] = set()
+        # Correlation-only pending entries for fire-and-forget sends (#40). Nothing
+        # waits on them, so they are dropped on close and on every connect.
+        self._fire_and_forget_pending_seqs: set[int] = set()
         self._loop = None
         self._request_state = _RequestState.IDLE
         self._active_seq = None
@@ -554,6 +557,7 @@ class E27Kernel:
         """
         await asyncio.to_thread(self.load_features_blocking, None)
         self._loop = asyncio.get_running_loop()
+        self._drop_fire_and_forget_pending()  # never carry correlation across sessions
         if session_config is None and panel is None:
             raise KernelMissingContextError(
                 "connect() requires panel context or session_config (HA must pass host/port)."
@@ -1533,7 +1537,13 @@ class E27Kernel:
         self._pending_responses.fail(item.seq, exc)
         self._signal_sent_event(item.seq)
 
+    def _drop_fire_and_forget_pending(self) -> None:
+        for seq in self._fire_and_forget_pending_seqs:
+            self.dispatcher.drop_pending(seq)
+        self._fire_and_forget_pending_seqs.clear()
+
     def _fail_all_pending_commands(self, exc: BaseException) -> None:
+        self._drop_fire_and_forget_pending()
         queued_items: list[_QueuedRequest] = self._drain_transport_retry_waiters()
         for queue in (self._request_queue_high, self._request_queue_normal):
             while queue:
@@ -1932,6 +1942,7 @@ class E27Kernel:
             msg = self._build_request_message(seq, domain, name, payload)
             self._log_outbound(domain, name, msg)
             if pending:
+                self._fire_and_forget_pending_seqs.add(seq)
                 # Register correlation only, so a reply is classified RESPONSE
                 # rather than UNSOLICITED. Nothing waits on it.
                 self.dispatcher.add_pending(
@@ -1952,6 +1963,7 @@ class E27Kernel:
             except Exception as exc:
                 if pending:
                     self.dispatcher.drop_pending(seq)
+                    self._fire_and_forget_pending_seqs.discard(seq)
                 self._handle_send_failure(seq, exc)
                 raise KernelError(
                     f"Failed to send request {domain}.{name} seq={seq}: {exc}"
