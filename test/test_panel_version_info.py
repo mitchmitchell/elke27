@@ -24,12 +24,12 @@ def _client_with_fake_connect(monkeypatch: pytest.MonkeyPatch) -> tuple[Elke27Cl
     async def _connect(*_a: Any, **_k: Any) -> None:
         return None
 
-    def _request(route: Any, /, **kwargs: Any) -> int:
-        requests.append((route, kwargs))
-        return 1
+    def _send(seq: int, domain: str, name: str, payload: Any, **kwargs: Any) -> int:
+        requests.append(((domain, name), kwargs))
+        return seq
 
     monkeypatch.setattr(client._kernel, "connect", _connect)
-    monkeypatch.setattr(client._kernel, "request", _request)
+    monkeypatch.setattr(client._kernel, "send_request_with_seq", _send)
     return client, requests
 
 
@@ -37,7 +37,8 @@ def _client_with_fake_connect(monkeypatch: pytest.MonkeyPatch) -> tuple[Elke27Cl
 async def test_connect_requests_version_info(monkeypatch: pytest.MonkeyPatch) -> None:
     client, requests = _client_with_fake_connect(monkeypatch)
     await client.async_connect("h", 1, _KEYS)
-    assert (("control", "get_version_info"), {"pending": False}) in requests
+    routes = [r for r, kw in requests if kw.get("expects_reply") is False]
+    assert routes == [("control", "get_version_info")]  # no reply wait/retry/queue slot
     panel = client.snapshot.panel
     assert (panel.serial, panel.mac, panel.model, panel.firmware) == (None, None, None, None)
 
@@ -51,7 +52,7 @@ async def test_version_info_request_failure_does_not_break_connect(
     def _boom(*_a: Any, **_k: Any) -> int:
         raise RuntimeError("send failed")
 
-    monkeypatch.setattr(client._kernel, "request", _boom)
+    monkeypatch.setattr(client._kernel, "send_request_with_seq", _boom)
     with caplog.at_level(logging.DEBUG, logger=client._log.name):
         await client.async_connect("h", 1, _KEYS)
     assert cast(Any, client)._connected is True
@@ -104,3 +105,21 @@ def test_snapshot_panel_info_exposes_mac() -> None:
     info = client._build_panel_info()
     assert info.mac == "00:40:9D:AA:BB:CC"
     assert info.serial == "E27123456"
+
+
+@pytest.mark.asyncio
+async def test_identity_cleared_when_connecting_to_a_different_panel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _ = _client_with_fake_connect(monkeypatch)
+    await client.async_connect("panel-a", 2101, _KEYS)
+    panel = client._kernel.state.panel
+    panel.serial, panel.mac, panel.model, panel.firmware = "A1", "aa:aa", "E27", "1.0"
+
+    # Reconnect to the same panel keeps identity until a new reply arrives.
+    await client.async_connect("panel-a", 2101, _KEYS)
+    assert panel.serial == "A1"
+
+    # A different panel must not inherit A's identity.
+    await client.async_connect("panel-b", 2101, _KEYS)
+    assert (panel.serial, panel.mac, panel.model, panel.firmware) == (None, None, None, None)

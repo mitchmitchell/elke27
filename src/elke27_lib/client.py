@@ -1995,6 +1995,7 @@ class Elke27Client:
         self._connect_failures_warning_logged = False
         self._connected = True
         self._clear_all_entity_stale()
+        self._reset_panel_identity_if_new_panel(host, port)
         self._request_panel_version_info()
         if self._snapshot.version == 0:
             self._replace_snapshot(
@@ -2012,6 +2013,22 @@ class Elke27Client:
             )
         self._maybe_set_ready()
 
+    def _reset_panel_identity_if_new_panel(self, host: str, port: int) -> None:
+        """Drop cached serial/MAC/model/firmware when connecting to a different panel.
+
+        Version info is applied patch-style, so a panel that errors or omits fields
+        would otherwise inherit the previous panel's identity. Reconnects to the
+        same host:port keep it until the new reply arrives.
+        """
+        key = (host, port)
+        if getattr(self, "_identity_panel_key", None) == key:
+            return
+        self._identity_panel_key = key
+        panel = self._kernel.state.panel
+        for field in ("serial", "mac", "model", "firmware"):
+            if hasattr(panel, field):
+                setattr(panel, field, None)
+
     def _request_panel_version_info(self) -> None:
         """Ask the panel for serial/MAC/model/firmware after HELLO (E1).
 
@@ -2026,7 +2043,19 @@ class Elke27Client:
                     "control.get_version_info not registered; panel identity stays unset"
                 )
                 return
-            self._kernel.request(route, pending=False)
+            # Truly fire-and-forget: expects_reply=False sends directly, with no reply
+            # timeout, no retries and no in-flight slot, so later commands are never
+            # held behind this optional probe. A reply is still dispatched by route.
+            self._kernel.send_request_with_seq(
+                self._kernel.next_seq(),
+                route[0],
+                route[1],
+                {},
+                pending=False,
+                opaque=None,
+                expected_route=None,
+                expects_reply=False,
+            )
         except Exception as exc:  # noqa: BLE001
             self._log.debug(
                 "control.get_version_info request failed; panel identity stays unset: %s",

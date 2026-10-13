@@ -1,10 +1,11 @@
   UNRELEASED
 
   - Panel identity (E1): after HELLO, `async_connect` sends `control.get_version_info`
-    (fire-and-forget). The reply fills `PanelSnapshot.panel` `serial`, `mac` (new on
+    (fire-and-forget: no reply wait, retry or queue slot). The reply fills `PanelSnapshot.panel` `serial`, `mac` (new on
     `PanelMetaState`), `model` and `firmware`. A send failure, an error reply or
     missing fields never break connect: the fields stay `None` and a send failure is
-    logged at DEBUG. Field names follow the existing patch-style reconcile; real
+    logged at DEBUG. Connecting to a different host:port clears the cached
+    identity first. Field names follow the existing patch-style reconcile; real
     payload keys still need a hardware check.
 
   - New public `Elke27CommandOutcomeUnknownError` (subclass of
