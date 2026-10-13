@@ -1,5 +1,11 @@
   UNRELEASED
 
+  - Session: a receiver stopped by a deliberate close no longer reports a link
+    loss when its blocked `recv` fails after the socket closes (refs #8). Before,
+    it could log `Session disconnect: err=SessionIOError` with stale `rx_age`/`tx_age`
+    and call `on_disconnected`, which could tear down a session that had already
+    reconnected.
+
   - Panel identity (E1): after HELLO, `async_connect` sends `control.get_version_info`
     (fire-and-forget: no reply wait, retry or queue slot). The reply fills `PanelSnapshot.panel` `serial`, `mac` (new on
     `PanelMetaState`), `model` and `firmware`. A send failure, an error reply or
