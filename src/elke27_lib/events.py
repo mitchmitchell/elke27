@@ -129,6 +129,9 @@ class ZoneStatusUpdated(Event):
 
     zone_id: int
     changed_fields: tuple[str, ...]
+    # False for an ack-only ``zone.set_status`` reply (no BYPASSED field); see
+    # AreaStatusUpdated.status_confirmed.
+    status_confirmed: bool = True
 
 
 @dataclass(frozen=True, slots=True)

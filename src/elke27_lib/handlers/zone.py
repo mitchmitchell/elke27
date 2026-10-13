@@ -553,6 +553,8 @@ def make_zone_set_status_handler(state: PanelState, emit: EmitFn, now: NowFn):
                 session_id=UNSET_SESSION_ID,
                 zone_id=zone_id,
                 changed_fields=tuple(sorted(changed)),
+                # Ack-only replies do not confirm bypass state (PR #29 Codex P1).
+                status_confirmed="BYPASSED" in payload or "bypassed" in payload,
             ),
             ctx,
         )

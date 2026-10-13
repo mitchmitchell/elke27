@@ -13,6 +13,7 @@ See docs/CLIENT_CONTRACT.md for the stable client contract.
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextlib
 import inspect
 import logging
@@ -475,6 +476,7 @@ class Elke27Client:
         self._stale_area_ids: set[int] = set()
         self._stale_zone_ids: set[int] = set()
         self._area_status_seq: dict[int, int] = {}
+        self._arm_write_inflight_area_ids: collections.Counter[int] = collections.Counter()
         self._zone_status_seq: dict[int, int] = {}
         self._area_status_waiters: dict[int, list[asyncio.Future[None]]] = defaultdict(list)
         self._zone_status_waiters: dict[int, list[asyncio.Future[None]]] = defaultdict(list)
@@ -1025,7 +1027,8 @@ class Elke27Client:
             if evt.status_confirmed:
                 self._stale_area_ids.discard(evt.area_id)
         elif isinstance(evt, ZoneStatusUpdated):
-            self._stale_zone_ids.discard(evt.zone_id)
+            if evt.status_confirmed:
+                self._stale_zone_ids.discard(evt.zone_id)
         elif isinstance(evt, ZonesStatusBulkUpdated):
             self._stale_zone_ids.difference_update(evt.updated_ids)
         return (before_areas, before_zones) != (
@@ -1607,7 +1610,8 @@ class Elke27Client:
             if evt.status_confirmed:
                 self._notify_entity_status_publication("area", evt.area_id)
         elif isinstance(evt, ZoneStatusUpdated):
-            self._notify_entity_status_publication("zone", evt.zone_id)
+            if evt.status_confirmed:
+                self._notify_entity_status_publication("zone", evt.zone_id)
 
         if isinstance(evt, AreaConfiguredInventoryReady):
             self._mark_inventory_ready("area")
@@ -1644,9 +1648,16 @@ class Elke27Client:
             # Only poll zones when the area bypass flag actually changed; an
             # unchanged AreaStatusUpdated (emitted on every status reply since #29)
             # must not trigger a full zone poll after each arm/disarm.
-            if "bypass" in evt.changed_fields and not self._should_suppress_area_bypass_refresh(
-                evt.area_id
-            ):
+            if evt.area_id in self._arm_write_inflight_area_ids:
+                # #29 write path (set_arm_state reply + follow-up get_status): an
+                # unchanged event must not trigger a full zone poll each arm/disarm.
+                if "bypass" in evt.changed_fields and not (
+                    self._should_suppress_area_bypass_refresh(evt.area_id)
+                ):
+                    self._refresh_all_zone_statuses_for_bypass_change(evt.area_id)
+            elif not evt.changed_fields:
+                # Main's rule: an unchanged status reply/broadcast may hide missed
+                # zone updates, so re-read all zone statuses.
                 self._refresh_all_zone_statuses_for_bypass_change(evt.area_id)
             if "num_bypassed_zones" in evt.changed_fields:
                 suppress_refresh = self._should_suppress_area_bypass_refresh(evt.area_id)
@@ -2235,6 +2246,26 @@ class Elke27Client:
             return _err(self._normalize_error(exc, phase="request", detail=detail))
 
     async def async_execute(
+        self,
+        command_key: str,
+        /,
+        *,
+        timeout_s: float | None = None,
+        **params: Any,
+    ) -> Result[Mapping[str, Any]]:
+        area_id = params.get("area_id") if command_key == "area_set_arm_state" else None
+        if not isinstance(area_id, int) or area_id < 1:
+            return await self._async_execute_impl(command_key, timeout_s=timeout_s, **params)
+        # Track the #29 arm write path (write, refresh, publication wait) per area.
+        self._arm_write_inflight_area_ids[area_id] += 1
+        try:
+            return await self._async_execute_impl(command_key, timeout_s=timeout_s, **params)
+        finally:
+            self._arm_write_inflight_area_ids[area_id] -= 1
+            if self._arm_write_inflight_area_ids[area_id] <= 0:
+                del self._arm_write_inflight_area_ids[area_id]
+
+    async def _async_execute_impl(
         self,
         command_key: str,
         /,

@@ -248,17 +248,22 @@ def test_handle_kernel_event_area_paths(
         "_refresh_all_zone_statuses_for_bypass_change",
         lambda _area: called.__setitem__("refresh", called["refresh"] + 1),
     )
-    # Unchanged AreaStatusUpdated (e.g. after every arm/disarm) must not poll zones.
+    # Outside the #29 write path, main's rule holds: unchanged -> zone poll.
     evt = AreaStatusUpdated(**_event_base(AreaStatusUpdated.KIND), area_id=1, changed_fields=())
     client._handle_kernel_event(evt)
-    assert called["refresh"] == 0
+    assert called["refresh"] == 1
 
-    # Only a change to the area bypass field triggers the zone poll.
+    # During an in-flight arm write, unchanged events do not poll; bypass changes do.
+    client._arm_write_inflight_area_ids[1] += 1
+    client._handle_kernel_event(evt)
+    assert called["refresh"] == 1
+    client._pending_bypass_by_area.pop(1, None)
     evt = AreaStatusUpdated(
         **_event_base(AreaStatusUpdated.KIND), area_id=1, changed_fields=("bypass",)
     )
     client._handle_kernel_event(evt)
-    assert called["refresh"] == 1
+    assert called["refresh"] == 2
+    del client._arm_write_inflight_area_ids[1]
 
     caplog.set_level(logging.WARNING, logger="elke27_lib.client")
     evt = AreaStatusUpdated(

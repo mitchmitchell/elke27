@@ -746,3 +746,79 @@ def test_set_arm_state_handler_marks_status_confirmed(
     updates = [e for e in emitted if isinstance(e, AreaStatusUpdated)]
     assert len(updates) == 1
     assert updates[0].status_confirmed is confirmed
+
+
+@pytest.mark.parametrize(
+    ("payload", "confirmed"),
+    [
+        ({"zone_id": 3, "error_code": 0}, False),
+        ({"zone_id": 3, "error_code": 0, "BYPASSED": True}, True),
+    ],
+)
+def test_zone_set_status_handler_marks_status_confirmed(
+    payload: dict[str, Any], confirmed: bool
+) -> None:
+    """PR #29 Codex P1: an ack-only zone.set_status reply is not a confirmation."""
+    from elke27_lib.handlers.zone import make_zone_set_status_handler
+    from elke27_lib.states import PanelState
+
+    emitted: list[Any] = []
+    handler = make_zone_set_status_handler(
+        PanelState(), lambda evt, _ctx: emitted.append(evt), lambda: 0.0
+    )
+    handler({"zone": {"set_status": payload}}, cast(Any, object()))
+    updates = [e for e in emitted if isinstance(e, ZoneStatusUpdated)]
+    assert len(updates) == 1
+    assert updates[0].status_confirmed is confirmed
+
+
+def test_ack_only_zone_reply_does_not_clear_stale_or_release_wait() -> None:
+    client = Elke27Client()
+    get_kernel(client)
+    client._mark_zone_stale(3)
+    seq_before = client._zone_status_seq.get(3, 0)
+
+    def _evt(confirmed: bool) -> ZoneStatusUpdated:
+        return ZoneStatusUpdated(
+            kind=ZoneStatusUpdated.KIND,
+            at=UNSET_AT,
+            seq=UNSET_SEQ,
+            classification=UNSET_CLASSIFICATION,
+            route=("zone", "set_status"),
+            session_id=UNSET_SESSION_ID,
+            zone_id=3,
+            changed_fields=(),
+            status_confirmed=confirmed,
+        )
+
+    client._handle_kernel_event(_evt(False))
+    assert client.snapshot.stale_zone_ids == frozenset({3})
+    assert client._zone_status_seq.get(3, 0) == seq_before
+
+    client._handle_kernel_event(_evt(True))
+    assert client.snapshot.stale_zone_ids == frozenset()
+    assert client._zone_status_seq.get(3, 0) == seq_before + 1
+
+
+@pytest.mark.asyncio
+async def test_arm_write_path_does_not_poll_all_zones() -> None:
+    """PR #29 Bugbot (c): no get_all_zones_status after an arm with an unchanged refresh."""
+    client, session = _make_client()
+    kernel = get_kernel(client)
+    kernel.state.get_or_create_area(1).arm_state = "ARMED_AWAY"
+    client._replace_snapshot(areas=client._build_area_map())
+
+    await _drive_until_done(
+        client,
+        session,
+        client.async_execute(
+            "area_set_arm_state", area_id=1, arm_state="ARMED_AWAY", pin=1234, timeout_s=0.5
+        ),
+        first_reply={
+            "seq": 0,
+            "area": {"set_arm_state": {"area_id": 1, "error_code": E27ErrorCode.ELKERR_NONE}},
+        },
+    )
+    await asyncio.sleep(0.05)
+    assert not [m for m in session.sent if "get_all_zones_status" in m.get("zone", {})]
+    assert client._arm_write_inflight_area_ids == {}

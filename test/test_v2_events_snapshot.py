@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
@@ -344,7 +343,7 @@ def test_area_bypass_refresh_suppressed_after_local_command() -> None:
     assert recorded == []
 
 
-def test_area_status_no_change_does_not_poll_zones() -> None:
+def test_area_status_no_change_refreshes_bulk_status() -> None:
     client = Elke27Client(config=ClientConfig(event_queue_size=2))
     kernel = client._kernel
     recorded: list[tuple[tuple[str, str], dict[str, object]]] = []
@@ -368,11 +367,6 @@ def test_area_status_no_change_does_not_poll_zones() -> None:
     )
     client._handle_kernel_event(evt)
 
-    # PR #29 Bugbot: AreaStatusUpdated is emitted on every status reply, so an
-    # unchanged event (e.g. after each arm/disarm) must not trigger a zone poll.
-    assert (("zone", "get_all_zones_status"), {}) not in recorded
-
-    client._handle_kernel_event(replace(evt, changed_fields=("bypass",)))
     assert (("zone", "get_all_zones_status"), {}) in recorded
 
 
