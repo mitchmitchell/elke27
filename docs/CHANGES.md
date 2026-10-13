@@ -10,8 +10,9 @@
   - Panel identity (E1): after HELLO, `async_connect` sends `control.get_version_info`
     (fire-and-forget: no reply wait, retry or queue slot). The reply fills `PanelSnapshot.panel` `serial`, `mac` (new on
     `PanelMetaState`), `model` and `firmware`. A send failure, an error reply or
-    missing fields never break connect: the fields stay `None` and a send failure is
-    logged at DEBUG. Connecting to a different host:port clears the cached
+    missing fields never break connect: fields not yet known stay `None`, a
+    reconnect to the same host:port keeps the last-known values, and a send failure
+    is logged at DEBUG. Connecting to a different host:port clears the cached
     identity first. Payload keys were checked on hardware; see the follow-up
     entry above for the field mapping.
 
