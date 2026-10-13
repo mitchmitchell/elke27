@@ -586,6 +586,29 @@ class Elke27TimeoutError(Elke27TransientError):
         super().__init__(message, code="timeout", user_message=user_message)
 
 
+class Elke27CommandOutcomeUnknownError(Elke27TimeoutError):
+    """The command frame was confirmed sent, but no reply arrived before the deadline.
+
+    The panel may or may not have applied the command. Callers should re-read the
+    affected entity instead of assuming failure. ``route`` is ``(domain, command)``.
+    Timeouts before the frame was sent stay plain ``Elke27TimeoutError``.
+    """
+
+    def __init__(
+        self,
+        route: tuple[str, str],
+        message: str | None = None,
+        *,
+        user_message: str | None = None,
+    ) -> None:
+        self.route: tuple[str, str] = (str(route[0]), str(route[1]))
+        super().__init__(
+            message
+            or f"No reply to {self.route[0]}.{self.route[1]} after it was sent; outcome unknown.",
+            user_message=user_message,
+        )
+
+
 class Elke27DisconnectedError(Elke27TransientError):
     def __init__(self, message: str = "Disconnected.", *, user_message: str | None = None) -> None:
         super().__init__(message, code="disconnected", user_message=user_message)

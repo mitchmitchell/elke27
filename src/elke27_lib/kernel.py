@@ -393,6 +393,7 @@ class E27Kernel:
         self._closed_explicitly = False
         self._sent_events = {}
         self._sent_event_lock = threading.Lock()
+        self._confirmed_sent_seqs: set[int] = set()
         self._loop = None
         self._request_state = _RequestState.IDLE
         self._active_seq = None
@@ -1790,7 +1791,21 @@ class E27Kernel:
     def _mark_request_sent(self, seq: int) -> None:
         now = self.now()
         self._last_exchange_at = now
+        with self._sent_event_lock:
+            # Record a real on_sent confirmation for callers waiting on this seq;
+            # the sent event alone is also set when a queued command is failed.
+            if seq in self._sent_events:
+                self._confirmed_sent_seqs.add(seq)
         self._signal_sent_event(seq)
+
+    def was_request_sent(self, seq: int) -> bool:
+        """True once the transport confirmed sending ``seq`` (on_sent fired)."""
+        with self._sent_event_lock:
+            return seq in self._confirmed_sent_seqs
+
+    def forget_request_sent(self, seq: int) -> None:
+        with self._sent_event_lock:
+            self._confirmed_sent_seqs.discard(seq)
 
     def _mark_send_failed(self, seq: int, exc: BaseException) -> None:
         self.dispatcher.drop_pending(seq)

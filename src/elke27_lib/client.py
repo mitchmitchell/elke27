@@ -55,6 +55,7 @@ else:
 
 from . import discovery as discovery_mod
 from . import linking as linking_mod
+from .command_kinds import is_read_only_route
 from .const import E27ErrorCode as PanelErrorCode
 from .dispatcher import PagedBlock, RouteKey
 from .errors import (
@@ -74,6 +75,7 @@ from .errors import (
     E27Timeout,
     E27TransportError,
     Elke27AuthError,
+    Elke27CommandOutcomeUnknownError,
     Elke27ConnectionError,
     Elke27CryptoError,
     Elke27DisconnectedError,
@@ -810,29 +812,57 @@ class Elke27Client:
         sent_event: asyncio.Event,
         future: asyncio.Future[Mapping[str, Any]],
         per_attempt_timeout_s: float,
+        route: tuple[str, str] | None = None,
     ) -> Result[Mapping[str, Any]]:
         budget_s = self._command_transport_wait_budget_s(per_attempt_timeout_s)
+
+        def _outcome_unknown(reason: str) -> Elke27CommandOutcomeUnknownError | None:
+            # Frame confirmed sent (on_sent fired) but no reply: the panel may have
+            # applied it, so report "outcome unknown" rather than a plain timeout.
+            # sent_event is also set when a queued command is failed, so use the
+            # kernel's record of a real on_sent confirmation.
+            if route is None or not self._kernel.was_request_sent(seq):
+                return None
+            return Elke27CommandOutcomeUnknownError(
+                route,
+                f"No reply to {route[0]}.{route[1]} seq={seq} after it was sent ({reason}); "
+                "outcome unknown.",
+            )
+
         try:
             async with asyncio.timeout(budget_s):
                 await sent_event.wait()
                 msg = await future
-        except TimeoutError as timeout_exc:
+        except TimeoutError:
             if self._asyncio_cancellation_pending():
-                self._kernel.cancel_command_transport(
-                    seq, E27Timeout(f"async_execute cancelled for {command_key} seq={seq}")
+                cancel_error: BaseException = _outcome_unknown("caller cancelled") or E27Timeout(
+                    f"async_execute cancelled for {command_key} seq={seq}"
                 )
-                raise asyncio.CancelledError() from timeout_exc
-            timeout_error = E27Timeout(f"async_execute timeout waiting for {command_key} seq={seq}")
+                self._kernel.cancel_command_transport(seq, cancel_error)
+                raise asyncio.CancelledError() from cancel_error
+            timeout_error: BaseException = _outcome_unknown("deadline") or E27Timeout(
+                f"async_execute timeout waiting for {command_key} seq={seq}"
+            )
             self._kernel.cancel_command_transport(seq, timeout_error)
             return _err(timeout_error)
-        except asyncio.CancelledError:
-            self._kernel.cancel_command_transport(
-                seq, E27Timeout(f"async_execute cancelled for {command_key} seq={seq}")
+        except asyncio.CancelledError as cancelled:
+            cancel_error = _outcome_unknown("caller cancelled") or E27Timeout(
+                f"async_execute cancelled for {command_key} seq={seq}"
             )
+            self._kernel.cancel_command_transport(seq, cancel_error)
+            if isinstance(cancel_error, Elke27CommandOutcomeUnknownError):
+                # CancelledError must still propagate; chain the outcome for callers/logs.
+                raise asyncio.CancelledError(*cancelled.args) from cancel_error
             raise
         except _CLIENT_EXCEPTIONS as exc:
+            if isinstance(exc, E27Timeout):
+                outcome = _outcome_unknown("reply timeout")
+                if outcome is not None:
+                    return _err(outcome)
             detail = f"command_key={command_key} seq={seq}"
             return _err(self._normalize_error(exc, phase="execute", detail=detail))
+        finally:
+            self._kernel.forget_request_sent(seq)
 
         return _ok(msg)
 
@@ -2625,6 +2655,10 @@ class Elke27Client:
                     sent_event=sent_event,
                     future=future,
                     per_attempt_timeout_s=timeout_value,
+                    # Reads have no side effect, so only writes report an unknown outcome.
+                    route=None
+                    if is_read_only_route(spec.domain, spec.command)
+                    else (spec.domain, spec.command),
                 )
                 if not wait_result.ok:
                     return wait_result

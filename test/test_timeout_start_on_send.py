@@ -83,6 +83,12 @@ class _FakeKernel:
         if event is not None:
             event.set()
 
+    def was_request_sent(self, seq: int) -> bool:
+        return False
+
+    def forget_request_sent(self, seq: int) -> None:
+        return None
+
     def _mark_send_failed(self, seq: int, exc: BaseException) -> None:
         self._pending_responses.fail(seq, exc)
         event = self._sent_events.pop(seq, None)
