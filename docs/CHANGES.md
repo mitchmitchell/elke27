@@ -3,6 +3,14 @@
   - Ship `py.typed` (PEP 561) in the wheel so type checkers such as mypy
     --strict use the package's inline types.
 
+  - Linking (target 0.3.15): when the panel's client link table is full, api_link
+    replies with an error message ("Not enough space") and no link keys.
+    `async_link` now raises the new public `Elke27LinkSlotsFullError`
+    (code `link_slots_full`, not transient) with the panel's raw text in
+    `panel_error_message` and its `error_code`, if any, in `panel_error_code`,
+    instead of a generic protocol error. Any other panel message in a keyless
+    api_link reply is now included in the protocol error text.
+
   Public Command Result (0.3.14)
 
   - New public `CommandResult` (frozen dataclass, exported from `elke27_lib`)
