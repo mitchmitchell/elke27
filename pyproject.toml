@@ -88,6 +88,8 @@ bump = true
 [tool.hatch.build.targets.wheel]
 # The source location for the package.
 packages = ["src/elke27_lib"]
+# Ship the PEP 561 marker so downstream type checkers use inline types.
+artifacts = ["src/elke27_lib/py.typed"]
 
 
 # ---- Settings ----
