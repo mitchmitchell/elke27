@@ -1,12 +1,17 @@
   UNRELEASED
 
+  - Ship `py.typed` (PEP 561) in the wheel so type checkers such as mypy
+    --strict use the package's inline types.
+
   - Barriers (garage-door design §6): new `async_set_barrier(barrier_id, *, open)`
-    sends one `barrier.set_status` and never retries it (the kernel disables
+    sends one `barrier.set_status` (lowercase `open`/`close`) and never retries it (the kernel disables
     transport retries for the route and panel-busy replies are not resent); a
     missing reply raises `Elke27CommandOutcomeUnknownError`. New optional
     `async_refresh_barrier(barrier_id)` does one status read and returns the
     state. `V2BarrierState` gains `is_open` (OPEN -> True, CLOSE/CLOSED -> False,
     anything else -> None), `tamper`, `low_batt` and `rssi`; raw `status` is kept.
+
+  Public Command Result (0.3.14)
 
   - New public `CommandResult` (frozen dataclass, exported from `elke27_lib`)
     for arm, disarm and zone bypass, so callers no longer need private client
@@ -18,6 +23,8 @@
     panel accepted but the follow-up read failed and the entity is marked stale,
     `None` no refresh applied); property `refreshed` is `status_refresh_ok is
     True`. Failures still raise the existing public `Elke27*` exceptions.
+
+  Panel MAC Discovery, HELLO Link Errors, Session Close (0.3.13)
 
   - New public helper `async_discover_host(host, timeout=3.0)` (E1a, panel MAC
     from discovery): sends a unicast `{"FIND":"ELKWCID"}` to the host's UDP 2362 on
