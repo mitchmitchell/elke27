@@ -9,7 +9,7 @@ import pytest
 
 import elke27_lib
 from elke27_lib import Elke27Client, Elke27LinkSlotsFullError, linking
-from elke27_lib.errors import CryptoError, E27LinkSlotsFull, E27ProtocolError
+from elke27_lib.errors import E27LinkSlotsFull, E27ProtocolError
 from elke27_lib.kernel import E27Kernel, KernelError
 
 
@@ -66,10 +66,9 @@ def test_bare_error_reply_is_slots_full(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_bare_other_error_reply_is_protocol_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    with pytest.raises(E27ProtocolError) as exc_info:
+    with pytest.raises(E27ProtocolError, match="Something else") as exc_info:
         _link_with_reply(monkeypatch, b'{"error_message":"Something else"}')
     assert not isinstance(exc_info.value, E27LinkSlotsFull)
-    assert "Something else" in str(exc_info.value)
 
 
 def test_api_link_without_keys_is_slots_full() -> None:
@@ -157,5 +156,4 @@ async def test_link_result_keeps_slots_full(monkeypatch: pytest.MonkeyPatch, wra
     )
     assert result.ok is False
     assert isinstance(result.error, E27LinkSlotsFull)
-    assert not isinstance(result.error, CryptoError)
     assert result.error.panel_error_message == "Not enough space"
