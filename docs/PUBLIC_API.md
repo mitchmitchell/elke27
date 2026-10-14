@@ -80,6 +80,13 @@ async def main():
         exit_delay_cancel=False,
     )
 
+    # opt in to the post-command refresh outcome (default return stays None)
+    result = await client.async_arm_area(
+        area_id=1, mode=ArmMode.ARMED_AWAY, pin="1234", return_result=True
+    )
+    if result.status_refresh_ok is False:
+        ...  # panel accepted, but status read failed; area is marked stale
+
     # cleanup
     unsubscribe()
     await client.async_disconnect()

@@ -1,5 +1,16 @@
   UNRELEASED
 
+  - New public `CommandResult` (frozen dataclass, exported from `elke27_lib`)
+    for arm, disarm and zone bypass, so callers no longer need private client
+    internals to learn whether the panel status refreshed after a write. Opt in
+    with `return_result=True` on `async_arm_area`, `async_disarm_area` and
+    `async_set_zone_bypass`; the default still returns `None` (no break).
+    Fields: `route` (`"area_set_arm_state"` / `"zone_set_status"`) and
+    `status_refresh_ok` (`True` refreshed or confirmed in the reply, `False`
+    panel accepted but the follow-up read failed and the entity is marked stale,
+    `None` no refresh applied); property `refreshed` is `status_refresh_ok is
+    True`. Failures still raise the existing public `Elke27*` exceptions.
+
   - New public helper `async_discover_host(host, timeout=3.0)` (E1a, panel MAC
     from discovery): sends a unicast `{"FIND":"ELKWCID"}` to the host's UDP 2362 on
     its own socket, never touching a client session, and returns a
