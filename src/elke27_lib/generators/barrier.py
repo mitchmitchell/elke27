@@ -34,5 +34,5 @@ def generator_barrier_set_status(
         raise ValueError(f"barrier_id must be an int >= 1 (got {barrier_id!r})")
     normalized = status.strip().lower()  # panel takes lowercase (design section 6)
     if normalized not in {"open", "close", "stop"}:
-        raise ValueError(f"status must be OPEN/CLOSE/STOP (got {status!r})")
+        raise ValueError(f"status must be open/close/stop (got {status!r})")
     return {"barrier_id": barrier_id, "status": normalized}, ("barrier", "set_status")

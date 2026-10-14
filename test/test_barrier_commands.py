@@ -15,6 +15,7 @@ from elke27_lib.errors import (
     Elke27CommandOutcomeUnknownError,
     Elke27DisconnectedError,
     Elke27InvalidArgument,
+    Elke27PanelError,
     Elke27PermissionError,
     PermissionDeniedError,
 )
@@ -226,9 +227,10 @@ async def test_real_execute_panel_busy_is_not_resent() -> None:
     get_private(get_kernel(client), "_on_message")(
         {"seq": sent["seq"], "barrier": {"set_status": {"barrier_id": 1, "error_code": busy}}}
     )
-    with pytest.raises(Exception) as exc_info:
+    with pytest.raises(Elke27PanelError) as exc_info:
         await asyncio.wait_for(task, timeout=2.0)
-    assert not isinstance(exc_info.value, Elke27CommandOutcomeUnknownError)
+    assert type(exc_info.value) is Elke27PanelError
+    assert exc_info.value.panel_error_code == busy
     for _ in range(20):
         await asyncio.sleep(0)
     assert len(session.sent) == 1

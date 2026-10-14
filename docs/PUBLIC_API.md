@@ -156,7 +156,7 @@ zeros). Discovery is the only source of the panel MAC.
 ## Barriers
 
 - `async_set_barrier(barrier_id, *, open: bool) -> None` sends one
-  `barrier.set_status` (`OPEN` / `CLOSE`). It validates the id (>= 1 and, once
+  `barrier.set_status` (`open` / `close`). It validates the id (>= 1 and, once
   the configured-barrier inventory is known, present in it) and the connection,
   then sends exactly once: no transport retry, no panel-busy resend and no resend
   after a missing reply. Errors: `Elke27InvalidArgument`, `Elke27DisconnectedError`,
