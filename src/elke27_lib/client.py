@@ -3242,6 +3242,10 @@ class Elke27Client:
         for err in _iter_causes(exc):
             if isinstance(err, E27HelloLinkRequired):
                 return err
+            # Full client-link table: an E27ProtocolError subclass, so keep it
+            # before the generic protocol -> CryptoError mapping below.
+            if isinstance(err, E27LinkSlotsFull):
+                return err
 
         for err in _iter_causes(exc):
             if isinstance(err, E27ProvisioningRequired):
