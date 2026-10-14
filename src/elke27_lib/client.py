@@ -2269,7 +2269,7 @@ class Elke27Client:
             raise Elke27InvalidArgument(f"barrier_id {barrier_id} is not configured.")
         if not self._connected or not self._kernel.state.panel.connected:
             raise Elke27DisconnectedError("Client is not connected.")
-        status = "OPEN" if open else "CLOSE"
+        status = "open" if open else "close"
         result = await self.async_execute(
             "barrier_set_status", barrier_id=barrier_id, status=status
         )

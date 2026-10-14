@@ -514,7 +514,7 @@ def test_barrier_register_and_payloads() -> None:
     assert barrier.build_barrier_get_configured_payload(block_id=2) == {"block_id": 2}
     assert barrier.build_barrier_set_status_payload(barrier_id=1, status="open") == {
         "barrier_id": 1,
-        "status": "OPEN",
+        "status": "open",
     }
     assert barrier.build_barrier_get_table_info_payload() == {}
     with pytest.raises(ValueError):

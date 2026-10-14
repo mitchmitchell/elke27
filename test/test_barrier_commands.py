@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Iterable
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from elke27_lib import ClientConfig, Elke27Client
 from elke27_lib.client import _SEND_ONCE_COMMANDS, Result
+from elke27_lib.const import E27ErrorCode
 from elke27_lib.errors import (
     Elke27CommandOutcomeUnknownError,
     Elke27DisconnectedError,
@@ -19,6 +21,8 @@ from elke27_lib.errors import (
 from elke27_lib.kernel import E27Kernel
 from elke27_lib.states import BarrierState as KernelBarrierState
 from elke27_lib.types import barrier_is_open
+from test.helpers.internal import get_kernel, get_private
+from test.test_transport_command_retry import _FakeSession, _make_client
 
 
 class _FakePanel:
@@ -69,7 +73,7 @@ def _executor(calls: list[tuple[str, dict[str, Any]]], result: Result[Any]) -> C
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("open_", "status"), [(True, "OPEN"), (False, "CLOSE")])
+@pytest.mark.parametrize(("open_", "status"), [(True, "open"), (False, "close")])
 async def test_set_barrier_success_sends_once(open_: bool, status: str) -> None:
     client, _kernel, calls = _client()
     client.async_execute = _executor(calls, Result(ok=True, data={}, error=None))  # type: ignore[method-assign]
@@ -188,3 +192,61 @@ async def test_refresh_barrier_missing_entry_and_errors() -> None:
         await client.async_refresh_barrier(2)
     with pytest.raises(Elke27InvalidArgument):
         await client.async_refresh_barrier(0)
+
+
+# --- Behavioural send-once tests through the real async_execute path ---
+
+
+async def _wait_sent(session: Any, count: int, task: asyncio.Task[Any]) -> None:
+    for _ in range(50):
+        if len(session.sent) >= count or task.done():
+            return
+        await asyncio.sleep(0)
+
+
+def _real_client(session: Any) -> Elke27Client:
+    client = _make_client(session, max_retries=2)
+    inv = get_kernel(client).state.inventory
+    inv.configured_barriers = {1}
+    inv.configured_barriers_complete = True
+    get_kernel(client).state.panel.connected = True
+    client._connected = True
+    return client
+
+
+@pytest.mark.asyncio
+async def test_real_execute_panel_busy_is_not_resent() -> None:
+    session = _FakeSession()
+    client = _real_client(session)
+    task = asyncio.create_task(client.async_set_barrier(1, open=True))
+    await _wait_sent(session, 1, task)
+    sent = session.sent[0]
+    assert sent["barrier"]["set_status"]["status"] == "open"
+    busy = int(E27ErrorCode.ELKERR_ZWAVE_BUSY)
+    get_private(get_kernel(client), "_on_message")(
+        {"seq": sent["seq"], "barrier": {"set_status": {"barrier_id": 1, "error_code": busy}}}
+    )
+    with pytest.raises(Exception) as exc_info:
+        await asyncio.wait_for(task, timeout=2.0)
+    assert not isinstance(exc_info.value, Elke27CommandOutcomeUnknownError)
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert len(session.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_real_execute_sent_without_reply_is_outcome_unknown() -> None:
+    session = _FakeSession()
+    client = _real_client(session)
+    cast(Any, client)._command_transport_wait_budget_s = lambda _t: 0.1
+    real_execute = client.async_execute
+
+    async def _short_timeout(command_key: str, **params: Any) -> Any:
+        return await real_execute(command_key, timeout_s=0.02, **params)
+
+    client.async_execute = _short_timeout  # type: ignore[method-assign]
+    with pytest.raises(Elke27CommandOutcomeUnknownError) as exc_info:
+        await asyncio.wait_for(client.async_set_barrier(1, open=False), timeout=2.0)
+    assert exc_info.value.route == ("barrier", "set_status")
+    assert len(session.sent) == 1
+    assert session.sent[0]["barrier"]["set_status"]["status"] == "close"

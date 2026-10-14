@@ -208,7 +208,7 @@ def test_generator_barrier_validations() -> None:
     assert payload == {"barrier_id": 1}
     assert route == ("barrier", "get_status")
     payload, route = generators.barrier.generator_barrier_set_status(barrier_id=1, status="OPEN")
-    assert payload == {"barrier_id": 1, "status": "OPEN"}
+    assert payload == {"barrier_id": 1, "status": "open"}
     assert route == ("barrier", "set_status")
     with pytest.raises(ValueError):
         generators.barrier.generator_barrier_get_configured(block_id=0)

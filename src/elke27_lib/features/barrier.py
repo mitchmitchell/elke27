@@ -92,8 +92,9 @@ def build_barrier_set_status_payload(
         raise ValueError(
             f"build_barrier_set_status_payload: barrier_id must be int >= 1 (got {barrier_id!r})"
         )
-    normalized = status.strip().upper()
-    if normalized not in {"OPEN", "CLOSE", "STOP"}:
+    # The panel takes lowercase command values (garage-door design section 6).
+    normalized = status.strip().lower()
+    if normalized not in {"open", "close", "stop"}:
         raise ValueError(f"build_barrier_set_status_payload: invalid status {status!r}")
     return {"barrier_id": barrier_id, "status": normalized}
 
