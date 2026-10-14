@@ -43,6 +43,7 @@ from typing import (
     TypeVar,
     cast,
     get_type_hints,
+    overload,
 )
 
 if TYPE_CHECKING:
@@ -173,6 +174,7 @@ from .types import (
 from .types import (
     ArmMode,
     ClientConfig,
+    CommandResult,
     CsmSnapshot,
     DiscoveredPanel,
     Elke27Event,
@@ -2252,13 +2254,52 @@ class Elke27Client:
                 self._raise_v2_command_error(result.error)
             raise Elke27ProtocolErrorV2("Failed to set output.")
 
+    @overload
     async def async_set_zone_bypass(
-        self, zone_id: int, *, bypassed: bool, pin: str | int | None = None
-    ) -> None:
+        self,
+        zone_id: int,
+        *,
+        bypassed: bool,
+        pin: str | int | None = None,
+        return_result: Literal[False] = False,
+    ) -> None: ...
+
+    @overload
+    async def async_set_zone_bypass(
+        self,
+        zone_id: int,
+        *,
+        bypassed: bool,
+        pin: str | int | None = None,
+        return_result: Literal[True],
+    ) -> CommandResult: ...
+
+    @overload
+    async def async_set_zone_bypass(
+        self,
+        zone_id: int,
+        *,
+        bypassed: bool,
+        pin: str | int | None = None,
+        return_result: bool,
+    ) -> CommandResult | None: ...
+
+    async def async_set_zone_bypass(
+        self,
+        zone_id: int,
+        *,
+        bypassed: bool,
+        pin: str | int | None = None,
+        return_result: bool = False,
+    ) -> CommandResult | None:
         """Set a zone bypass state (v2 public API).
 
         ``pin`` is a digit string (leading zeros allowed) or a positive int; it is
         sent as a JSON integer.
+
+        With ``return_result=True`` a :class:`CommandResult` carrying the
+        post-command status-refresh outcome is returned; the default stays
+        ``None`` for backward compatibility.
         """
         if zone_id < 1:
             raise Elke27InvalidArgument("zone_id must be a positive integer.")
@@ -2278,6 +2319,47 @@ class Elke27Client:
             if result.error is not None:
                 self._raise_v2_command_error(result.error)
             raise Elke27ProtocolErrorV2("Failed to set zone bypass.")
+        if return_result:
+            return CommandResult(
+                route="zone_set_status", status_refresh_ok=result.status_refresh_ok
+            )
+        return None
+
+    @overload
+    async def async_arm_area(
+        self,
+        area_id: int,
+        *,
+        mode: ArmMode,
+        pin: str | int | None = None,
+        auto_stay_cancel: bool = False,
+        exit_delay_cancel: bool = False,
+        return_result: Literal[False] = False,
+    ) -> None: ...
+
+    @overload
+    async def async_arm_area(
+        self,
+        area_id: int,
+        *,
+        mode: ArmMode,
+        pin: str | int | None = None,
+        auto_stay_cancel: bool = False,
+        exit_delay_cancel: bool = False,
+        return_result: Literal[True],
+    ) -> CommandResult: ...
+
+    @overload
+    async def async_arm_area(
+        self,
+        area_id: int,
+        *,
+        mode: ArmMode,
+        pin: str | int | None = None,
+        auto_stay_cancel: bool = False,
+        exit_delay_cancel: bool = False,
+        return_result: bool,
+    ) -> CommandResult | None: ...
 
     async def async_arm_area(
         self,
@@ -2287,21 +2369,26 @@ class Elke27Client:
         pin: str | int | None = None,
         auto_stay_cancel: bool = False,
         exit_delay_cancel: bool = False,
-    ) -> None:
+        return_result: bool = False,
+    ) -> CommandResult | None:
         """Arm an area using the requested mode (v2 public API).
 
         ``pin`` is a digit string (leading zeros allowed) or a positive int.
+
+        With ``return_result=True`` a :class:`CommandResult` carrying the
+        post-command status-refresh outcome is returned; the default stays
+        ``None`` for backward compatibility.
         """
         if area_id < 1:
             raise Elke27InvalidArgument("area_id must be a positive integer.")
         if mode is ArmMode.DISARMED:
-            await self.async_disarm_area(
+            return await self.async_disarm_area(
                 area_id,
                 pin=_normalize_area_pin(pin, action="disarm"),
                 auto_stay_cancel=auto_stay_cancel,
                 exit_delay_cancel=exit_delay_cancel,
+                return_result=return_result,
             )
-            return
         if mode not in _SUPPORTED_ARM_MODES:
             raise Elke27InvalidArgument(
                 f"The E27 panel does not support arm mode {mode.value!r}; "
@@ -2321,6 +2408,44 @@ class Elke27Client:
             if result.error is not None:
                 self._raise_v2_command_error(result.error)
             raise Elke27ProtocolErrorV2("Failed to arm area.")
+        if return_result:
+            return CommandResult(
+                route="area_set_arm_state", status_refresh_ok=result.status_refresh_ok
+            )
+        return None
+
+    @overload
+    async def async_disarm_area(
+        self,
+        area_id: int,
+        *,
+        pin: str | int,
+        auto_stay_cancel: bool = False,
+        exit_delay_cancel: bool = False,
+        return_result: Literal[False] = False,
+    ) -> None: ...
+
+    @overload
+    async def async_disarm_area(
+        self,
+        area_id: int,
+        *,
+        pin: str | int,
+        auto_stay_cancel: bool = False,
+        exit_delay_cancel: bool = False,
+        return_result: Literal[True],
+    ) -> CommandResult: ...
+
+    @overload
+    async def async_disarm_area(
+        self,
+        area_id: int,
+        *,
+        pin: str | int,
+        auto_stay_cancel: bool = False,
+        exit_delay_cancel: bool = False,
+        return_result: bool,
+    ) -> CommandResult | None: ...
 
     async def async_disarm_area(
         self,
@@ -2329,10 +2454,15 @@ class Elke27Client:
         pin: str | int,
         auto_stay_cancel: bool = False,
         exit_delay_cancel: bool = False,
-    ) -> None:
+        return_result: bool = False,
+    ) -> CommandResult | None:
         """Disarm an area (v2 public API).
 
         ``pin`` is a digit string (leading zeros allowed) or a positive int.
+
+        With ``return_result=True`` a :class:`CommandResult` carrying the
+        post-command status-refresh outcome is returned; the default stays
+        ``None`` for backward compatibility.
         """
         if area_id < 1:
             raise Elke27InvalidArgument("area_id must be a positive integer.")
@@ -2349,6 +2479,11 @@ class Elke27Client:
             if result.error is not None:
                 self._raise_v2_command_error(result.error)
             raise Elke27ProtocolErrorV2("Failed to disarm area.")
+        if return_result:
+            return CommandResult(
+                route="area_set_arm_state", status_refresh_ok=result.status_refresh_ok
+            )
+        return None
 
     async def discover(
         self, *, timeout: int = 10, address: str | None = None

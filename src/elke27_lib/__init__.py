@@ -27,6 +27,7 @@ from .types import (
     ArmMode,
     BarrierState,
     ClientConfig,
+    CommandResult,
     CsmSnapshot,
     DiscoveredPanel,
     Elke27Event,
@@ -58,6 +59,7 @@ def __getattr__(name: str) -> Any:
 
 
 __all__ = [
+    "CommandResult",
     "ClientConfig",
     "DiscoveredPanel",
     "LinkKeys",
