@@ -20,6 +20,9 @@ class _Sock:
         self.sent: list[bytes] = []
         self._chunks = [b"\x00"]
 
+    def gettimeout(self) -> float | None:
+        return None
+
     def settimeout(self, _t: float | None) -> None:
         return None
 
