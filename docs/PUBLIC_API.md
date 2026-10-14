@@ -66,6 +66,9 @@ async def main():
 
     # issue commands (no optimistic updates; state updates arrive via events/snapshot)
     await client.async_set_output(output_id=1, on=True)
+    # barriers: sent at most once, never retried; resync with one status read
+    await client.async_set_barrier(1, open=True)
+    barrier = await client.async_refresh_barrier(1)  # V2BarrierState | None
     await client.async_arm_area(
         area_id=1,
         mode=ArmMode.ARMED_STAY,
@@ -149,3 +152,18 @@ resolved; raises `Elke27InvalidArgument` for an empty host or non-positive
 timeout. `panel_mac` is the discovery `MAC_ADDR` normalized by
 `normalize_panel_mac()` to 12 uppercase hex characters (`None` if invalid or all
 zeros). Discovery is the only source of the panel MAC.
+
+## Barriers
+
+- `async_set_barrier(barrier_id, *, open: bool) -> None` sends one
+  `barrier.set_status` (`OPEN` / `CLOSE`). It validates the id (>= 1 and, once
+  the configured-barrier inventory is known, present in it) and the connection,
+  then sends exactly once: no transport retry, no panel-busy resend and no resend
+  after a missing reply. Errors: `Elke27InvalidArgument`, `Elke27DisconnectedError`,
+  `Elke27PermissionError` (and other mapped panel refusals),
+  `Elke27CommandOutcomeUnknownError` (sent, no reply; the panel may have acted).
+- `async_refresh_barrier(barrier_id) -> V2BarrierState | None` performs one
+  `barrier.get_status` read and returns the updated state.
+- `V2BarrierState` fields: `barrier_id`, `name`, raw `status`, `is_open`
+  (`True` for OPEN, `False` for CLOSE/CLOSED, `None` for STOPPED or anything
+  else; no travel state is inferred), `tamper`, `low_batt`, `rssi`.

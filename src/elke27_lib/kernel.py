@@ -378,6 +378,8 @@ class E27Kernel:
         self._features_lock = threading.Lock()
         self._next_transfer_id = 1
         self._disable_retries_for_routes = {
+            # Barrier moves are sent at most once (no transport retry).
+            ("barrier", "set_status"),
             ("area", "get_attribs"),
             ("zone", "get_attribs"),
             ("output", "get_attribs"),

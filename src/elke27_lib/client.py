@@ -185,6 +185,7 @@ from .types import (
     PanelSnapshot,
     TableInfo,
     ZoneDefinition,
+    barrier_is_open,
 )
 from .types import (
     BarrierState as V2BarrierState,
@@ -1081,11 +1082,7 @@ class Elke27Client:
             for barrier_id, barrier in barriers.items():
                 if not isinstance(barrier_id, int):
                     continue
-                out[barrier_id] = V2BarrierState(
-                    barrier_id=barrier_id,
-                    name=getattr(barrier, "name", None),
-                    status=getattr(barrier, "status", None),
-                )
+                out[barrier_id] = _v2_barrier_from_state(barrier_id, barrier)
         return types_mod.MappingProxyType(out)
 
     def _build_lock_map(self) -> Mapping[int, V2LockState]:
@@ -2254,6 +2251,53 @@ class Elke27Client:
                 self._raise_v2_command_error(result.error)
             raise Elke27ProtocolErrorV2("Failed to set output.")
 
+    async def async_set_barrier(self, barrier_id: int, *, open: bool) -> None:
+        """Open or close a barrier (v2 public API).
+
+        The command is sent at most once and is never retried: not on a
+        transport failure, a panel-busy reply or a missing reply. A missing reply
+        raises :class:`Elke27CommandOutcomeUnknownError` because the panel may
+        have acted; callers must not resend blindly. Use
+        :meth:`async_refresh_barrier` to resync afterwards.
+        """
+        if not isinstance(barrier_id, int) or isinstance(barrier_id, bool) or barrier_id < 1:
+            raise Elke27InvalidArgument("barrier_id must be a positive integer.")
+        inv = self._kernel.state.inventory
+        if getattr(inv, "configured_barriers_complete", False) and barrier_id not in getattr(
+            inv, "configured_barriers", set()
+        ):
+            raise Elke27InvalidArgument(f"barrier_id {barrier_id} is not configured.")
+        if not self._connected or not self._kernel.state.panel.connected:
+            raise Elke27DisconnectedError("Client is not connected.")
+        status = "OPEN" if open else "CLOSE"
+        result = await self.async_execute(
+            "barrier_set_status", barrier_id=barrier_id, status=status
+        )
+        if not result.ok:
+            if result.error is not None:
+                self._raise_v2_command_error(result.error)
+            raise Elke27ProtocolErrorV2("Failed to set barrier.")
+
+    async def async_refresh_barrier(self, barrier_id: int) -> V2BarrierState | None:
+        """Read one barrier's status (one ``get_status``) and return its state.
+
+        Returns ``None`` when the panel reply did not produce a barrier entry.
+        """
+        if not isinstance(barrier_id, int) or isinstance(barrier_id, bool) or barrier_id < 1:
+            raise Elke27InvalidArgument("barrier_id must be a positive integer.")
+        if not self._connected or not self._kernel.state.panel.connected:
+            raise Elke27DisconnectedError("Client is not connected.")
+        result = await self.async_execute("barrier_get_status", barrier_id=barrier_id)
+        if not result.ok:
+            if result.error is not None:
+                self._raise_v2_command_error(result.error)
+            raise Elke27ProtocolErrorV2("Failed to read barrier status.")
+        barriers = getattr(self._kernel.state, "barriers", {})
+        barrier = barriers.get(barrier_id) if isinstance(barriers, Mapping) else None
+        if barrier is None:
+            return None
+        return _v2_barrier_from_state(barrier_id, barrier)
+
     @overload
     async def async_set_zone_bypass(
         self,
@@ -2885,6 +2929,7 @@ class Elke27Client:
                 if error_code is not None:
                     if (
                         self._is_panel_busy_error_code(error_code)
+                        and command_key not in _SEND_ONCE_COMMANDS
                         and panel_busy_attempt < self._request_max_transport_retries()
                     ):
                         panel_busy_attempt += 1
@@ -3576,3 +3621,38 @@ def _merge_rule_blocks(blocks: list[PagedBlock], block_count: int) -> Mapping[st
             merged[block.block_id] = {"block_id": block.block_id, "data": data}
     rules = [merged[key] for key in sorted(merged)]
     return {"rules": rules, "block_count": block_count}
+
+
+# Commands sent at most once: no panel-busy resend (the kernel also disables
+# transport retries for their routes).
+_SEND_ONCE_COMMANDS = frozenset({"barrier_set_status"})
+
+
+def _optional_bool(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value != 0
+    return None
+
+
+def _optional_int(value: object) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return None
+
+
+def _v2_barrier_from_state(barrier_id: int, barrier: Any) -> V2BarrierState:
+    status = getattr(barrier, "status", None)
+    fields = getattr(barrier, "fields", None)
+    if not isinstance(fields, Mapping):
+        fields = {}
+    return V2BarrierState(
+        barrier_id=barrier_id,
+        name=getattr(barrier, "name", None),
+        status=status,
+        is_open=barrier_is_open(status),
+        tamper=_optional_bool(fields.get("tamper")),
+        low_batt=_optional_bool(fields.get("low_batt")),
+        rssi=_optional_int(fields.get("rssi")),
+    )
