@@ -239,21 +239,57 @@ def test_bad_crc_does_not_prevent_parsing_following_frame() -> None:
     assert any(f[0] == 0x81 and f[3:] == b"SECOND" for f in frames)
 
 
+def _discards(caplog: LogCaptureFixture, level: int) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if r.levelno == level and "deframe discard" in r.getMessage()]
+
+
 def test_wait_start_logs_once_per_sequence(caplog: LogCaptureFixture) -> None:
     state = DeframeState()
-    caplog.set_level(logging.ERROR, logger="elke27_lib.framing")
+    caplog.set_level(logging.DEBUG, logger="elke27_lib.framing")
 
     deframe_feed(state, b"no-start")
     deframe_feed(state, b"still-no-start")
-    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
-    assert len(errors) == 1
+    assert len(_discards(caplog, logging.DEBUG)) == 1
 
     framed = frame_build(protocol_byte=0x80, data_frame=b"OK")
     deframe_feed(state, framed)
 
     deframe_feed(state, b"again-no-start")
-    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
-    assert len(errors) == 2
+    assert len(_discards(caplog, logging.WARNING)) == 1
+
+
+def test_wait_start_preamble_before_first_frame_is_debug(caplog: LogCaptureFixture) -> None:
+    """#52: bytes before the first good frame on a new link are expected; DEBUG only."""
+    state = DeframeState()
+    caplog.set_level(logging.DEBUG, logger="elke27_lib.framing")
+
+    results = deframe_feed(state, b"preamble" + frame_build(protocol_byte=0x80, data_frame=b"OK"))
+    assert _collect_ok_frames(results)
+    assert len(_discards(caplog, logging.DEBUG)) == 1
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def test_wait_start_after_first_frame_is_warning(caplog: LogCaptureFixture) -> None:
+    """#52: once a frame has been seen, a discard means noise or desync; WARNING."""
+    state = DeframeState()
+    caplog.set_level(logging.DEBUG, logger="elke27_lib.framing")
+
+    deframe_feed(state, frame_build(protocol_byte=0x80, data_frame=b"OK"))
+    assert state.seen_frame
+    deframe_feed(state, b"noise")
+    assert len(_discards(caplog, logging.WARNING)) == 1
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+def test_new_link_state_starts_at_debug(caplog: LogCaptureFixture) -> None:
+    """#52: each new link gets a fresh DeframeState, so its preamble is DEBUG again."""
+    old = DeframeState()
+    deframe_feed(old, frame_build(protocol_byte=0x80, data_frame=b"OK"))
+    caplog.set_level(logging.DEBUG, logger="elke27_lib.framing")
+
+    deframe_feed(DeframeState(), b"preamble")
+    assert len(_discards(caplog, logging.DEBUG)) == 1
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
 def test_resync_logs_once_per_sequence(caplog: LogCaptureFixture) -> None:
@@ -403,7 +439,7 @@ def test_randomized_split_escape_sequences_across_boundaries() -> None:
 def test_wait_start_throttle_with_random_garbage_bursts(caplog: LogCaptureFixture) -> None:
     rng = random.Random(2222)
     state = DeframeState()
-    caplog.set_level(logging.ERROR, logger="elke27_lib.framing")
+    caplog.set_level(logging.DEBUG, logger="elke27_lib.framing")
 
     bursts = 6
     for _ in range(bursts):
@@ -413,9 +449,9 @@ def test_wait_start_throttle_with_random_garbage_bursts(caplog: LogCaptureFixtur
         deframe_feed(state, garbage)
         deframe_feed(state, frame_build(protocol_byte=0x80, data_frame=b"OK"))
 
-    errors: list[logging.LogRecord] = [r for r in caplog.records if r.levelno == logging.ERROR]
+    discards = _discards(caplog, logging.DEBUG) + _discards(caplog, logging.WARNING)
     # Each burst should log at most once due to throttling.
-    assert len(errors) <= bursts
+    assert len(discards) <= bursts
 
 
 def test_randomized_interleaved_bad_crc_recovery() -> None:
