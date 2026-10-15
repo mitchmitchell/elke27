@@ -407,7 +407,7 @@ def make_area_get_status_handler(state: PanelState, emit: EmitFn, now: NowFn):
                 outcome.area_id,
             )
         else:
-            LOG.warning("area.get_status no changes; area_id=%s", outcome.area_id)
+            LOG.debug("area.get_status no changes; area_id=%s", outcome.area_id)
         evt = AreaStatusUpdated(
             kind=AreaStatusUpdated.KIND,
             at=UNSET_AT,
