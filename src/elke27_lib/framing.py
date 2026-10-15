@@ -70,8 +70,12 @@ class DeframeState:
     # Some tests splice streams such that the next byte repeats the protocol byte; we ignore
     # one duplicate protocol byte in that specific situation.
     just_resynced: bool = False
-    # Throttle "waiting for startchar" errors to once per unexpected byte sequence.
+    # Throttle "waiting for startchar" logs to once per unexpected byte sequence.
     warned_wait_start: bool = False
+    # True once a good frame has been received on this link. Before that, discarded
+    # bytes are the expected unframed preamble of a new link (logged at DEBUG); after
+    # it, a discard means noise or a desync (logged at WARNING).
+    seen_frame: bool = False
     # Throttle resync errors to once per resync sequence.
     warned_resync: bool = False
 
@@ -133,6 +137,11 @@ def _reset_to_wait_start(state: DeframeState) -> None:
     state.warned_resync = False
 
 
+def _discard_log_level(state: DeframeState) -> int:
+    """DEBUG before the first good frame on a link, WARNING after it."""
+    return logging.WARNING if state.seen_frame else logging.DEBUG
+
+
 def deframe_feed(state: DeframeState, chunk: bytes) -> list[DeframeResult]:
     """
     Feed a TCP chunk into the deframer and return zero or more DeframeResult.
@@ -145,8 +154,10 @@ def deframe_feed(state: DeframeState, chunk: bytes) -> list[DeframeResult]:
     if state.rcv_state is FrameStates.WAIT_START and chunk:
         start_at = chunk.find(bytes([STARTCHAR]))
         if start_at != 0 and not state.warned_wait_start:
-            if LOG.isEnabledFor(logging.ERROR):
-                LOG.error(
+            level = _discard_log_level(state)
+            if LOG.isEnabledFor(level):
+                LOG.log(
+                    level,
                     "deframe discard: waiting for startchar chunk_len=%s discarded=%s",
                     len(chunk),
                     len(chunk) if start_at < 0 else start_at,
@@ -188,8 +199,10 @@ def deframe_feed(state: DeframeState, chunk: bytes) -> list[DeframeResult]:
 
         # Until we see STARTCHAR+protocol (resync rule above), ignore bytes.
         if state.rcv_state == FrameStates.WAIT_START:
-            if not state.warned_wait_start and LOG.isEnabledFor(logging.ERROR):
-                LOG.error(
+            level = _discard_log_level(state)
+            if not state.warned_wait_start and LOG.isEnabledFor(level):
+                LOG.log(
+                    level,
                     "deframe discard: waiting for startchar byte=0x%02x",
                     b,
                 )
@@ -241,6 +254,7 @@ def deframe_feed(state: DeframeState, chunk: bytes) -> list[DeframeResult]:
 
                 if calc_crc == recv_crc:
                     results.append(DeframeResult(ok=True, frame_no_crc=buf[:-2], error=None))
+                    state.seen_frame = True
                 else:
                     results.append(
                         DeframeResult(ok=False, frame_no_crc=None, error=RxErrorType.BAD_CRC)
