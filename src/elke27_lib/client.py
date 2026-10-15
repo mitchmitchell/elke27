@@ -1079,10 +1079,6 @@ class Elke27Client:
     def _build_barrier_map(self) -> Mapping[int, V2BarrierState]:
         out: dict[int, V2BarrierState] = {}
         for barrier_id, barrier in self._kernel.state.barriers.items():
-            # Keys are typed int; keep the guard (as the other domain maps do)
-            # against untyped writers of kernel state.
-            if not isinstance(barrier_id, int):  # pyright: ignore[reportUnnecessaryIsInstance]
-                continue
             out[barrier_id] = _v2_barrier_from_state(barrier_id, barrier)
         return types_mod.MappingProxyType(out)
 

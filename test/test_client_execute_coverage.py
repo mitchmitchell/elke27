@@ -235,10 +235,7 @@ def test_build_new_domain_maps_and_filtered_properties() -> None:
         Any,
         {1: LightState(light_id=1, name="L1", on=True, level=50), "x": object()},
     )
-    kernel.state.barriers = cast(
-        Any,
-        {2: BarrierState(barrier_id=2, name="B2", status="OPEN"), "x": object()},
-    )
+    kernel.state.barriers = {2: BarrierState(barrier_id=2, name="B2", status="OPEN")}
     kernel.state.locks = cast(
         Any,
         {
