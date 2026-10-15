@@ -1,8 +1,5 @@
   UNRELEASED
 
-  - Ship `py.typed` (PEP 561) in the wheel so type checkers such as mypy
-    --strict use the package's inline types.
-
   - Linking (target 0.3.15): when the panel's client link table is full, api_link
     replies with an error message ("Not enough space") and no link keys.
     `async_link` now raises the new public `Elke27LinkSlotsFullError`
@@ -11,7 +8,7 @@
     instead of a generic protocol error. Any other panel message in a keyless
     api_link reply is now included in the protocol error text.
 
-  Public Command Result (0.3.14)
+  Public Command Result, Typed Package (0.3.14)
 
   - New public `CommandResult` (frozen dataclass, exported from `elke27_lib`)
     for arm, disarm and zone bypass, so callers no longer need private client
@@ -23,6 +20,9 @@
     panel accepted but the follow-up read failed and the entity is marked stale,
     `None` no refresh applied); property `refreshed` is `status_refresh_ok is
     True`. Failures still raise the existing public `Elke27*` exceptions.
+
+  - Ship `py.typed` (PEP 561) in the wheel so type checkers such as mypy
+    --strict use the package's inline types.
 
   Panel MAC Discovery, HELLO Link Errors, Session Close (0.3.13)
 
