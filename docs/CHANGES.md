@@ -1,8 +1,5 @@
   UNRELEASED
 
-  - Ship `py.typed` (PEP 561) in the wheel so type checkers such as mypy
-    --strict use the package's inline types.
-
   - Barriers (garage-door design §6): new `async_set_barrier(barrier_id, *, open)`
     sends one `barrier.set_status` (lowercase `open`/`close`) and never retries it (the kernel disables
     transport retries for the route and panel-busy replies are not resent); a
@@ -11,7 +8,7 @@
     state. `V2BarrierState` gains `is_open` (OPEN -> True, CLOSE/CLOSED -> False,
     anything else -> None), `tamper`, `low_batt` and `rssi`; raw `status` is kept.
 
-  Public Command Result (0.3.14)
+  Public Command Result, Typed Package (0.3.14)
 
   - New public `CommandResult` (frozen dataclass, exported from `elke27_lib`)
     for arm, disarm and zone bypass, so callers no longer need private client
@@ -23,6 +20,9 @@
     panel accepted but the follow-up read failed and the entity is marked stale,
     `None` no refresh applied); property `refreshed` is `status_refresh_ok is
     True`. Failures still raise the existing public `Elke27*` exceptions.
+
+  - Ship `py.typed` (PEP 561) in the wheel so type checkers such as mypy
+    --strict use the package's inline types.
 
   Panel MAC Discovery, HELLO Link Errors, Session Close (0.3.13)
 
