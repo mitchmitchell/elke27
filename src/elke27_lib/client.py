@@ -153,6 +153,7 @@ from .kernel import (
 from .linking import E27Identity, E27LinkKeys
 from .outbound import OutboundPriority
 from .permissions import (
+    GENERATOR_PERMISSION,
     PermissionLevel,
     canonical_generator_key,
     permission_for_generator,
@@ -470,8 +471,12 @@ class Elke27Client:
         features: Sequence[str] | None = None,
         logger: logging.Logger | None = None,
         filter_attribs_to_configured: bool = True,
+        enable_raw_passthrough: bool = False,
     ) -> None:
         self._log: logging.Logger = logger or logging.getLogger(__name__)
+        # Raw API pass-through (decision 34) is off unless the caller opts in at
+        # construction. The Home Assistant integration must never set this.
+        self._raw_passthrough_enabled: bool = bool(enable_raw_passthrough)
         self._connection_lost_logged = False
         self._connect_failures_warning_logged = False
         self._feature_modules: Sequence[str] | None = features
@@ -2578,6 +2583,139 @@ class Elke27Client:
             if self._arm_write_inflight_area_ids[area_id] <= 0:
                 del self._arm_write_inflight_area_ids[area_id]
 
+    async def async_raw_request(
+        self,
+        message: Mapping[str, Any],
+        *,
+        timeout_s: float | None = None,
+        allow_installer: bool = False,
+    ) -> Result[Mapping[str, Any]]:
+        """Send one raw E27 API message over the current session (decision 34).
+
+        ``message`` is the inner API dict, exactly one domain with exactly one
+        verb, e.g. ``{"net_dev": {"get_list": {...}}}``, without ``seq`` or
+        ``session_id`` (the library owns both). The reply is correlated by seq and
+        returned with ``seq``/``session_id`` removed.
+
+        Not part of the Home Assistant contract: the client must be constructed
+        with ``enable_raw_passthrough=True``. Messages whose route needs more than
+        encryption-key permission, or whose route is unknown, are refused before
+        sending unless ``allow_installer=True``. This method never authenticates;
+        elevate first with ``async_execute("control_authenticate", pin=...)``.
+
+        Message and reply contents are never logged; only the route, outcome,
+        panel error code, elapsed time and the ``allow_installer`` flag. A sent
+        message with no reply is reported as ``Elke27CommandOutcomeUnknownError``;
+        re-read state instead of retrying.
+        """
+        started = time.monotonic()
+        route_label = "?"
+        outcome = "error"
+        error_code: int | None = None
+        try:
+            if not self._raw_passthrough_enabled:
+                raise Elke27PermissionError(
+                    "Raw pass-through is disabled; construct the client with "
+                    "enable_raw_passthrough=True."
+                )
+            domain, verb, payload = _split_raw_message(message)
+            route_label = f"{domain}.{verb}"
+            level = GENERATOR_PERMISSION.get(f"{domain}_{verb}")
+            installer_level = level is None or level not in (
+                PermissionLevel.PLT_ENCRYPTION_KEY,
+                PermissionLevel.PLT_ENCRYPTION_KEY_DISARMED,
+            )
+            if installer_level and not allow_installer:
+                raise Elke27PermissionError(
+                    f"Raw {route_label} needs allow_installer=True (installer-level or unknown route)."
+                )
+            if self._kernel.state.panel.session_id is None:
+                return _err(NotAuthenticatedError(f"raw {route_label}: missing session."))
+            if level is not None and requires_disarmed(level) and not self._all_areas_disarmed():
+                raise Elke27PermissionError("This action requires all areas to be disarmed.")
+            result = await self._async_raw_send(
+                domain, verb, payload, route=(domain, verb), timeout_s=timeout_s
+            )
+            if result.ok and result.data is not None:
+                error_code = self._extract_error_code(result.data, (domain, verb))
+                if error_code is not None:
+                    reason = panel_error_reason(error_code)
+                    return _err(Elke27PanelError(error_code, reason))
+                outcome = "ok"
+            elif result.error is not None:
+                outcome = type(result.error).__name__
+            return result
+        except (Elke27PermissionError, Elke27InvalidArgument) as exc:
+            outcome = type(exc).__name__
+            return _err(exc)
+        finally:
+            # One line, never contents: route, outcome, code, timing, opt-in flag.
+            self._log.info(
+                "Raw pass-through route=%s outcome=%s error_code=%s elapsed_ms=%d allow_installer=%s",
+                route_label,
+                outcome,
+                error_code,
+                int((time.monotonic() - started) * 1000),
+                allow_installer,
+            )
+
+    async def _async_raw_send(
+        self,
+        domain: str,
+        verb: str,
+        payload: Mapping[str, Any],
+        *,
+        route: RouteKey,
+        timeout_s: float | None,
+    ) -> Result[Mapping[str, Any]]:
+        timeout_value = (
+            timeout_s if timeout_s is not None else getattr(self._kernel, "_request_timeout_s", 5.0)
+        )
+        label = f"raw:{domain}.{verb}"
+        loop = asyncio.get_running_loop()
+        seq = self._kernel.next_seq()
+        self._kernel.mark_raw_passthrough(seq)
+        try:
+            future = self._kernel.pending_responses.create(
+                seq, command_key=label, expected_route=route, loop=loop
+            )
+            sent_event = asyncio.Event()
+            self._kernel.register_sent_event(seq, sent_event)
+            try:
+                self._kernel.send_request_with_seq(
+                    seq,
+                    domain,
+                    verb,
+                    payload,
+                    pending=False,
+                    opaque=None,
+                    expected_route=route,
+                    timeout_s=timeout_value,
+                )
+            except _CLIENT_EXCEPTIONS as exc:
+                self._kernel.pending_responses.drop(seq)
+                return _err(
+                    self._normalize_error(exc, phase="execute", detail=f"{label} seq={seq}")
+                )
+            # Raw messages are opaque, so any sent-but-unanswered one is outcome-unknown.
+            wait_result = await self._await_kernel_command_response(
+                seq=seq,
+                command_key=label,
+                sent_event=sent_event,
+                future=future,
+                per_attempt_timeout_s=timeout_value,
+                route=route,
+            )
+        finally:
+            self._kernel.clear_raw_passthrough(seq)
+        if not wait_result.ok:
+            return wait_result
+        msg = wait_result.data
+        if msg is None or not self._has_expected_payload(msg, route):
+            return _err(ProtocolError(f"{label} reply missing its payload."))
+        reply = {k: v for k, v in msg.items() if k not in ("seq", "session_id")}
+        return _ok(reply)
+
     async def _async_execute_impl(
         self,
         command_key: str,
@@ -3576,3 +3714,29 @@ def _merge_rule_blocks(blocks: list[PagedBlock], block_count: int) -> Mapping[st
             merged[block.block_id] = {"block_id": block.block_id, "data": data}
     rules = [merged[key] for key in sorted(merged)]
     return {"rules": rules, "block_count": block_count}
+
+
+def _split_raw_message(message: Mapping[str, Any]) -> tuple[str, str, Mapping[str, Any]]:
+    """Validate a raw message; never echo its values in errors."""
+    if not isinstance(message, Mapping):
+        raise Elke27InvalidArgument("Raw message must be a mapping.")
+    msg = cast(Mapping[str, Any], message)
+    if "seq" in msg or "session_id" in msg:
+        raise Elke27InvalidArgument("Raw message must not set seq or session_id.")
+    if len(msg) != 1:
+        raise Elke27InvalidArgument("Raw message must have exactly one domain.")
+    domain, body = next(iter(msg.items()))
+    if not isinstance(domain, str) or not domain or not isinstance(body, Mapping):
+        raise Elke27InvalidArgument("Raw message domain must map to one verb.")
+    body_map = cast(Mapping[str, Any], body)
+    if len(body_map) != 1:
+        raise Elke27InvalidArgument("Raw message domain must map to exactly one verb.")
+    verb, payload = next(iter(body_map.items()))
+    if not isinstance(verb, str) or not verb or verb == "__root__":
+        raise Elke27InvalidArgument("Raw message verb must be a non-empty string.")
+    if not isinstance(payload, Mapping):
+        raise Elke27InvalidArgument("Raw message payload must be a mapping.")
+    payload_map = cast(Mapping[str, Any], payload)
+    if "seq" in payload_map or "session_id" in payload_map:
+        raise Elke27InvalidArgument("Raw message must not set seq or session_id.")
+    return domain, verb, payload_map

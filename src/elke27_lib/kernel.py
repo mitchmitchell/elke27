@@ -389,6 +389,10 @@ class E27Kernel:
             ("keypad", "get_attribs"),
         }
         self._pending_responses = PendingResponseManager(now=self.now)
+        # Seqs of raw pass-through requests: their contents are never logged.
+        # Kept for the last 256 raw seqs so late replies stay unlogged too.
+        self._raw_passthrough_seqs: set[int] = set()
+        self._raw_passthrough_order: deque[int] = deque()
         self._closing = False
         self._closed_explicitly = False
         self._sent_events = {}
@@ -1155,7 +1159,8 @@ class E27Kernel:
         self._last_rx_at = self.state.panel.last_message_at
         self._last_exchange_at = self.state.panel.last_message_at
 
-        self._log.debug("Inbound message: %s", msg)
+        if seq_val not in self._raw_passthrough_seqs:
+            self._log.debug("Inbound message: %s", msg)
 
         # Dispatcher handles routing + correlation + dispatch-error envelopes.
         result = self.dispatcher.dispatch(msg)
@@ -1477,7 +1482,7 @@ class E27Kernel:
         """Marshal retry-state cleanup onto the event loop thread.
 
         _on_message runs on the transport recv thread; the retry timer maps and
-        request deques are owned by the loop, so mutate them only there.
+        request dequeues are owned by the loop, so mutate them only there.
         """
         loop = self._loop
         if loop is None or loop.is_closed():
@@ -2024,8 +2029,21 @@ class E27Kernel:
             msg[domain] = {name: payload}
         return msg
 
+    def mark_raw_passthrough(self, seq: int) -> None:
+        """Suppress content logging for this seq (raw pass-through, decision 34)."""
+        self._raw_passthrough_seqs.add(seq)
+        self._raw_passthrough_order.append(seq)
+        while len(self._raw_passthrough_order) > 256:
+            self._raw_passthrough_seqs.discard(self._raw_passthrough_order.popleft())
+
+    def clear_raw_passthrough(self, seq: int) -> None:
+        """Request finished. The seq stays suppressed (bounded) for late replies."""
+        del seq
+
     def _log_outbound(self, domain: str, name: str, msg: Mapping[str, Any]) -> None:
         if domain == "control" and name == "r_u_alive":
+            return
+        if msg.get("seq") in self._raw_passthrough_seqs:
             return
         if not self._log.isEnabledFor(logging.DEBUG):
             return

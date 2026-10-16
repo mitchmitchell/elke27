@@ -256,6 +256,16 @@ The HA integration MUST:
 See ADR-0108 and ADR-0109.
 
 
+11a. Raw API pass-through is out of contract
+--------------------------------------------
+
+`Elke27Client.async_raw_request` (decision 34) exists for external test
+tools only. The HA integration MUST NOT call it and MUST NOT construct a
+client with `enable_raw_passthrough=True`. Without that flag every call is
+refused with `Elke27PermissionError`. HACS-Elk-E27 CI fails if either name
+appears in the integration.
+
+
 12. Non-Goals
 -------------
 
