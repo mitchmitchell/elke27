@@ -605,6 +605,7 @@ class E27Kernel:
 
         self._closed_explicitly = False
         s = session_mod.Session(cfg=cfg, client_identity=client_identity, link_key_hex=link_key_hex)
+        s.wire_log_suppress_seqs = self._raw_passthrough_seqs
 
         # Wire callbacks before connecting so HELLO path can report, if needed.
         s.on_message = self._on_message

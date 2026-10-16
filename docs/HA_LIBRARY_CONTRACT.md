@@ -263,7 +263,9 @@ See ADR-0108 and ADR-0109.
 tools only. The HA integration MUST NOT call it and MUST NOT construct a
 client with `enable_raw_passthrough=True`. Without that flag every call is
 refused with `Elke27PermissionError`. HACS-Elk-E27 CI fails if either name
-appears in the integration.
+appears in the integration. Callers own the safety of unknown routes: the
+library only gates them behind `allow_installer=True` and cannot check their
+effect or disarm needs.
 
 
 12. Non-Goals

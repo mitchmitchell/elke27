@@ -205,3 +205,101 @@ async def test_no_message_or_reply_content_in_logs(caplog: pytest.LogCaptureFixt
     assert len(summary) == 1
     assert "route=net_dev.set_creds outcome=ok" in summary[0]
     assert "allow_installer=True" in summary[0]
+
+
+# --- wire hex suppression (Architect ruling 5) -----------------------------------
+from types import SimpleNamespace  # noqa: E402
+
+from elke27_lib import session as session_mod  # noqa: E402
+from elke27_lib.session import SessionConfig  # noqa: E402
+from test.test_session_extra import _ready_session  # noqa: E402
+
+_FRAME = b"\x80\x05\x00\xde\xad\xbe\xef\x99"
+
+
+def _wire_session() -> Any:
+    sess = _ready_session()
+    sess.cfg = SessionConfig(host="example", wire_log=True, auto_receive=False)
+    sess.wire_log_suppress_seqs = {77}
+    return sess
+
+
+@pytest.mark.parametrize(
+    ("obj", "dumped"),
+    [
+        ({"seq": 5, "zone": {"get_status": {}}}, True),
+        ({"seq": 0, "authenticate": {"seq": 0, "pin": FAKE_PIN}}, False),  # plain
+        ({"seq": 6, "session_id": 1, "control": {"authenticate": {"pin": FAKE_PIN}}}, False),
+        ({"seq": 77, "net_dev": {"del_attribs": {"net_dev_id": 3}}}, False),  # raw seq
+    ],
+)
+def test_tx_wire_hex_suppressed(
+    caplog: pytest.LogCaptureFixture, obj: dict[str, Any], dumped: bool
+) -> None:
+    sess = _wire_session()
+    caplog.set_level(logging.DEBUG)
+    framed = sess._encode_json(obj)
+    text = caplog.text
+    assert ("TX framed" in text) is dumped
+    assert (framed.hex() in text) is dumped
+
+
+@pytest.mark.parametrize(
+    ("payload", "dumped"),
+    [
+        (b'{"seq": 9, "zone": {}}', True),
+        (b'{"authenticate": {"error_code": 0, "installer": true, "session_id": 5}}', False),
+        (b'{"seq": 77, "net_dev": {"del_attribs": {"error_code": 0}}}', False),
+    ],
+)
+def test_rx_wire_hex_suppressed(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    payload: bytes,
+    dumped: bool,
+) -> None:
+    sess = _wire_session()
+    sess._recv_one_frame_no_crc = lambda **_k: _FRAME
+    monkeypatch.setattr(
+        session_mod,
+        "decrypt_schema0_envelope",
+        lambda **_k: SimpleNamespace(seq=1, payload=payload),
+    )
+    caplog.set_level(logging.DEBUG)
+    sess.recv_json(timeout_s=0.0)
+    assert (_FRAME.hex() in caplog.text) is dumped
+
+
+def test_rx_raw_chunk_never_hex_dumped(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    sess = _wire_session()
+    chunk = b"\x11\x22\x33\x44\x55\x66"
+    monkeypatch.setattr(sess, "_recv_some", lambda *_a, **_k: chunk)
+    monkeypatch.setattr(
+        session_mod,
+        "deframe_feed",
+        lambda _s, _c: [SimpleNamespace(ok=True, frame_no_crc=_FRAME, error=None)],
+    )
+    caplog.set_level(logging.DEBUG)
+    sess._recv_one_frame_no_crc(timeout_s=0.1)
+    assert chunk.hex() not in caplog.text and _FRAME.hex() not in caplog.text
+
+
+def test_kernel_shares_raw_seqs_with_session() -> None:
+    client = Elke27Client(enable_raw_passthrough=True)
+    kernel = get_kernel(client)
+    kernel.mark_raw_passthrough(123)
+    assert 123 in get_private(kernel, "_raw_passthrough_seqs")
+
+
+# --- leading-zero PIN (Architect ruling 7) ---------------------------------------
+@pytest.mark.asyncio
+async def test_authenticate_rejects_leading_zero_pin() -> None:
+    session = _Session()
+    client = _client(session)
+    result = await client.async_execute("control_authenticate", pin="0123")
+    assert isinstance(result.error, Elke27InvalidArgument)
+    assert "leading zero" in str(result.error)
+    assert "0123" not in str(result.error)
+    assert session.sent == []

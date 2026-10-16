@@ -2597,6 +2597,11 @@ class Elke27Client:
         ``session_id`` (the library owns both). The reply is correlated by seq and
         returned with ``seq``/``session_id`` removed.
 
+        Unknown routes (not in elke27's permission table) are sent as opaque
+        installer-level messages: the library cannot check what they do, whether
+        they need the panel disarmed, or whether they are safe to repeat. The
+        caller owns the safety of every unknown route.
+
         Not part of the Home Assistant contract: the client must be constructed
         with ``enable_raw_passthrough=True``. Messages whose route needs more than
         encryption-key permission, or whose route is unknown, are refused before
@@ -2742,6 +2747,15 @@ class Elke27Client:
             if isinstance(pin_value, str):
                 if not _is_ascii_digit_string(pin_value):
                     return _err(Elke27InvalidArgument("PIN must be a non-empty digit string."))
+                # The authenticate "pin" is a JSON number (Dealer API: {"pin":3456}), so a
+                # leading zero cannot be sent. Refuse rather than silently drop it.
+                if len(pin_value) > 1 and pin_value.startswith("0"):
+                    return _err(
+                        Elke27InvalidArgument(
+                            "PIN has a leading zero; the panel's authenticate pin is numeric "
+                            "and cannot carry it."
+                        )
+                    )
                 pin_int = int(pin_value)
             elif isinstance(pin_value, int) and not isinstance(pin_value, bool):
                 if pin_value <= 0:
