@@ -382,3 +382,74 @@ async def test_permission_keyed_by_exact_pair_no_collisions() -> None:
             checked += 1
     assert checked > 100
     assert session.sent == []
+
+
+# --- in-flight seqs never evicted; no automatic retries (Bugbot HIGH, Codex P1) --
+def test_inflight_raw_seq_survives_more_than_window() -> None:
+    from elke27_lib.kernel import RawSeqTracker
+
+    t = RawSeqTracker(late_window=4)
+    t.mark(1)  # in flight the whole time
+    for seq in range(2, 600):
+        t.mark(seq)
+        t.finish(seq)
+    assert 1 in t  # never evicted while in flight
+    assert 599 in t and 596 in t  # late window keeps the most recent finished
+    assert 2 not in t  # old finished seqs age out
+    t.finish(1)
+    assert 1 in t  # now in the late window
+
+
+@pytest.mark.asyncio
+async def test_inflight_raw_request_keeps_protection_under_load(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    session = _Session()
+    client = _client(session)
+    kernel = get_kernel(client)
+    kernel.load_features_blocking(None)
+    caplog.set_level(logging.DEBUG)
+    task = asyncio.create_task(
+        client.async_raw_request({"light": {"get_status": {"light_id": 1}}}, allow_installer=True)
+    )
+    for _ in range(50):
+        if session.sent:
+            break
+        await asyncio.sleep(0)
+    seq = session.sent[0]["seq"]
+    for other in range(10_000, 10_400):  # > 256 other raw requests mark and finish
+        kernel.mark_raw_passthrough(other)
+        kernel.finish_raw_passthrough(other)
+    get_private(kernel, "_on_message")(
+        {"seq": seq, "light": {"get_status": {"light_id": 1, "error_code": 0, "name": SENTINEL}}}
+    )
+    result = await asyncio.wait_for(task, 2.0)
+    assert result.ok
+    assert SENTINEL not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_raw_get_is_never_resent_after_lost_reply() -> None:
+    session = _Session()
+    client = _client(session)
+    kernel = get_kernel(client)
+    cast(Any, kernel)._request_max_retries = 3
+    cast(Any, client)._command_transport_wait_budget_s = lambda _t: 0.3
+    result = await asyncio.wait_for(
+        client.async_raw_request({"net_dev": {"get_list": {}}}, timeout_s=0.02), 2.0
+    )
+    await asyncio.sleep(0.1)
+    assert isinstance(result.error, Elke27CommandOutcomeUnknownError)
+    assert len(session.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_normal_get_still_retries_after_lost_reply() -> None:
+    """Control: the retry path exists for non-raw get_* (so the raw test is meaningful)."""
+    session = _Session()
+    client = _client(session)
+    kernel = get_kernel(client)
+    cast(Any, kernel)._request_max_retries = 3
+    cast(Any, client)._command_transport_wait_budget_s = lambda _t: 0.3
+    await asyncio.wait_for(client.async_execute("zone_get_status", zone_id=1, timeout_s=0.02), 2.0)
+    assert len(session.sent) > 1

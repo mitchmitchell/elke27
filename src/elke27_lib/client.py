@@ -2680,12 +2680,29 @@ class Elke27Client:
         timeout_value = (
             timeout_s if timeout_s is not None else getattr(self._kernel, "_request_timeout_s", 5.0)
         )
+        seq = self._kernel.next_seq()
+        # Marked before sending and never evicted while in flight; after the wait
+        # it stays marked in a bounded late-reply window (logs, handlers, retries).
+        self._kernel.mark_raw_passthrough(seq)
+        try:
+            return await self._async_raw_send_marked(
+                seq, domain, verb, payload, route=route, timeout_value=timeout_value
+            )
+        finally:
+            self._kernel.finish_raw_passthrough(seq)
+
+    async def _async_raw_send_marked(
+        self,
+        seq: int,
+        domain: str,
+        verb: str,
+        payload: Mapping[str, Any],
+        *,
+        route: RouteKey,
+        timeout_value: float,
+    ) -> Result[Mapping[str, Any]]:
         label = f"raw:{domain}.{verb}"
         loop = asyncio.get_running_loop()
-        seq = self._kernel.next_seq()
-        # Marked before sending; stays marked (bounded, last 256 seqs) so late
-        # replies are also kept out of logs and handlers.
-        self._kernel.mark_raw_passthrough(seq)
         future = self._kernel.pending_responses.create(
             seq, command_key=label, expected_route=route, loop=loop
         )

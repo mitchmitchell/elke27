@@ -169,6 +169,39 @@ def _queued_request_retry_after_send_allowed(item: _QueuedRequest) -> bool:
     return name.startswith("get_")
 
 
+class RawSeqTracker:
+    """Raw pass-through seqs. In-flight seqs are never evicted; finished seqs
+    stay for a bounded late-reply window (the last ``late_window`` finished)."""
+
+    def __init__(self, late_window: int = 256) -> None:
+        self._inflight: set[int] = set()
+        self._recent: set[int] = set()
+        self._recent_order: deque[int] = deque()
+        self._late_window = late_window
+
+    def mark(self, seq: int) -> None:
+        self._inflight.add(seq)
+
+    def finish(self, seq: int) -> None:
+        if seq not in self._inflight:
+            return
+        self._inflight.discard(seq)
+        if seq in self._recent:
+            return
+        self._recent.add(seq)
+        self._recent_order.append(seq)
+        while len(self._recent_order) > self._late_window:
+            old = self._recent_order.popleft()
+            if old not in self._inflight:
+                self._recent.discard(old)
+
+    def __contains__(self, seq: object) -> bool:
+        return seq in self._inflight or seq in self._recent
+
+    def __len__(self) -> int:
+        return len(self._inflight | self._recent)
+
+
 @dataclass(frozen=True, slots=True)
 class DiscoverResult:
     """Wrapper for discovery results to keep the public contract explicit."""
@@ -391,8 +424,7 @@ class E27Kernel:
         self._pending_responses = PendingResponseManager(now=self.now)
         # Seqs of raw pass-through requests: their contents are never logged.
         # Kept for the last 256 raw seqs so late replies stay unlogged too.
-        self._raw_passthrough_seqs: set[int] = set()
-        self._raw_passthrough_order: deque[int] = deque()
+        self._raw_passthrough_seqs: RawSeqTracker = RawSeqTracker()
         self._closing = False
         self._closed_explicitly = False
         self._sent_events = {}
@@ -1468,6 +1500,10 @@ class E27Kernel:
             return False
         if sent and not _queued_request_retry_after_send_allowed(item):
             return False
+        # Raw pass-through frames are opaque: never resend automatically. A lost
+        # reply surfaces as outcome-unknown and the caller re-reads (decision 34).
+        if item.seq in self._raw_passthrough_seqs:
+            return False
         return True
 
     def _drain_transport_retry_waiters(self) -> list[_QueuedRequest]:
@@ -2047,11 +2083,16 @@ class E27Kernel:
         return msg
 
     def mark_raw_passthrough(self, seq: int) -> None:
-        """Suppress content logging for this seq (raw pass-through, decision 34)."""
-        self._raw_passthrough_seqs.add(seq)
-        self._raw_passthrough_order.append(seq)
-        while len(self._raw_passthrough_order) > 256:
-            self._raw_passthrough_seqs.discard(self._raw_passthrough_order.popleft())
+        """Suppress logging, handler dispatch and retries for this seq (decision 34).
+
+        In-flight seqs are never evicted; see ``finish_raw_passthrough``.
+        """
+        self._raw_passthrough_seqs.mark(seq)
+
+    def finish_raw_passthrough(self, seq: int) -> None:
+        """The caller is done waiting (reply, timeout or error). The seq stays
+        suppressed in a bounded late-reply window."""
+        self._raw_passthrough_seqs.finish(seq)
 
     def _log_outbound(self, domain: str, name: str, msg: Mapping[str, Any]) -> None:
         if domain == "control" and name == "r_u_alive":
