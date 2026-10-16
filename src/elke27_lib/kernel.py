@@ -1163,6 +1163,13 @@ class E27Kernel:
         if seq_val not in self._raw_passthrough_seqs:
             self._log.debug("Inbound message: %s", msg)
 
+        # Raw pass-through replies (decision 34) go only to their pending future,
+        # never to the feature handlers: handlers may log values and would fold
+        # unvetted replies into library state.
+        if seq_val in self._raw_passthrough_seqs:
+            self._complete_raw_reply(msg)
+            return
+
         # Dispatcher handles routing + correlation + dispatch-error envelopes.
         result = self.dispatcher.dispatch(msg)
         if self._log.isEnabledFor(logging.DEBUG):
@@ -1184,6 +1191,15 @@ class E27Kernel:
                     seq_val,
                     self._active_seq,
                 )
+
+    def _complete_raw_reply(self, msg: Mapping[str, Any]) -> None:
+        seq_val = msg.get("seq")
+        if not isinstance(seq_val, int) or seq_val <= 0:
+            return
+        self.dispatcher.drop_pending(seq_val)
+        if self._request_state is _RequestState.IN_FLIGHT and seq_val == self._active_seq:
+            self._cancel_active_timeout()
+            self._complete_active(reason="reply")
 
     def _on_idle(self) -> None:
         self._try_send_next()
@@ -2036,10 +2052,6 @@ class E27Kernel:
         self._raw_passthrough_order.append(seq)
         while len(self._raw_passthrough_order) > 256:
             self._raw_passthrough_seqs.discard(self._raw_passthrough_order.popleft())
-
-    def clear_raw_passthrough(self, seq: int) -> None:
-        """Request finished. The seq stays suppressed (bounded) for late replies."""
-        del seq
 
     def _log_outbound(self, domain: str, name: str, msg: Mapping[str, Any]) -> None:
         if domain == "control" and name == "r_u_alive":

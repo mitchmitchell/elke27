@@ -303,3 +303,55 @@ async def test_authenticate_rejects_leading_zero_pin() -> None:
     assert "leading zero" in str(result.error)
     assert "0123" not in str(result.error)
     assert session.sent == []
+
+
+# --- handler fan-out (Architect blocker A) ---------------------------------------
+SENTINEL = "SENTINEL-7f3a9c"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("message", "reply_body"),
+    [
+        (
+            {"light": {"get_status": {"light_id": 1}}},
+            {"light_id": 1, "error_code": 0, "name": SENTINEL, "status": SENTINEL},
+        ),
+        (
+            {"zone": {"get_table_info": {}}},
+            {"error_code": 0, "table_csm": SENTINEL, "table_elements": SENTINEL},
+        ),
+        (
+            {"light": {"set_status": {"light_id": 1, "on": True}}},
+            {"light_id": 1, "error_code": 0, "status": SENTINEL},
+        ),
+    ],
+)
+async def test_raw_reply_never_reaches_feature_handlers_or_logs(
+    caplog: pytest.LogCaptureFixture, message: dict[str, Any], reply_body: dict[str, Any]
+) -> None:
+    session = _Session()
+    client = _client(session)
+    kernel = get_kernel(client)
+    kernel.load_features_blocking(None)
+
+    def domain_state() -> str:
+        st = kernel.state
+        return repr((st.areas, st.zones, st.lights, st.table_info_by_domain))
+
+    before = domain_state()
+    caplog.set_level(logging.DEBUG)
+    domain = next(iter(message))
+    verb = next(iter(message[domain]))
+    task = asyncio.create_task(client.async_raw_request(message, allow_installer=True))
+    await _reply(
+        client,
+        session,
+        lambda s: {"seq": s["seq"], "session_id": 4242, domain: {verb: reply_body}},
+    )
+    result = await asyncio.wait_for(task, 2.0)
+    assert result.ok
+    assert result.data == {domain: {verb: reply_body}}
+    assert all(SENTINEL not in r.getMessage() for r in caplog.records)
+    assert SENTINEL not in caplog.text
+    assert domain_state() == before  # raw replies do not update library state

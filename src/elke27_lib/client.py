@@ -2597,6 +2597,11 @@ class Elke27Client:
         ``session_id`` (the library owns both). The reply is correlated by seq and
         returned with ``seq``/``session_id`` removed.
 
+        Raw replies do not update library state: they are returned to the
+        caller only and are never dispatched to the feature handlers (so the
+        snapshot, inventory and events do not see them). Re-read through the
+        normal API if state must reflect a raw write.
+
         Unknown routes (not in elke27's permission table) are sent as opaque
         installer-level messages: the library cannot check what they do, whether
         they need the panel disarmed, or whether they are safe to repeat. The
@@ -2679,40 +2684,37 @@ class Elke27Client:
         label = f"raw:{domain}.{verb}"
         loop = asyncio.get_running_loop()
         seq = self._kernel.next_seq()
+        # Marked before sending; stays marked (bounded, last 256 seqs) so late
+        # replies are also kept out of logs and handlers.
         self._kernel.mark_raw_passthrough(seq)
+        future = self._kernel.pending_responses.create(
+            seq, command_key=label, expected_route=route, loop=loop
+        )
+        sent_event = asyncio.Event()
+        self._kernel.register_sent_event(seq, sent_event)
         try:
-            future = self._kernel.pending_responses.create(
-                seq, command_key=label, expected_route=route, loop=loop
+            self._kernel.send_request_with_seq(
+                seq,
+                domain,
+                verb,
+                payload,
+                pending=False,
+                opaque=None,
+                expected_route=route,
+                timeout_s=timeout_value,
             )
-            sent_event = asyncio.Event()
-            self._kernel.register_sent_event(seq, sent_event)
-            try:
-                self._kernel.send_request_with_seq(
-                    seq,
-                    domain,
-                    verb,
-                    payload,
-                    pending=False,
-                    opaque=None,
-                    expected_route=route,
-                    timeout_s=timeout_value,
-                )
-            except _CLIENT_EXCEPTIONS as exc:
-                self._kernel.pending_responses.drop(seq)
-                return _err(
-                    self._normalize_error(exc, phase="execute", detail=f"{label} seq={seq}")
-                )
-            # Raw messages are opaque, so any sent-but-unanswered one is outcome-unknown.
-            wait_result = await self._await_kernel_command_response(
-                seq=seq,
-                command_key=label,
-                sent_event=sent_event,
-                future=future,
-                per_attempt_timeout_s=timeout_value,
-                route=route,
-            )
-        finally:
-            self._kernel.clear_raw_passthrough(seq)
+        except _CLIENT_EXCEPTIONS as exc:
+            self._kernel.pending_responses.drop(seq)
+            return _err(self._normalize_error(exc, phase="execute", detail=f"{label} seq={seq}"))
+        # Raw messages are opaque, so any sent-but-unanswered one is outcome-unknown.
+        wait_result = await self._await_kernel_command_response(
+            seq=seq,
+            command_key=label,
+            sent_event=sent_event,
+            future=future,
+            per_attempt_timeout_s=timeout_value,
+            route=route,
+        )
         if not wait_result.ok:
             return wait_result
         msg = wait_result.data

@@ -410,12 +410,7 @@ def perform_api_link(
     )
     # Lengths only: api_link frames carry link credentials.
     LOG.debug("api_link frame_no_crc len=%d ciphertext len=%d", len(frame_no_crc), len(ciphertext))
-    LOG.debug(
-        "api_link decrypted ack=0x%02x bytes_len=%d hex=%s",
-        ack,
-        len(json_bytes),
-        json_bytes.hex(),
-    )
+    LOG.debug("api_link decrypted ack=0x%02x bytes_len=%d", ack, len(json_bytes))
 
     # Most captures show 0x00 ACK; log and continue if a different ACK is used.
     if ack != 0x00:
