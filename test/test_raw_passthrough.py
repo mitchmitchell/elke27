@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from typing import Any, cast
 
@@ -10,7 +11,14 @@ import pytest
 
 from elke27_lib import Elke27CommandOutcomeUnknownError
 from elke27_lib.client import Elke27Client
-from elke27_lib.errors import Elke27InvalidArgument, Elke27PanelError, Elke27PermissionError
+from elke27_lib.errors import (
+    E27Error,
+    Elke27InvalidArgument,
+    Elke27PanelError,
+    Elke27PermissionError,
+)
+from elke27_lib.kernel import E27Kernel
+from elke27_lib.linking import E27Identity, E27LinkKeys
 from elke27_lib.states import AreaState
 from test.helpers.internal import get_kernel, get_private
 from test.test_transport_command_retry import _FakeSession
@@ -27,13 +35,21 @@ class _Session(_FakeSession):
     cfg = _Cfg()
 
 
-def _client(session: _FakeSession, *, enabled: bool = True, disarmed: bool = True) -> Elke27Client:
-    client = Elke27Client(enable_raw_passthrough=enabled)
-    kernel = get_kernel(client)
+def _client(
+    session: _FakeSession,
+    *,
+    enabled: bool = True,
+    disarmed: bool = True,
+    kernel: E27Kernel | None = None,
+) -> Elke27Client:
+    client = Elke27Client(enable_raw_passthrough=enabled, kernel=kernel)
+    if kernel is None:
+        kernel = get_kernel(client)
+        cast(Any, kernel)._request_max_retries = 0
+        cast(Any, kernel)._request_max_backoff_s = 0.0
+    assert kernel is not None
     cast(Any, kernel)._session = session
     kernel.state.panel.session_id = 4242
-    cast(Any, kernel)._request_max_retries = 0
-    cast(Any, kernel)._request_max_backoff_s = 0.0
     cast(Any, kernel)._loop = asyncio.get_running_loop()
     kernel.state.areas[1] = AreaState(area_id=1, arm_state="DISARMED" if disarmed else "ARMED_AWAY")
     return client
@@ -173,7 +189,8 @@ async def test_disconnected_session_fails_without_send() -> None:
     client = _client(session)
     session.handle_disconnect(None)
     result = await client.async_raw_request({"net_dev": {"get_list": {}}})
-    assert not result.ok
+    assert type(result.error) is E27Error
+    assert "Session not active" in str(result.error)
     assert session.sent == []
 
 
@@ -288,11 +305,32 @@ def test_rx_raw_chunk_never_hex_dumped(
     assert chunk.hex() not in caplog.text and _FRAME.hex() not in caplog.text
 
 
-def test_kernel_shares_raw_seqs_with_session() -> None:
-    client = Elke27Client(enable_raw_passthrough=True)
-    kernel = get_kernel(client)
+@pytest.mark.asyncio
+async def test_kernel_shares_raw_seqs_with_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The session built by connect() suppresses wire logs for the kernel's raw seqs."""
+    created: list[Any] = []
+
+    class _CapturingSession:
+        def __init__(self, **_kw: Any) -> None:
+            self.wire_log_suppress_seqs: Any = frozenset()
+            created.append(self)
+
+        def connect(self, *_a: Any, **_kw: Any) -> None:
+            raise RuntimeError("stop after session setup")
+
+    monkeypatch.setattr(session_mod, "Session", _CapturingSession)
+    kernel = get_kernel(Elke27Client(enable_raw_passthrough=True))
+    with contextlib.suppress(Exception):
+        await kernel.connect(
+            E27LinkKeys(tempkey_hex="00" * 16, linkkey_hex="11" * 16, linkhmac_hex="22" * 20),
+            client_identity=E27Identity(
+                mn="222", sn="123456789012", fwver="1", hwver="1", osver="1"
+            ),
+            session_config=session_mod.SessionConfig(host="test", port=0),
+        )
+    assert created, "kernel.connect did not build a session"
     kernel.mark_raw_passthrough(123)
-    assert 123 in get_private(kernel, "_raw_passthrough_seqs")
+    assert 123 in created[0].wire_log_suppress_seqs
 
 
 # --- leading-zero PIN (Architect ruling 7) ---------------------------------------
@@ -431,10 +469,7 @@ async def test_inflight_raw_request_keeps_protection_under_load(
 @pytest.mark.asyncio
 async def test_raw_get_is_never_resent_after_lost_reply() -> None:
     session = _Session()
-    client = _client(session)
-    kernel = get_kernel(client)
-    cast(Any, kernel)._request_max_retries = 3
-    cast(Any, client)._command_transport_wait_budget_s = lambda _t: 0.3
+    client = _client(session, kernel=E27Kernel(request_max_retries=3, request_max_backoff_s=0.0))
     result = await asyncio.wait_for(
         client.async_raw_request({"net_dev": {"get_list": {}}}, timeout_s=0.02), 2.0
     )
@@ -447,9 +482,6 @@ async def test_raw_get_is_never_resent_after_lost_reply() -> None:
 async def test_normal_get_still_retries_after_lost_reply() -> None:
     """Control: the retry path exists for non-raw get_* (so the raw test is meaningful)."""
     session = _Session()
-    client = _client(session)
-    kernel = get_kernel(client)
-    cast(Any, kernel)._request_max_retries = 3
-    cast(Any, client)._command_transport_wait_budget_s = lambda _t: 0.3
+    client = _client(session, kernel=E27Kernel(request_max_retries=3, request_max_backoff_s=0.0))
     await asyncio.wait_for(client.async_execute("zone_get_status", zone_id=1, timeout_s=0.02), 2.0)
     assert len(session.sent) > 1

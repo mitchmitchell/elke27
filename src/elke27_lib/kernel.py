@@ -198,9 +198,6 @@ class RawSeqTracker:
     def __contains__(self, seq: object) -> bool:
         return seq in self._inflight or seq in self._recent
 
-    def __len__(self) -> int:
-        return len(self._inflight | self._recent)
-
 
 @dataclass(frozen=True, slots=True)
 class DiscoverResult:
@@ -423,7 +420,7 @@ class E27Kernel:
         }
         self._pending_responses = PendingResponseManager(now=self.now)
         # Seqs of raw pass-through requests: their contents are never logged.
-        # Kept for the last 256 raw seqs so late replies stay unlogged too.
+        # In-flight seqs are kept until finished, then for the last 256 so late replies stay unlogged too.
         self._raw_passthrough_seqs: RawSeqTracker = RawSeqTracker()
         self._closing = False
         self._closed_explicitly = False
@@ -1468,6 +1465,11 @@ class E27Kernel:
             backoff_total += min(0.5 * (2 ** (attempt - 1)), float(request_max_backoff_s))
         return attempts * float(request_timeout_s) + backoff_total
 
+    @property
+    def request_timeout_s(self) -> float:
+        """Default per-request timeout in seconds."""
+        return self._request_timeout_s
+
     def command_transport_wait_budget_s(self, request_timeout_s: float) -> float:
         return self.transport_wait_budget_s(
             request_timeout_s,
@@ -1535,7 +1537,7 @@ class E27Kernel:
         """Marshal retry-state cleanup onto the event loop thread.
 
         _on_message runs on the transport recv thread; the retry timer maps and
-        request dequeues are owned by the loop, so mutate them only there.
+        request deques are owned by the loop, so mutate them only there.
         """
         loop = self._loop
         if loop is None or loop.is_closed():

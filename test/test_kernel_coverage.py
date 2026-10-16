@@ -658,7 +658,7 @@ def test_mark_send_failed_request_and_next_seq(monkeypatch: pytest.MonkeyPatch) 
     kernel.dispatcher.drop_pending = lambda *_a, **_k: None  # type: ignore[assignment]
     kernel._mark_send_failed(1, RuntimeError("x"))
 
-    kernel.requests.require = lambda *_a, **_k: (lambda **_kw: {"ok": True})  # type: ignore[assignment]
+    kernel.requests.require = lambda *_a, **_k: lambda **_kw: {"ok": True}  # type: ignore[assignment]
     monkeypatch.setattr(kernel, "_send_request", lambda *_a, **_k: 5)
     assert kernel.request(("zone", "get_status")) == 5
 

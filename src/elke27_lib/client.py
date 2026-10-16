@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import contextlib
+import functools
 import inspect
 import logging
 import queue
@@ -2165,7 +2166,7 @@ class Elke27Client:
                 self._kernel.request_csm_refresh(auth_pin=self._last_auth_pin)
             except BaseException as exc:  # noqa: BLE001
                 self._raise_v2_error(exc, phase="refresh_csm")
-            timeout_value = getattr(self._kernel, "_request_timeout_s", 5.0)
+            timeout_value = self._kernel.request_timeout_s
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(done.wait(), timeout=timeout_value)
         finally:
@@ -2677,9 +2678,7 @@ class Elke27Client:
         route: RouteKey,
         timeout_s: float | None,
     ) -> Result[Mapping[str, Any]]:
-        timeout_value = (
-            timeout_s if timeout_s is not None else getattr(self._kernel, "_request_timeout_s", 5.0)
-        )
+        timeout_value = timeout_s if timeout_s is not None else self._kernel.request_timeout_s
         seq = self._kernel.next_seq()
         # Marked before sending and never evicted while in flight; after the wait
         # it stays marked in a bounded late-reply window (logs, handlers, retries).
@@ -2980,11 +2979,7 @@ class Elke27Client:
                         self._zone_status_seq.get(zone_id, 0),
                     )
             panel_busy_attempt = 0
-            timeout_value = (
-                timeout_s
-                if timeout_s is not None
-                else getattr(self._kernel, "_request_timeout_s", 5.0)
-            )
+            timeout_value = timeout_s if timeout_s is not None else self._kernel.request_timeout_s
             while True:
                 params_for_generator = self._coerce_pin_for_generator(spec, params)
                 try:
@@ -3100,9 +3095,7 @@ class Elke27Client:
         if merge_fn is None:
             return _err(ProtocolError(f"Command {command_key!r} is missing merge_strategy."))
 
-        timeout_value = (
-            timeout_s if timeout_s is not None else getattr(self._kernel, "_request_timeout_s", 5.0)
-        )
+        timeout_value = timeout_s if timeout_s is not None else self._kernel.request_timeout_s
         pin_error = self._wire_pin_string_error(spec, params)
         if pin_error is not None:
             return _err(pin_error)
@@ -3278,11 +3271,7 @@ class Elke27Client:
         self._kernel.register_sent_event(seq, sent_event)
 
         try:
-            timeout_value = (
-                timeout_s
-                if timeout_s is not None
-                else getattr(self._kernel, "_request_timeout_s", 5.0)
-            )
+            timeout_value = timeout_s if timeout_s is not None else self._kernel.request_timeout_s
             self._kernel.send_request_with_seq(
                 seq,
                 "authenticate",
@@ -3774,23 +3763,18 @@ def _split_raw_message(message: Mapping[str, Any]) -> tuple[str, str, Mapping[st
     return domain, verb, payload_map
 
 
-_RAW_ROUTE_PERMISSION: dict[RouteKey, PermissionLevel] | None = None
-
-
+@functools.cache
 def raw_route_permission_table() -> dict[RouteKey, PermissionLevel]:
     """Permission by exact (domain, verb) pair, from the command registry.
 
     Keyed on the pair, never on a joined name, so an unknown route such as
     ``{"net": {"dev_get_list": ...}}`` cannot collide with ``net_dev.get_list``.
     """
-    global _RAW_ROUTE_PERMISSION
-    if _RAW_ROUTE_PERMISSION is None:
-        table: dict[RouteKey, PermissionLevel] = {}
-        for spec in COMMANDS.values():
-            key = canonical_generator_key(spec.generator.__name__)
-            table[(spec.domain, spec.command)] = permission_for_generator(key)
-        _RAW_ROUTE_PERMISSION = table
-    return _RAW_ROUTE_PERMISSION
+    table: dict[RouteKey, PermissionLevel] = {}
+    for spec in COMMANDS.values():
+        key = canonical_generator_key(spec.generator.__name__)
+        table[(spec.domain, spec.command)] = permission_for_generator(key)
+    return table
 
 
 def _raw_route_permission(domain: str, verb: str) -> PermissionLevel | None:

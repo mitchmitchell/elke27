@@ -243,7 +243,7 @@ async def test_async_scan_uses_socket_factory(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(
         scanner,
         "_process_response",
-        lambda *_args, **_kwargs: (created.setdefault("processed", True) or True),
+        lambda *_args, **_kwargs: created.setdefault("processed", True) or True,
     )
     monkeypatch.setattr(
         scanner, "_destinations_from_address", lambda _address: [("192.0.2.255", 2362)]
