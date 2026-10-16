@@ -109,6 +109,8 @@ async def test_disabled_client_refuses() -> None:
     [
         {"net_dev": {"del_attribs": {"net_dev_id": 3}}},
         {"made_up": {"thing": {}}},  # unknown routes fail closed
+        {"net": {"dev_get_list": {}}},  # joins to net_dev_get_list
+        {"area_get": {"status": {}}},  # joins to area_get_status
     ],
 )
 async def test_installer_or_unknown_route_needs_opt_in(message: dict[str, Any]) -> None:
@@ -355,3 +357,28 @@ async def test_raw_reply_never_reaches_feature_handlers_or_logs(
     assert all(SENTINEL not in r.getMessage() for r in caplog.records)
     assert SENTINEL not in caplog.text
     assert domain_state() == before  # raw replies do not update library state
+
+
+@pytest.mark.asyncio
+async def test_permission_keyed_by_exact_pair_no_collisions() -> None:
+    from elke27_lib.client import raw_route_permission_table
+    from elke27_lib.generators.registry import COMMANDS
+
+    table = raw_route_permission_table()
+    assert set(table) == {(spec.domain, spec.command) for spec in COMMANDS.values()}
+    # Every other split of a known pair's joined name is an unknown route and
+    # must be refused without allow_installer, whatever the known route's level.
+    session = _Session()
+    client = _client(session)
+    checked = 0
+    for domain, verb in table:
+        joined = f"{domain}_{verb}"
+        for i, ch in enumerate(joined):
+            alt = (joined[:i], joined[i + 1 :])
+            if ch != "_" or alt in table or not alt[0] or not alt[1]:
+                continue
+            result = await client.async_raw_request({alt[0]: {alt[1]: {}}})
+            assert isinstance(result.error, Elke27PermissionError), alt
+            checked += 1
+    assert checked > 100
+    assert session.sent == []

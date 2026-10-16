@@ -153,7 +153,6 @@ from .kernel import (
 from .linking import E27Identity, E27LinkKeys
 from .outbound import OutboundPriority
 from .permissions import (
-    GENERATOR_PERMISSION,
     PermissionLevel,
     canonical_generator_key,
     permission_for_generator,
@@ -2630,7 +2629,7 @@ class Elke27Client:
                 )
             domain, verb, payload = _split_raw_message(message)
             route_label = f"{domain}.{verb}"
-            level = GENERATOR_PERMISSION.get(f"{domain}_{verb}")
+            level = _raw_route_permission(domain, verb)
             installer_level = level is None or level not in (
                 PermissionLevel.PLT_ENCRYPTION_KEY,
                 PermissionLevel.PLT_ENCRYPTION_KEY_DISARMED,
@@ -3756,3 +3755,26 @@ def _split_raw_message(message: Mapping[str, Any]) -> tuple[str, str, Mapping[st
     if "seq" in payload_map or "session_id" in payload_map:
         raise Elke27InvalidArgument("Raw message must not set seq or session_id.")
     return domain, verb, payload_map
+
+
+_RAW_ROUTE_PERMISSION: dict[RouteKey, PermissionLevel] | None = None
+
+
+def raw_route_permission_table() -> dict[RouteKey, PermissionLevel]:
+    """Permission by exact (domain, verb) pair, from the command registry.
+
+    Keyed on the pair, never on a joined name, so an unknown route such as
+    ``{"net": {"dev_get_list": ...}}`` cannot collide with ``net_dev.get_list``.
+    """
+    global _RAW_ROUTE_PERMISSION
+    if _RAW_ROUTE_PERMISSION is None:
+        table: dict[RouteKey, PermissionLevel] = {}
+        for spec in COMMANDS.values():
+            key = canonical_generator_key(spec.generator.__name__)
+            table[(spec.domain, spec.command)] = permission_for_generator(key)
+        _RAW_ROUTE_PERMISSION = table
+    return _RAW_ROUTE_PERMISSION
+
+
+def _raw_route_permission(domain: str, verb: str) -> PermissionLevel | None:
+    return raw_route_permission_table().get((domain, verb))
