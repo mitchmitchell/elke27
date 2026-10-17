@@ -43,7 +43,7 @@ def test_light_set_status_accepts_full_0_to_100(level: int) -> None:
 
 @pytest.mark.parametrize("level", [-1, 101, 255])
 def test_light_set_status_rejects_out_of_range(level: int) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="level must be 0..100"):
         build_light_set_status_payload(light_id=1, level=level)
 
 
@@ -72,7 +72,7 @@ def test_tstat_fan_payload(fan: str) -> None:
 
 
 def test_tstat_payload_requires_a_field() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="requires at least one status field"):
         build_tstat_set_status_payload(tstat_id=1)
 
 
@@ -129,8 +129,8 @@ def test_tstat_bare_ack_does_not_emit_stale_status() -> None:
     assert _of(spy, TstatStatusUpdated) == []
 
 
-def test_light_bare_ack_event_count_documented() -> None:
-    """Record (not judge) whether a bare light ack emits; informs the #89 fix."""
+def test_light_bare_ack_emits_no_status_event() -> None:
+    """A bare light set_status ack keeps the cached level and emits nothing (#89 context)."""
     state = PanelState()
     light_handler.make_light_get_status_handler(state, _Spy(), now=lambda: 1.0)(
         {"light": {"get_status": {"light_id": 1, "status": "ON", "level": 100}}}, make_ctx()
@@ -140,4 +140,4 @@ def test_light_bare_ack_event_count_documented() -> None:
         {"light": {"set_status": {"light_id": 1, "error_code": 0}}}, make_ctx()
     )
     assert state.lights[1].level == 100  # a bare ack must not zero the cached level
-    assert len(_of(spy, LightStatusUpdated)) in (0, 1)
+    assert _of(spy, LightStatusUpdated) == []
