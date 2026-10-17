@@ -421,9 +421,8 @@ async def test_hello_refusal_on_connect_raises_clear_error_without_connection_lo
 
     _hello_reply_on_connect(monkeypatch, {"hello": hello_payload})
     client = Elke27Client()
-    with caplog.at_level(logging.DEBUG), pytest.raises(expected_exc) as ei:
+    with caplog.at_level(logging.DEBUG), pytest.raises(expected_exc, match=text):
         await client.async_connect("127.0.0.1", 2101, LinkKeys("aa", "bb", "cc"))
-    assert text in str(ei.value)
     records = caplog.records
     assert not [r for r in records if "connection lost" in r.getMessage()]
     assert [
