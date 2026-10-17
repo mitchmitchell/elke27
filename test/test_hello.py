@@ -344,7 +344,7 @@ def test_error_code_still_wins_over_missing_session(monkeypatch: pytest.MonkeyPa
         _run_hello_with(monkeypatch, {"hello": {"error_code": 11016}})
 
 
-@pytest.mark.parametrize("error_code", ["bogus", [1]])
+@pytest.mark.parametrize("error_code", ["bogus", [1], False, True, 0.0])
 def test_wrong_type_error_code_without_session_is_malformed_not_refused(
     monkeypatch: pytest.MonkeyPatch, error_code: object
 ) -> None:

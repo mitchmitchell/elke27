@@ -254,7 +254,7 @@ def _raise_for_hello_error(hello_obj: Mapping[str, object]) -> None:
     if hello is None:
         return
     raw_code = hello.get("error_code")
-    if raw_code in (None, 0, "0", ""):
+    if _is_zero_error_code(raw_code):
         return
     try:
         code = _coerce_intish(raw_code, field="error_code")
@@ -291,7 +291,7 @@ def _raise_for_hello_without_session(hello_obj: Mapping[str, object]) -> None:
         return
     # Only when the error code is absent or a valid zero; a wrong-type error_code
     # stays a malformed reply, not link contention.
-    if hello.get("error_code") not in (None, 0, "0", ""):
+    if not _is_zero_error_code(hello.get("error_code")):
         return
     missing = tuple(f for f in _HELLO_SESSION_FIELDS if hello.get(f) in (None, ""))
     if not missing:
@@ -306,8 +306,21 @@ def _raise_for_hello_without_session(hello_obj: Mapping[str, object]) -> None:
     raise E27HelloNoSession(missing, context=context)
 
 
+def _is_zero_error_code(value: object) -> bool:
+    """True for an absent or valid zero error_code (None, int 0, "0", "").
+
+    Exact types only: a bool or float that compares equal to 0 is a wrong type,
+    so the reply is malformed rather than a refused session (#65 review).
+    """
+    if value is None:
+        return True
+    if type(value) is int:
+        return value == 0
+    return isinstance(value, str) and value in ("0", "")
+
+
 def _coerce_intish(value: object, *, field: str) -> int:
-    if isinstance(value, int):
+    if isinstance(value, int) and not isinstance(value, bool):
         return value
     if isinstance(value, str) and value.isdigit():
         return int(value)
