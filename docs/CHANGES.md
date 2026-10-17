@@ -1,5 +1,12 @@
   UNRELEASED
 
+  - Raw pass-through: `async_raw_request` now accepts any JSON value as the
+    verb's value, not only a mapping (e.g. `{"net_dev": {"get_list": 1}}` or
+    `{"net_dev": {"logout": true}}`), and sends it unchanged. Only dict, list,
+    str, int, float (finite), bool and None are accepted, by exact type; bytes,
+    sets, tuples, NaN/Infinity and other objects raise `Elke27InvalidArgument`
+    before sending. Permission still keys only on the exact (domain, verb) pair,
+    and the value is never logged.
   - Events (#62): an `output.set_status` or `tstat.set_status` ack that carries
     no new state (usually just the id and `error_code`) no longer emits
     `OutputStatusUpdated` / `TstatStatusUpdated` with the stale cached value.
@@ -12,6 +19,13 @@
     `async_refresh_barrier(barrier_id)` does one status read and returns the
     state. `V2BarrierState` gains `is_open` (OPEN -> True, CLOSE/CLOSED -> False,
     anything else -> None), `tamper`, `low_batt` and `rssi`; raw `status` is kept.
+  - Linking (target 0.3.15): when the panel's client link table is full, api_link
+    replies with an error message ("Not enough space") and no link keys.
+    `async_link` now raises the new public `Elke27LinkSlotsFullError`
+    (code `link_slots_full`, not transient) with the panel's raw text in
+    `panel_error_message` and its `error_code`, if any, in `panel_error_code`,
+    instead of a generic protocol error. Any other panel message in a keyless
+    api_link reply is now included in the protocol error text.
 
   Public Command Result, Typed Package (0.3.14)
 
