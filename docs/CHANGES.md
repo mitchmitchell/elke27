@@ -15,7 +15,10 @@
     WARNING with the reply's keys only, and `async_connect` surfaces it as
     `Elke27ProtocolError` with the same text. A field with the wrong type is
     still reported as malformed. The malformed-reply DEBUG line now logs keys
-    only, never the encrypted session key values.
+    only, never the encrypted session key values. `ConnectionStateChanged`
+    gains `hello_refused` (default `False`), set when session setup failed
+    because the panel refused HELLO, so the client does not also log
+    "Panel connection lost" for a session that never existed.
   - Barriers (garage-door design §6): new `async_set_barrier(barrier_id, *, open)`
     sends one `barrier.set_status` (lowercase `open`/`close`) and never retries it (the kernel disables
     transport retries for the route and panel-busy replies are not resent); a

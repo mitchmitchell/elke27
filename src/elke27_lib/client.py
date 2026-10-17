@@ -398,12 +398,6 @@ def _normalize_area_pin(pin: object, *, action: str) -> int:
     return pin_value
 
 
-# Session setup failures already logged once at WARNING by hello.py (#61).
-_HELLO_REFUSAL_ERROR_TYPES = frozenset(
-    cls.__name__ for cls in (E27HelloNoSession, E27HelloRejected, E27HelloLinkRequired)
-)
-
-
 def _iter_causes(exc: BaseException) -> Iterable[BaseException]:
     current: BaseException | None = exc
     seen: set[int] = set()
@@ -1719,11 +1713,7 @@ class Elke27Client:
                 # (unload/disable/reconnect teardown) is expected, so debug only.
                 # A HELLO refusal on connect was never an established session and
                 # hello.py already logged it at WARNING: no "connection lost" too.
-                if (
-                    evt.reason == "closed"
-                    or self._connection_lost_logged
-                    or evt.error_type in _HELLO_REFUSAL_ERROR_TYPES
-                ):
+                if evt.reason == "closed" or self._connection_lost_logged or evt.hello_refused:
                     self._log.debug(
                         "Panel connection closed (reason=%s error_type=%s)",
                         evt.reason,
