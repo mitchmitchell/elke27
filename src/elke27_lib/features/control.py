@@ -67,14 +67,22 @@ def build_control_get_version_info_payload(**_kwargs: Any) -> dict[str, object]:
 
 
 def build_control_authenticate_payload(*, pin: int | str, **_kwargs: Any) -> dict[str, object]:
+    # Same rules as the client PIN checks (#67): no bool, ASCII digits only,
+    # no all-zero PIN.
+    if isinstance(pin, bool):
+        raise ValueError("pin must be an integer or numeric string")
     if isinstance(pin, str):
-        if not pin.isdigit():
+        if not (pin.isascii() and pin.isdigit()):
             raise ValueError("pin must be an integer or numeric string")
         pin_value = int(pin)
-    else:
+    elif isinstance(pin, int):
         pin_value = pin
-    if not (0 <= pin_value <= 999999):
-        raise ValueError("pin must be in range 0..999999")
+    else:
+        raise ValueError("pin must be an integer or numeric string")
+    if pin_value == 0:
+        raise ValueError("pin must be a positive number (all-zero PINs are invalid)")
+    if not (0 < pin_value <= 999999):
+        raise ValueError("pin must be in range 1..999999")
     return {"pin": pin_value}
 
 
