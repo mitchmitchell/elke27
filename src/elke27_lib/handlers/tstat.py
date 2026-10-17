@@ -88,6 +88,12 @@ def make_tstat_get_status_handler(state: PanelState, emit: EmitFn, now: NowFn):
         _apply_tstat_status_fields(tstat, payload, changed)
         tstat.last_update_at = now()
         state.panel.last_message_at = tstat.last_update_at
+        if not changed:
+            # The ack carried no new state (usually just tstat_id/error_code), so an
+            # event would repeat the stale cached value before the panel's status
+            # broadcast arrives (#62). The broadcast or a re-read emits the update.
+            LOG.debug("Tstat %s set_status ack without new state", tstat_id)
+            return True
 
         emit(
             TstatStatusUpdated(
@@ -151,6 +157,12 @@ def make_tstat_set_status_handler(state: PanelState, emit: EmitFn, now: NowFn):
         _apply_tstat_status_fields(tstat, payload, changed)
         tstat.last_update_at = now()
         state.panel.last_message_at = tstat.last_update_at
+        if not changed:
+            # The ack carried no new state (usually just tstat_id/error_code), so an
+            # event would repeat the stale cached value before the panel's status
+            # broadcast arrives (#62). The broadcast or a re-read emits the update.
+            LOG.debug("Tstat %s set_status ack without new state", tstat_id)
+            return True
 
         emit(
             TstatStatusUpdated(

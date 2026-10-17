@@ -1,5 +1,10 @@
   UNRELEASED
 
+  - Events (#62): an `output.set_status` or `tstat.set_status` ack that carries
+    no new state (usually just the id and `error_code`) no longer emits
+    `OutputStatusUpdated` / `TstatStatusUpdated` with the stale cached value.
+    The panel's status broadcast (or a re-read) emits the update. An ack that
+    does change state still emits. Matches the light ack handling.
   - Barriers (garage-door design §6): new `async_set_barrier(barrier_id, *, open)`
     sends one `barrier.set_status` (lowercase `open`/`close`) and never retries it (the kernel disables
     transport retries for the route and panel-busy replies are not resent); a
