@@ -97,7 +97,6 @@ async def test_roundtrip_injects_seq_and_session() -> None:
         {"net_dev": {"get_list": {"seq": 9}}},
         {"net_dev": {"get_list": {}}, "zone": {"get_status": {}}},
         {"net_dev": {"get_list": {}, "get_attribs": {}}},
-        {"net_dev": {"get_list": 3}},
         {},
     ],
 )
@@ -484,3 +483,134 @@ async def test_normal_get_still_retries_after_lost_reply() -> None:
     client = _client(session, kernel=E27Kernel(request_max_retries=3, request_max_backoff_s=0.0))
     await asyncio.wait_for(client.async_execute("zone_get_status", zone_id=1, timeout_s=0.02), 2.0)
     assert len(session.sent) > 1
+
+
+# --- non-mapping JSON verb values ------------------------------------------------
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "value",
+    [
+        1,  # scalar int (net_dev.get_list block number)
+        True,  # bool stays a JSON bool
+        "abc",
+        2.5,
+        None,  # JSON null
+        [1, "two", None, {"k": [False]}],  # list
+    ],
+)
+async def test_non_mapping_value_sent_unchanged(value: Any) -> None:
+    session = _Session()
+    client = _client(session)
+    task = asyncio.create_task(client.async_raw_request({"net_dev": {"get_list": value}}))
+    await _reply(
+        client,
+        session,
+        lambda s: {"seq": s["seq"], "net_dev": {"get_list": {"error_code": 0}}},
+    )
+    result = await asyncio.wait_for(task, 2.0)
+    assert result.ok
+    sent = session.sent[0]
+    assert sent["net_dev"] == {"get_list": value}
+    assert type(sent["net_dev"]["get_list"]) is type(value)
+    assert sent["seq"] > 0 and sent["session_id"] == 4242
+
+
+class _Obj:
+    pass
+
+
+class _IntSub(int):
+    pass
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "value",
+    [
+        b"bytes",
+        {1, 2},
+        (1, 2),
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        _Obj(),
+        _IntSub(3),  # int subclasses are not JSON ints
+        [1, b"x"],  # nested bytes
+        {"a": {1: "non-str key"}},
+        [float("nan")],
+    ],
+)
+async def test_non_json_value_rejected_before_send(value: Any) -> None:
+    session = _Session()
+    client = _client(session)
+    result = await client.async_raw_request({"net_dev": {"get_list": value}}, allow_installer=True)
+    assert isinstance(result.error, Elke27InvalidArgument)
+    assert session.sent == []
+
+
+@pytest.mark.asyncio
+async def test_rejection_error_never_echoes_value() -> None:
+    session = _Session()
+    client = _client(session)
+    secret = b"987654-secret"
+    result = await client.async_raw_request({"net_dev": {"get_list": [secret]}})
+    assert isinstance(result.error, Elke27InvalidArgument)
+    assert "987654" not in str(result.error)
+
+
+@pytest.mark.asyncio
+async def test_deeply_nested_value_rejected() -> None:
+    session = _Session()
+    client = _client(session)
+    value: Any = 0
+    for _ in range(100):
+        value = [value]
+    result = await client.async_raw_request({"net_dev": {"get_list": value}})
+    assert isinstance(result.error, Elke27InvalidArgument)
+    assert session.sent == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [3, None, [3], True, "x"])
+async def test_installer_verb_with_non_mapping_value_still_needs_opt_in(value: Any) -> None:
+    session = _Session()
+    client = _client(session)
+    result = await client.async_raw_request({"net_dev": {"del_attribs": value}})
+    assert isinstance(result.error, Elke27PermissionError)
+    assert session.sent == []
+    unknown = await client.async_raw_request({"made_up": {"thing": value}})
+    assert isinstance(unknown.error, Elke27PermissionError)
+    assert session.sent == []
+
+
+@pytest.mark.asyncio
+async def test_non_mapping_value_never_logged(caplog: pytest.LogCaptureFixture) -> None:
+    session = _Session()
+    client = _client(session)
+    caplog.set_level(logging.DEBUG)
+    task = asyncio.create_task(
+        client.async_raw_request(
+            {"net_dev": {"set_creds": [FAKE_PIN, FAKE_LINKKEY]}}, allow_installer=True
+        )
+    )
+    await _reply(
+        client,
+        session,
+        lambda s: {"seq": s["seq"], "net_dev": {"set_creds": {"error_code": 0}}},
+    )
+    result = await asyncio.wait_for(task, 2.0)
+    assert result.ok
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert str(FAKE_PIN) not in text
+    assert FAKE_LINKKEY not in text
+
+
+@pytest.mark.parametrize("value", [1, None, [FAKE_PIN], "s3cret", True])
+def test_tx_wire_hex_suppressed_for_non_mapping_raw_value(
+    caplog: pytest.LogCaptureFixture, value: Any
+) -> None:
+    sess = _wire_session()
+    caplog.set_level(logging.DEBUG)
+    framed = sess._encode_json({"seq": 77, "net_dev": {"get_list": value}})
+    assert "TX framed" not in caplog.text
+    assert framed.hex() not in caplog.text

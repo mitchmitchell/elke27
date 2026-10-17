@@ -1,5 +1,12 @@
   UNRELEASED
 
+  - Raw pass-through: `async_raw_request` now accepts any JSON value as the
+    verb's value, not only a mapping (e.g. `{"net_dev": {"get_list": 1}}` or
+    `{"net_dev": {"logout": true}}`), and sends it unchanged. Only dict, list,
+    str, int, float (finite), bool and None are accepted, by exact type; bytes,
+    sets, tuples, NaN/Infinity and other objects raise `Elke27InvalidArgument`
+    before sending. Permission still keys only on the exact (domain, verb) pair,
+    and the value is never logged.
   - Barriers (garage-door design §6): new `async_set_barrier(barrier_id, *, open)`
     sends one `barrier.set_status` (lowercase `open`/`close`) and never retries it (the kernel disables
     transport retries for the route and panel-busy replies are not resent); a
