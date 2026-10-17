@@ -70,6 +70,7 @@ from .errors import (
     E27HelloLinkRequired,
     E27HelloRejected,
     E27LinkInvalid,
+    E27LinkSlotsFull,
     E27MissingContext,
     E27NotReady,
     E27PanelErrorResponse,
@@ -86,6 +87,7 @@ from .errors import (
     Elke27Error,
     Elke27InvalidArgument,
     Elke27LinkRequiredError,
+    Elke27LinkSlotsFullError,
     Elke27PanelError,
     Elke27PermissionError,
     Elke27PinRequiredError,
@@ -706,6 +708,11 @@ class Elke27Client:
                 raise Elke27TimeoutError("Operation timed out.") from None
             if isinstance(err, CryptoError):
                 raise Elke27CryptoError("Cryptographic error.") from None
+            if isinstance(err, E27LinkSlotsFull):
+                raise Elke27LinkSlotsFullError(
+                    panel_error_code=err.panel_error_code,
+                    panel_error_message=err.panel_error_message,
+                ) from None
             if isinstance(err, E27ProtocolError):
                 raise Elke27ProtocolErrorV2("Protocol error.") from None
             if isinstance(err, (E27TransportError, OSError, ConnectionError)):
@@ -3438,6 +3445,10 @@ class Elke27Client:
         # wraps it in SessionProtocolError. Keeps panel_error_code / panel_error_message.
         for err in _iter_causes(exc):
             if isinstance(err, E27HelloLinkRequired):
+                return err
+            # Full client-link table: an E27ProtocolError subclass, so keep it
+            # before the generic protocol -> CryptoError mapping below.
+            if isinstance(err, E27LinkSlotsFull):
                 return err
 
         for err in _iter_causes(exc):
