@@ -5,7 +5,12 @@ import json
 import pytest
 
 from elke27_lib import hello
-from elke27_lib.errors import E27HelloTimeout, E27ProtocolError
+from elke27_lib.errors import (
+    E27HelloTimeout,
+    E27ProtocolError,
+    Elke27LinkRequiredError,
+    Elke27ProtocolError,
+)
 from elke27_lib.linking import E27Identity
 
 
@@ -388,11 +393,15 @@ def _hello_reply_on_connect(monkeypatch: pytest.MonkeyPatch, hello_obj: dict) ->
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("hello_payload", "expected", "text"),
+    ("hello_payload", "expected_exc", "text"),
     [
-        ({"session_id": 7}, "protocol", "another client may be using this link"),
-        ({"error_code": 11016, "error_message": "in_use"}, "protocol", "11016"),
-        ({"error_code": 11006, "error_message": "invalid_id"}, "link", "linking required"),
+        ({"session_id": 7}, Elke27ProtocolError, "another client may be using this link"),
+        ({"error_code": 11016, "error_message": "in_use"}, Elke27ProtocolError, "11016"),
+        (
+            {"error_code": 11006, "error_message": "invalid_id"},
+            Elke27LinkRequiredError,
+            "linking required",
+        ),
     ],
     ids=["no-session", "rejected", "link-required"],
 )
@@ -400,7 +409,7 @@ async def test_hello_refusal_on_connect_raises_clear_error_without_connection_lo
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
     hello_payload: dict,
-    expected: str,
+    expected_exc: type[Exception],
     text: str,
 ) -> None:
     """async_connect against a panel that refuses HELLO: the real session and kernel
@@ -409,12 +418,9 @@ async def test_hello_refusal_on_connect_raises_clear_error_without_connection_lo
     import logging
 
     from elke27_lib.client import Elke27Client, LinkKeys
-    from elke27_lib.errors import Elke27LinkRequiredError
-    from elke27_lib.errors import Elke27ProtocolError as Elke27ProtocolErrorV2
 
     _hello_reply_on_connect(monkeypatch, {"hello": hello_payload})
     client = Elke27Client()
-    expected_exc = Elke27ProtocolErrorV2 if expected == "protocol" else Elke27LinkRequiredError
     with caplog.at_level(logging.DEBUG), pytest.raises(expected_exc) as ei:
         await client.async_connect("127.0.0.1", 2101, LinkKeys("aa", "bb", "cc"))
     assert text in str(ei.value)
