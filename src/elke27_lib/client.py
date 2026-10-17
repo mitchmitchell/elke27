@@ -68,6 +68,7 @@ from .errors import (
     E27Error,
     E27ErrorContext,
     E27HelloLinkRequired,
+    E27HelloNoSession,
     E27HelloRejected,
     E27LinkInvalid,
     E27MissingContext,
@@ -685,7 +686,7 @@ class Elke27Client:
         for err in _iter_causes(exc):
             if isinstance(err, E27ProvisioningRequired):
                 raise _link_required_from(err) from None
-            if isinstance(err, E27HelloRejected):
+            if isinstance(err, (E27HelloRejected, E27HelloNoSession)):
                 raise Elke27ProtocolErrorV2(str(err)) from None
             if isinstance(err, KernelMissingContextError):
                 raise Elke27InvalidArgument("Missing required context for operation.") from None
@@ -769,7 +770,8 @@ class Elke27Client:
             return
         if not self._is_transient_connect_error(exc):
             if any(
-                isinstance(e, (E27HelloLinkRequired, E27HelloRejected)) for e in _iter_causes(exc)
+                isinstance(e, (E27HelloLinkRequired, E27HelloRejected, E27HelloNoSession))
+                for e in _iter_causes(exc)
             ):
                 # Expected panel rejection, already logged at WARNING by hello.py.
                 self._log.debug(message, attempt, exc)

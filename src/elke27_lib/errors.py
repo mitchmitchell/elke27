@@ -745,6 +745,24 @@ class E27HelloLinkRequired(E27ProvisioningRequired):
         )
 
 
+class E27HelloNoSession(E27ProtocolError):
+    """The panel answered HELLO without a session (no session_id/sk/shm) and no
+    error code (#61).
+
+    Seen when two clients contend for the same link serial: the panel refuses
+    the new session rather than sending a corrupt frame. Not a protocol or
+    firmware bug; back off before reconnecting.
+    """
+
+    def __init__(self, missing: tuple[str, ...], *, context: E27ErrorContext | None = None):
+        self.missing = missing
+        super().__init__(
+            "Panel refused the session: HELLO reply had no "
+            f"{'/'.join(missing)} (another client may be using this link).",
+            context=context,
+        )
+
+
 class E27HelloRejected(E27ProtocolError):
     """The panel rejected HELLO with a non-link error code."""
 
