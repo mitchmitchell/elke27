@@ -169,6 +169,9 @@ Runtime domain command shape expected by HA:
 - `get_attribs`
 - `get_status`
 - `set_status` for controllable domains (`output`, `light`, `barrier`, `lock`, `tstat`)
+- barriers use `async_set_barrier` (at-most-once, never retried) and the optional
+  `async_refresh_barrier` for a post-command resync; read `is_open` rather than
+  interpreting raw `status`
 
 The library returns:
 - success results, or
