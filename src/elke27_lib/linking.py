@@ -11,6 +11,7 @@ from typing import Any, Final, Protocol, cast
 
 from .errors import (
     E27ErrorContext,
+    E27LinkSlotsFull,
     E27ProtocolError,
     E27ProvisioningTimeout,
     E27TransportError,
@@ -438,13 +439,19 @@ def perform_api_link(
         )
 
     parsed = None
+    decoded: list[object] = []
     for s in objs:
         o = json.loads(s)
+        decoded.append(o)
         if isinstance(o, dict) and "api_link" in o:
             parsed = cast(dict[str, object], o)
             break
 
     if parsed is None:
+        # A refusal may come back as a bare error object with no api_link.
+        for o in decoded:
+            if isinstance(o, dict):
+                _raise_panel_link_error(cast(dict[str, object], o))
         raise E27ProtocolError(
             "api_link decrypt JSON did not contain an 'api_link' object.",
             context=E27ErrorContext(phase="api_link_parse"),
@@ -477,6 +484,10 @@ def parse_api_link_response_json(obj: dict[str, object]) -> tuple[str, str]:
             cause=e,
         ) from e
 
+    if err != 0 or not linkkey or not linkhmac:
+        # No usable keys: surface the panel's own error text when it sent one.
+        _raise_panel_link_error(api_link)
+
     if err != 0:
         # Panel *can* return error_code in decrypted json (once you got a response),
         # but wrong access/passphrase may be silent and never reach this point.
@@ -496,3 +507,28 @@ def _coerce_intish(value: object, *, default: int | None = None) -> int:
     if isinstance(value, str) and value.isdigit():
         return int(value)
     raise ValueError("api_link.error_code must be an int or digit string")
+
+
+_LINK_SLOTS_FULL_MESSAGES: Final[tuple[str, ...]] = ("not enough space",)
+
+
+def _raise_panel_link_error(obj: Mapping[str, object]) -> None:
+    """
+    Raise for a panel error carried in an api_link reply without link keys.
+
+    "Not enough space" (the panel's client link table is full) raises
+    E27LinkSlotsFull; any other panel message raises E27ProtocolError with it.
+    Returns when the object carries no error_message/error_text.
+    """
+    raw_message = obj.get("error_message", obj.get("error_text"))
+    message = str(raw_message).strip() if raw_message is not None else None
+    try:
+        code: int | None = _coerce_intish(obj.get("error_code"), default=0) or None
+    except ValueError:
+        code = None
+    if not message:
+        return
+    context = E27ErrorContext(phase="api_link_parse", detail=f"error_code={code}")
+    if message.lower() in _LINK_SLOTS_FULL_MESSAGES:
+        raise E27LinkSlotsFull(message, code, context=context)
+    raise E27ProtocolError(f"api_link refused by panel: {message}", context=context)
