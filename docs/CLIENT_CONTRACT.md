@@ -123,7 +123,14 @@ Controllable runtime domains currently include:
 - `lock`
 - `tstat`
 
-Lock and barrier status semantics are panel-defined. For lock control, the
+Barrier status is normalised in `V2BarrierState.is_open`: OPEN -> `True`,
+CLOSE/CLOSED -> `False`, STOPPED and any other value -> `None` (raw `status` is
+kept). `async_set_barrier` is at-most-once: it is never retried, and a missing
+reply raises `Elke27CommandOutcomeUnknownError`. Moving a barrier requires that
+the caller has the user's authority to automate it; the library does not add
+confirmation or safety checks of its own.
+
+Lock status semantics are panel-defined. For lock control, the
 Dealer API command field is `status="ON"` to lock and `status="OFF"` to unlock.
 
 ## Arm/Disarm Extended Parameters

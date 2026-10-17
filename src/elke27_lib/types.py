@@ -262,6 +262,12 @@ class BarrierState:
     barrier_id: int
     name: str | None = None
     status: str | None = None
+    # Normalised open/closed: True for OPEN, False for CLOSE/CLOSED, None for
+    # STOPPED or anything else (no travel state is inferred). Raw ``status`` is kept.
+    is_open: bool | None = None
+    tamper: bool | None = None
+    low_batt: bool | None = None
+    rssi: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -374,3 +380,19 @@ class CommandResult:
     def refreshed(self) -> bool:
         """True only when the post-command status is confirmed."""
         return self.status_refresh_ok is True
+
+
+_BARRIER_OPEN_STATUSES = frozenset({"OPEN"})
+_BARRIER_CLOSED_STATUSES = frozenset({"CLOSE", "CLOSED"})
+
+
+def barrier_is_open(status: object) -> bool | None:
+    """Map a raw barrier status to open (True), closed (False) or unknown (None)."""
+    if not isinstance(status, str):
+        return None
+    normalized = status.strip().upper()
+    if normalized in _BARRIER_OPEN_STATUSES:
+        return True
+    if normalized in _BARRIER_CLOSED_STATUSES:
+        return False
+    return None

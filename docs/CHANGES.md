@@ -1,3 +1,13 @@
+  UNRELEASED
+
+  - Barriers (garage-door design §6): new `async_set_barrier(barrier_id, *, open)`
+    sends one `barrier.set_status` (lowercase `open`/`close`) and never retries it (the kernel disables
+    transport retries for the route and panel-busy replies are not resent); a
+    missing reply raises `Elke27CommandOutcomeUnknownError`. New optional
+    `async_refresh_barrier(barrier_id)` does one status read and returns the
+    state. `V2BarrierState` gains `is_open` (OPEN -> True, CLOSE/CLOSED -> False,
+    anything else -> None), `tamper`, `low_batt` and `rssi`; raw `status` is kept.
+
   Public Command Result, Typed Package (0.3.14)
 
   - New public `CommandResult` (frozen dataclass, exported from `elke27_lib`)
