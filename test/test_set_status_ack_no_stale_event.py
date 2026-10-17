@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
+import pytest
+
+from elke27_lib import session as session_mod
+from elke27_lib.client import Elke27Client, LinkKeys
 from elke27_lib.events import OutputStatusUpdated, TstatStatusUpdated
 from elke27_lib.handlers import output as output_handler
 from elke27_lib.handlers import tstat as tstat_handler
 from elke27_lib.states import PanelState
-from test.helpers.dispatch import make_ctx
-from test.helpers.internal import get_private
-from test.test_handlers_output_extra import _EmitSpy
+from test.helpers.dispatch import EmitSpy, make_ctx
+from test.helpers.internal import get_kernel
 
 
 def _events(emit: Any, kind: type) -> list[Any]:
@@ -19,7 +23,7 @@ def _events(emit: Any, kind: type) -> list[Any]:
 
 def test_output_ack_without_status_emits_nothing_then_broadcast_emits_new_value() -> None:
     state = PanelState()
-    emit = _EmitSpy()
+    emit = EmitSpy()
     set_status = output_handler.make_output_set_status_handler(state, emit, now=lambda: 1.0)
     get_status = output_handler.make_output_get_status_handler(state, emit, now=lambda: 2.0)
     assert get_status({"output": {"get_status": {"output_id": 3, "status": "OFF"}}}, make_ctx())
@@ -39,7 +43,7 @@ def test_output_ack_without_status_emits_nothing_then_broadcast_emits_new_value(
 
 def test_output_ack_with_new_status_still_emits() -> None:
     state = PanelState()
-    emit = _EmitSpy()
+    emit = EmitSpy()
     set_status = output_handler.make_output_set_status_handler(state, emit, now=lambda: 1.0)
     msg = {"output": {"set_status": {"output_id": 3, "status": "ON", "error_code": 0}}}
     assert set_status(msg, make_ctx()) is True
@@ -49,7 +53,7 @@ def test_output_ack_with_new_status_still_emits() -> None:
 
 def test_tstat_ack_without_state_emits_nothing_then_broadcast_emits_new_fan_mode() -> None:
     state = PanelState()
-    emit = _EmitSpy()
+    emit = EmitSpy()
     set_status = tstat_handler.make_tstat_set_status_handler(state, emit, now=lambda: 1.0)
     get_status = tstat_handler.make_tstat_get_status_handler(state, emit, now=lambda: 2.0)
     assert get_status({"tstat": {"get_status": {"tstat_id": 1, "fan_mode": "AUTO"}}}, make_ctx())
@@ -66,7 +70,7 @@ def test_tstat_ack_without_state_emits_nothing_then_broadcast_emits_new_fan_mode
 
 def test_tstat_ack_with_new_state_still_emits() -> None:
     state = PanelState()
-    emit = _EmitSpy()
+    emit = EmitSpy()
     set_status = tstat_handler.make_tstat_set_status_handler(state, emit, now=lambda: 1.0)
     msg = {"tstat": {"set_status": {"tstat_id": 1, "fan_mode": "ON"}}}
     assert set_status(msg, make_ctx()) is True
@@ -77,7 +81,7 @@ def test_tstat_ack_with_new_state_still_emits() -> None:
 def test_unchanged_output_get_status_still_emits() -> None:
     """A get_status reply always emits, even when nothing changed (readiness needs it)."""
     state = PanelState()
-    emit = _EmitSpy()
+    emit = EmitSpy()
     get_status = output_handler.make_output_get_status_handler(state, emit, now=lambda: 1.0)
     msg = {"output": {"get_status": {"output_id": 3, "status": "OFF"}}}
     assert get_status(msg, make_ctx())
@@ -88,7 +92,7 @@ def test_unchanged_output_get_status_still_emits() -> None:
 
 def test_unchanged_tstat_get_status_still_emits() -> None:
     state = PanelState()
-    emit = _EmitSpy()
+    emit = EmitSpy()
     get_status = tstat_handler.make_tstat_get_status_handler(state, emit, now=lambda: 1.0)
     msg = {"tstat": {"get_status": {"tstat_id": 1, "fan_mode": "AUTO"}}}
     assert get_status(msg, make_ctx())
@@ -97,26 +101,88 @@ def test_unchanged_tstat_get_status_still_emits() -> None:
     assert len(_events(emit, TstatStatusUpdated)) == 1
 
 
-def test_reconnect_with_unchanged_output_status_still_becomes_ready() -> None:
-    """After a reconnect the cache already holds the output's state; the bootstrap
-    get_status reply is unchanged but its event must still clear the readiness wait."""
-    from elke27_lib.client import Elke27Client
-    from elke27_lib.kernel import E27Kernel
+class _ReconnectSession:
+    """Stands in for the transport only: kernel.connect, dispatch and readiness are real."""
 
-    kernel = E27Kernel()
-    client = Elke27Client(kernel=kernel)
-    emit = _EmitSpy()
-    get_status = output_handler.make_output_get_status_handler(kernel.state, emit, now=lambda: 1.0)
-    msg = {"output": {"get_status": {"output_id": 3, "status": "OFF"}}}
-    assert get_status(msg, make_ctx())  # first session: state cached
-    emit.events.clear()
+    instances: list[_ReconnectSession] = []
 
-    # Reconnect: bootstrap waits for output 3 again; the reply is unchanged.
-    client._status_pending["output"] = {3}  # noqa: SLF001
-    client._status_ready["output"] = False  # noqa: SLF001
-    assert get_status(msg, make_ctx())
-    events = _events(emit, OutputStatusUpdated)
-    assert len(events) == 1
-    get_private(client, "_handle_kernel_event")(events[0])
-    assert client._status_pending["output"] == set()  # noqa: SLF001
-    assert client._status_ready["output"] is True  # noqa: SLF001
+    def __init__(self, cfg: object, client_identity: object, link_key_hex: str) -> None:
+        del cfg, client_identity, link_key_hex
+        self.state = session_mod.SessionState.ACTIVE
+        self.info = session_mod.SessionInfo(
+            session_id=11, session_key_hex="00", session_hmac_hex="11"
+        )
+        self.wire_log_suppress_seqs: object = None
+        self.on_message: Any = None
+        self.on_disconnected: Any = None
+        self.on_idle: Any = None
+        _ReconnectSession.instances.append(self)
+
+    def connect(self) -> session_mod.SessionInfo:
+        return self.info
+
+    def enable_outbound_queue(self, **_kwargs: object) -> None:
+        return None
+
+    def start_auto_receive(self) -> None:
+        return None
+
+    def send_json(self, msg: dict[str, Any], **_kwargs: object) -> None:
+        del msg
+
+    def close(self) -> None:
+        self.state = session_mod.SessionState.DISCONNECTED
+
+    def panel_says(self, msg: dict[str, Any]) -> None:
+        self.on_message(msg)
+
+
+def _panel_bootstrap(session: _ReconnectSession) -> None:
+    """Inventory plus one get_status per configured item; identical in every session."""
+    session.panel_says(
+        {"area": {"get_configured": {"areas": [1], "block_id": 1, "block_count": 1}}}
+    )
+    session.panel_says(
+        {"zone": {"get_configured": {"zones": [1], "block_id": 1, "block_count": 1}}}
+    )
+    session.panel_says(
+        {"output": {"get_configured": {"outputs": [3], "block_id": 1, "block_count": 1}}}
+    )
+    session.panel_says(
+        {"area": {"get_status": {"area_id": 1, "arm_state": "DISARMED", "ready_status": "READY"}}}
+    )
+    session.panel_says({"zone": {"get_status": {"zone_id": 1, "violated": False}}})
+    session.panel_says({"output": {"get_status": {"output_id": 3, "status": "OFF"}}})
+
+
+@pytest.mark.asyncio
+async def test_reconnect_with_unchanged_status_replies_still_becomes_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After a dropped link, every bootstrap get_status reply repeats the cached state;
+    the client must still report ready on the new session."""
+    _ReconnectSession.instances = []
+    monkeypatch.setattr(session_mod, "Session", _ReconnectSession)
+    client = Elke27Client()
+    kernel = get_kernel(client)
+    kernel.load_features_blocking()
+    # Bootstrap requests go nowhere; the fake panel pushes its replies below instead.
+    monkeypatch.setattr(kernel, "_bootstrap_requests", lambda: None)
+    monkeypatch.setattr(kernel, "_start_keepalive", lambda: None)
+    keys = LinkKeys("aa", "bb", "cc")
+
+    await client.async_connect("h", 1, keys)
+    first = _ReconnectSession.instances[-1]
+    _panel_bootstrap(first)
+    assert await client.wait_ready(timeout_s=1.0) is True
+    assert kernel.state.outputs[3].status == "OFF"
+
+    first.on_disconnected(session_mod.SessionIOError("link dropped"))
+    await asyncio.sleep(0)
+    assert client.ready is False
+
+    await client.async_connect("h", 1, keys)
+    second = _ReconnectSession.instances[-1]
+    assert second is not first
+    _panel_bootstrap(second)
+    assert await client.wait_ready(timeout_s=1.0) is True
