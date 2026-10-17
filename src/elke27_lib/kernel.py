@@ -169,6 +169,36 @@ def _queued_request_retry_after_send_allowed(item: _QueuedRequest) -> bool:
     return name.startswith("get_")
 
 
+class RawSeqTracker:
+    """Raw pass-through seqs. In-flight seqs are never evicted; finished seqs
+    stay for a bounded late-reply window (the last ``late_window`` finished)."""
+
+    def __init__(self, late_window: int = 256) -> None:
+        self._inflight: set[int] = set()
+        self._recent: set[int] = set()
+        self._recent_order: deque[int] = deque()
+        self._late_window = late_window
+
+    def mark(self, seq: int) -> None:
+        self._inflight.add(seq)
+
+    def finish(self, seq: int) -> None:
+        if seq not in self._inflight:
+            return
+        self._inflight.discard(seq)
+        if seq in self._recent:
+            return
+        self._recent.add(seq)
+        self._recent_order.append(seq)
+        while len(self._recent_order) > self._late_window:
+            old = self._recent_order.popleft()
+            if old not in self._inflight:
+                self._recent.discard(old)
+
+    def __contains__(self, seq: object) -> bool:
+        return seq in self._inflight or seq in self._recent
+
+
 @dataclass(frozen=True, slots=True)
 class DiscoverResult:
     """Wrapper for discovery results to keep the public contract explicit."""
@@ -391,6 +421,9 @@ class E27Kernel:
             ("keypad", "get_attribs"),
         }
         self._pending_responses = PendingResponseManager(now=self.now)
+        # Seqs of raw pass-through requests: their contents are never logged.
+        # In-flight seqs are kept until finished, then for the last 256 so late replies stay unlogged too.
+        self._raw_passthrough_seqs: RawSeqTracker = RawSeqTracker()
         self._closing = False
         self._closed_explicitly = False
         self._sent_events = {}
@@ -603,6 +636,7 @@ class E27Kernel:
 
         self._closed_explicitly = False
         s = session_mod.Session(cfg=cfg, client_identity=client_identity, link_key_hex=link_key_hex)
+        s.wire_log_suppress_seqs = self._raw_passthrough_seqs
 
         # Wire callbacks before connecting so HELLO path can report, if needed.
         s.on_message = self._on_message
@@ -1157,7 +1191,15 @@ class E27Kernel:
         self._last_rx_at = self.state.panel.last_message_at
         self._last_exchange_at = self.state.panel.last_message_at
 
-        self._log.debug("Inbound message: %s", msg)
+        if seq_val not in self._raw_passthrough_seqs:
+            self._log.debug("Inbound message: %s", msg)
+
+        # Raw pass-through replies (decision 34) go only to their pending future,
+        # never to the feature handlers: handlers may log values and would fold
+        # unvetted replies into library state.
+        if seq_val in self._raw_passthrough_seqs:
+            self._complete_raw_reply(msg)
+            return
 
         # Dispatcher handles routing + correlation + dispatch-error envelopes.
         result = self.dispatcher.dispatch(msg)
@@ -1180,6 +1222,15 @@ class E27Kernel:
                     seq_val,
                     self._active_seq,
                 )
+
+    def _complete_raw_reply(self, msg: Mapping[str, Any]) -> None:
+        seq_val = msg.get("seq")
+        if not isinstance(seq_val, int) or seq_val <= 0:
+            return
+        self.dispatcher.drop_pending(seq_val)
+        if self._request_state is _RequestState.IN_FLIGHT and seq_val == self._active_seq:
+            self._cancel_active_timeout()
+            self._complete_active(reason="reply")
 
     def _on_idle(self) -> None:
         self._try_send_next()
@@ -1416,6 +1467,11 @@ class E27Kernel:
             backoff_total += min(0.5 * (2 ** (attempt - 1)), float(request_max_backoff_s))
         return attempts * float(request_timeout_s) + backoff_total
 
+    @property
+    def request_timeout_s(self) -> float:
+        """Default per-request timeout in seconds."""
+        return self._request_timeout_s
+
     def command_transport_wait_budget_s(self, request_timeout_s: float) -> float:
         return self.transport_wait_budget_s(
             request_timeout_s,
@@ -1447,6 +1503,10 @@ class E27Kernel:
         if self._transport_retries_exhausted(item):
             return False
         if sent and not _queued_request_retry_after_send_allowed(item):
+            return False
+        # Raw pass-through frames are opaque: never resend automatically. A lost
+        # reply surfaces as outcome-unknown and the caller re-reads (decision 34).
+        if item.seq in self._raw_passthrough_seqs:
             return False
         return True
 
@@ -2026,8 +2086,22 @@ class E27Kernel:
             msg[domain] = {name: payload}
         return msg
 
+    def mark_raw_passthrough(self, seq: int) -> None:
+        """Suppress logging, handler dispatch and retries for this seq (decision 34).
+
+        In-flight seqs are never evicted; see ``finish_raw_passthrough``.
+        """
+        self._raw_passthrough_seqs.mark(seq)
+
+    def finish_raw_passthrough(self, seq: int) -> None:
+        """The caller is done waiting (reply, timeout or error). The seq stays
+        suppressed in a bounded late-reply window."""
+        self._raw_passthrough_seqs.finish(seq)
+
     def _log_outbound(self, domain: str, name: str, msg: Mapping[str, Any]) -> None:
         if domain == "control" and name == "r_u_alive":
+            return
+        if msg.get("seq") in self._raw_passthrough_seqs:
             return
         if not self._log.isEnabledFor(logging.DEBUG):
             return

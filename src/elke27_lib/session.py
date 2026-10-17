@@ -25,7 +25,7 @@ import socket
 import threading
 import time
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Container, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, cast
@@ -38,6 +38,14 @@ from .outbound import OutboundItem, OutboundPriority, OutboundQueue
 from .presentation import decrypt_schema0_envelope, encrypt_schema0_envelope
 
 logger = logging.getLogger(__name__)
+
+
+def is_authenticate_message(obj: Mapping[str, Any]) -> bool:
+    """True for any authenticate request or reply (top-level or control.authenticate)."""
+    if "authenticate" in obj:
+        return True
+    control = obj.get("control")
+    return isinstance(control, Mapping) and "authenticate" in control
 
 
 @dataclass(frozen=True)
@@ -131,6 +139,8 @@ class Session:
         self.cfg = cfg
         self.client_identity = client_identity
         self.link_key_hex = link_key_hex
+        # Seqs whose frames must never be hex-dumped (raw pass-through, decision 34).
+        self.wire_log_suppress_seqs: Container[int] = frozenset()
 
         self.sock: socket.socket | None = None
         self._deframe_state: DeframeState | None = None
@@ -476,8 +486,10 @@ class Session:
                         self.on_idle()
                 continue
 
+            # Byte count only: the frame is not yet decoded, so we cannot tell whether
+            # it is an authenticate or raw pass-through frame (decision 34).
             if self.cfg.wire_log and logger.isEnabledFor(logging.DEBUG):
-                logger.debug("RX raw chunk (%d bytes): %s", len(chunk), chunk.hex())
+                logger.debug("RX raw chunk (%d bytes)", len(chunk))
 
             results = deframe_feed(self._deframe_state, chunk)
             for r in results:
@@ -492,17 +504,18 @@ class Session:
                     logger.warning("Dropping invalid frame while resyncing: %s", err)
             if self._pending_frames:
                 frame = self._pending_frames.popleft()
-                if self.cfg.wire_log and logger.isEnabledFor(logging.DEBUG):
-                    logger.debug(
-                        "RX frame_no_crc (%d bytes): %s",
-                        len(frame),
-                        frame.hex(),
-                    )
                 return frame
 
     # --------------------------
     # Public send/recv API
     # --------------------------
+
+    def wire_log_suppressed(self, obj: Mapping[str, Any]) -> bool:
+        """Never hex-dump authenticate frames or raw pass-through frames."""
+        if is_authenticate_message(obj):
+            return True
+        seq = obj.get("seq")
+        return isinstance(seq, int) and seq in self.wire_log_suppress_seqs
 
     def send_json(
         self,
@@ -573,7 +586,11 @@ class Session:
         )
 
         framed = frame_build(protocol_byte=proto, data_frame=ciphertext)
-        if self.cfg.wire_log and logger.isEnabledFor(logging.DEBUG):
+        if (
+            self.cfg.wire_log
+            and logger.isEnabledFor(logging.DEBUG)
+            and not self.wire_log_suppressed(obj)
+        ):
             logger.debug("TX framed (%d bytes): %s", len(framed), framed.hex())
         return framed
 
@@ -660,6 +677,14 @@ class Session:
                     )
 
                 obj = cast(dict[str, Any], obj)
+                if (
+                    self.cfg.wire_log
+                    and logger.isEnabledFor(logging.DEBUG)
+                    and not self.wire_log_suppressed(obj)
+                ):
+                    logger.debug(
+                        "RX frame_no_crc (%d bytes): %s", len(frame_no_crc), frame_no_crc.hex()
+                    )
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(
                         "RX json: session_id=%s seq=%s keys=%s",
