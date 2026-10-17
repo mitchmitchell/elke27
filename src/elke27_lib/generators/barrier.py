@@ -32,7 +32,7 @@ def generator_barrier_set_status(
 ) -> tuple[dict[str, object], ResponseKey]:
     if barrier_id < 1:
         raise ValueError(f"barrier_id must be an int >= 1 (got {barrier_id!r})")
-    normalized = status.strip().upper()
-    if normalized not in {"OPEN", "CLOSE", "STOP"}:
-        raise ValueError(f"status must be OPEN/CLOSE/STOP (got {status!r})")
+    normalized = status.strip().lower()  # panel takes lowercase (design section 6)
+    if normalized not in {"open", "close", "stop"}:
+        raise ValueError(f"status must be open/close/stop (got {status!r})")
     return {"barrier_id": barrier_id, "status": normalized}, ("barrier", "set_status")
