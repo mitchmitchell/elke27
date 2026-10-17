@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 from typing import Any, cast
 
@@ -17,7 +16,7 @@ from elke27_lib.errors import (
     Elke27PanelError,
     Elke27PermissionError,
 )
-from elke27_lib.kernel import E27Kernel
+from elke27_lib.kernel import E27Kernel, KernelError
 from elke27_lib.linking import E27Identity, E27LinkKeys
 from elke27_lib.states import AreaState
 from test.helpers.internal import get_kernel, get_private
@@ -320,7 +319,7 @@ async def test_kernel_shares_raw_seqs_with_session(monkeypatch: pytest.MonkeyPat
 
     monkeypatch.setattr(session_mod, "Session", _CapturingSession)
     kernel = get_kernel(Elke27Client(enable_raw_passthrough=True))
-    with contextlib.suppress(Exception):
+    with pytest.raises(KernelError, match="stop after session setup"):
         await kernel.connect(
             E27LinkKeys(tempkey_hex="00" * 16, linkkey_hex="11" * 16, linkhmac_hex="22" * 20),
             client_identity=E27Identity(
