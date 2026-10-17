@@ -632,3 +632,21 @@ async def test_unencodable_json_value_rejected_before_send(value: Any) -> None:
     assert isinstance(result.error, Elke27InvalidArgument)
     assert "encode" in str(result.error)
     assert session.sent == []
+
+
+@pytest.mark.asyncio
+async def test_non_dict_mapping_payload_still_sent() -> None:
+    """A top-level MappingProxyType passes the encode check (Bugbot, #63)."""
+    from types import MappingProxyType
+
+    session = _Session()
+    client = _client(session)
+    task = asyncio.create_task(
+        client.async_raw_request({"net_dev": {"get_list": MappingProxyType({"block_id": 1})}})
+    )
+    await _reply(
+        client, session, lambda s: {"seq": s["seq"], "net_dev": {"get_list": {"error_code": 0}}}
+    )
+    result = await asyncio.wait_for(task, 2.0)
+    assert result.ok
+    assert session.sent[0]["net_dev"] == {"get_list": {"block_id": 1}}

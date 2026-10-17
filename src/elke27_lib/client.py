@@ -3857,10 +3857,14 @@ def _split_raw_message(message: Mapping[str, Any]) -> tuple[str, str, JsonValue]
     try:
         # The exact encoding the session uses: catches unpaired surrogates and
         # integers too long to convert, so they fail here and not after queueing.
-        json.dumps(payload, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode(
+        # A top-level Mapping is sent as dict(payload) by the kernel; encode that.
+        encodable: object = (
+            dict(cast(Mapping[str, Any], payload)) if isinstance(payload, Mapping) else payload
+        )
+        json.dumps(encodable, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode(
             "utf-8"
         )
-    except (ValueError, UnicodeEncodeError):
+    except (ValueError, TypeError, UnicodeEncodeError):
         raise Elke27InvalidArgument("Raw message payload cannot be JSON-encoded.") from None
     return domain, verb, cast(JsonValue, payload)
 
