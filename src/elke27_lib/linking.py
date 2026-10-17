@@ -409,14 +409,9 @@ def perform_api_link(
         tempkey_hex=tempkey,
         iv=API_LINK_IV,
     )
-    LOG.debug("api_link frame_no_crc hex=%s", frame_no_crc.hex())
-    LOG.debug("api_link ciphertext hex=%s", ciphertext.hex())
-    LOG.debug(
-        "api_link decrypted ack=0x%02x bytes_len=%d hex=%s",
-        ack,
-        len(json_bytes),
-        json_bytes.hex(),
-    )
+    # Lengths only: api_link frames carry link credentials.
+    LOG.debug("api_link frame_no_crc len=%d ciphertext len=%d", len(frame_no_crc), len(ciphertext))
+    LOG.debug("api_link decrypted ack=0x%02x bytes_len=%d", ack, len(json_bytes))
 
     # Most captures show 0x00 ACK; log and continue if a different ACK is used.
     if ack != 0x00:
@@ -430,7 +425,7 @@ def perform_api_link(
     try:
         text = json_bytes.decode("utf-8", errors="strict")
     except UnicodeDecodeError as e:
-        LOG.warning("api_link decrypted bytes not UTF-8; hex=%s", json_bytes.hex())
+        LOG.warning("api_link decrypted bytes not UTF-8; len=%d", len(json_bytes))
         raise E27ProtocolError(
             "api_link decrypt produced non-UTF-8 payload.",
             context=E27ErrorContext(phase="api_link_parse"),
