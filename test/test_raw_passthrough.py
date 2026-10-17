@@ -614,3 +614,21 @@ def test_tx_wire_hex_suppressed_for_non_mapping_raw_value(
     framed = sess._encode_json({"seq": 77, "net_dev": {"get_list": value}})
     assert "TX framed" not in caplog.text
     assert framed.hex() not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "value",
+    [
+        "\ud800",  # unpaired surrogate: not UTF-8 encodable
+        {"k\udfff": 1},  # in a key
+        [10**5000],  # past the int-to-str digit limit
+    ],
+)
+async def test_unencodable_json_value_rejected_before_send(value: Any) -> None:
+    session = _Session()
+    client = _client(session)
+    result = await client.async_raw_request({"net_dev": {"get_list": value}})
+    assert isinstance(result.error, Elke27InvalidArgument)
+    assert "encode" in str(result.error)
+    assert session.sent == []

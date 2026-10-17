@@ -17,6 +17,7 @@ import collections
 import contextlib
 import functools
 import inspect
+import json
 import logging
 import math
 import queue
@@ -42,6 +43,7 @@ from typing import (
     Any,
     Generic,
     Literal,
+    TypeAlias,
     TypeVar,
     cast,
     get_type_hints,
@@ -2725,7 +2727,7 @@ class Elke27Client:
         self,
         domain: str,
         verb: str,
-        payload: Any,
+        payload: JsonValue,
         *,
         route: RouteKey,
         timeout_s: float | None,
@@ -2747,7 +2749,7 @@ class Elke27Client:
         seq: int,
         domain: str,
         verb: str,
-        payload: Any,
+        payload: JsonValue,
         *,
         route: RouteKey,
         timeout_value: float,
@@ -3825,7 +3827,11 @@ def _v2_barrier_from_state(barrier_id: int, barrier: Any) -> V2BarrierState:
     )
 
 
-def _split_raw_message(message: Mapping[str, Any]) -> tuple[str, str, Any]:
+# A JSON value as async_raw_request accepts it (checked by _check_raw_json_value).
+JsonValue: TypeAlias = "Mapping[str, JsonValue] | list[JsonValue] | str | int | float | bool | None"
+
+
+def _split_raw_message(message: Mapping[str, Any]) -> tuple[str, str, JsonValue]:
     """Validate a raw message; never echo its values in errors."""
     if not isinstance(message, Mapping):
         raise Elke27InvalidArgument("Raw message must be a mapping.")
@@ -3848,7 +3854,15 @@ def _split_raw_message(message: Mapping[str, Any]) -> tuple[str, str, Any]:
         if "seq" in payload_map or "session_id" in payload_map:
             raise Elke27InvalidArgument("Raw message must not set seq or session_id.")
     _check_raw_json_value(payload, depth=0)
-    return domain, verb, payload
+    try:
+        # The exact encoding the session uses: catches unpaired surrogates and
+        # integers too long to convert, so they fail here and not after queueing.
+        json.dumps(payload, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode(
+            "utf-8"
+        )
+    except (ValueError, UnicodeEncodeError):
+        raise Elke27InvalidArgument("Raw message payload cannot be JSON-encoded.") from None
+    return domain, verb, cast(JsonValue, payload)
 
 
 _RAW_JSON_MAX_DEPTH = 32
