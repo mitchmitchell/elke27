@@ -352,3 +352,59 @@ def test_client_maps_refused_session_to_clear_protocol_error() -> None:
     with pytest.raises(Elke27ProtocolErrorV2) as ei:
         client._raise_v2_error(E27HelloNoSession(("session_id",)), phase="connect")  # noqa: SLF001
     assert "another client may be using this link" in str(ei.value)
+
+
+@pytest.mark.parametrize("error_code", ["bogus", [1]])
+def test_wrong_type_error_code_without_session_is_malformed_not_refused(
+    monkeypatch: pytest.MonkeyPatch, error_code: object
+) -> None:
+    from elke27_lib.errors import E27HelloNoSession
+
+    with pytest.raises(E27ProtocolError) as ei:
+        _run_hello_with(monkeypatch, {"hello": {"error_code": error_code}})
+    assert not isinstance(ei.value, E27HelloNoSession)
+    assert "Malformed" in str(ei.value)
+
+
+@pytest.mark.parametrize(
+    "error_type", ["E27HelloNoSession", "E27HelloRejected", "E27HelloLinkRequired"]
+)
+def test_hello_refusal_disconnect_is_not_a_connection_lost_warning(
+    caplog: pytest.LogCaptureFixture, error_type: str
+) -> None:
+    """A refused HELLO on connect never had a session: no 'connection lost' warning."""
+    import dataclasses
+    import logging
+
+    from elke27_lib.client import Elke27Client
+    from elke27_lib.events import (
+        UNSET_AT,
+        UNSET_CLASSIFICATION,
+        UNSET_ROUTE,
+        UNSET_SEQ,
+        UNSET_SESSION_ID,
+        ConnectionStateChanged,
+    )
+    from elke27_lib.kernel import E27Kernel
+
+    client = Elke27Client(kernel=E27Kernel())
+    evt = ConnectionStateChanged(
+        kind=ConnectionStateChanged.KIND,
+        at=UNSET_AT,
+        seq=UNSET_SEQ,
+        classification=UNSET_CLASSIFICATION,
+        route=UNSET_ROUTE,
+        session_id=UNSET_SESSION_ID,
+        connected=False,
+        reason=None,
+        error_type=error_type,
+    )
+    with caplog.at_level(logging.DEBUG):
+        client._handle_kernel_event(evt)  # noqa: SLF001
+    assert not [r for r in caplog.records if "connection lost" in r.getMessage()]
+    assert client._connection_lost_logged is False  # noqa: SLF001
+    # A real link loss after that still warns once.
+    evt2 = dataclasses.replace(evt, error_type="SessionIOError")
+    with caplog.at_level(logging.DEBUG):
+        client._handle_kernel_event(evt2)  # noqa: SLF001
+    assert len([r for r in caplog.records if "connection lost" in r.getMessage()]) == 1

@@ -289,6 +289,10 @@ def _raise_for_hello_without_session(hello_obj: Mapping[str, object]) -> None:
     hello = _as_mapping(hello_obj.get("hello"))
     if hello is None:
         return
+    # Only when the error code is absent or a valid zero; a wrong-type error_code
+    # stays a malformed reply, not link contention.
+    if hello.get("error_code") not in (None, 0, "0", ""):
+        return
     missing = tuple(f for f in _HELLO_SESSION_FIELDS if hello.get(f) in (None, ""))
     if not missing:
         return
