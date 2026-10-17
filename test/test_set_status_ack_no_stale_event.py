@@ -166,9 +166,8 @@ async def test_reconnect_with_unchanged_status_replies_still_becomes_ready(
     client = Elke27Client()
     kernel = get_kernel(client)
     kernel.load_features_blocking()
-    # Bootstrap requests go nowhere; the fake panel pushes its replies below instead.
-    monkeypatch.setattr(kernel, "_bootstrap_requests", lambda: None)
-    monkeypatch.setattr(kernel, "_start_keepalive", lambda: None)
+    # Nothing in the kernel is stubbed: the real bootstrap requests and keepalive
+    # start, send_json drops what they send, and the fake panel pushes its replies.
     keys = LinkKeys("aa", "bb", "cc")
 
     await client.async_connect("h", 1, keys)
@@ -186,3 +185,4 @@ async def test_reconnect_with_unchanged_status_replies_still_becomes_ready(
     assert second is not first
     _panel_bootstrap(second)
     assert await client.wait_ready(timeout_s=1.0) is True
+    await client.async_disconnect()
