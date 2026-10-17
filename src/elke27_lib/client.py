@@ -17,7 +17,9 @@ import collections
 import contextlib
 import functools
 import inspect
+import json
 import logging
+import math
 import queue
 import threading
 import time
@@ -41,6 +43,7 @@ from typing import (
     Any,
     Generic,
     Literal,
+    TypeAlias,
     TypeVar,
     cast,
     get_type_hints,
@@ -2648,6 +2651,13 @@ class Elke27Client:
         ``session_id`` (the library owns both). The reply is correlated by seq and
         returned with ``seq``/``session_id`` removed.
 
+        The verb's value is sent unchanged and may be any JSON value: an object,
+        a list, a string, a finite number, a bool or ``None`` (e.g.
+        ``{"net_dev": {"get_list": 1}}``). Anything else (bytes, sets, tuples,
+        NaN/Infinity, other objects) raises ``Elke27InvalidArgument`` before
+        sending. Permission depends only on the (domain, verb) pair, never on
+        the value's shape.
+
         Raw replies do not update library state: they are returned to the
         caller only and are never dispatched to the feature handlers (so the
         snapshot, inventory and events do not see them). Re-read through the
@@ -2724,7 +2734,7 @@ class Elke27Client:
         self,
         domain: str,
         verb: str,
-        payload: Mapping[str, Any],
+        payload: JsonValue,
         *,
         route: RouteKey,
         timeout_s: float | None,
@@ -2746,7 +2756,7 @@ class Elke27Client:
         seq: int,
         domain: str,
         verb: str,
-        payload: Mapping[str, Any],
+        payload: JsonValue,
         *,
         route: RouteKey,
         timeout_value: float,
@@ -3828,7 +3838,11 @@ def _v2_barrier_from_state(barrier_id: int, barrier: Any) -> V2BarrierState:
     )
 
 
-def _split_raw_message(message: Mapping[str, Any]) -> tuple[str, str, Mapping[str, Any]]:
+# A JSON value as async_raw_request accepts it (checked by _check_raw_json_value).
+JsonValue: TypeAlias = "Mapping[str, JsonValue] | list[JsonValue] | str | int | float | bool | None"
+
+
+def _split_raw_message(message: Mapping[str, Any]) -> tuple[str, str, JsonValue]:
     """Validate a raw message; never echo its values in errors."""
     if not isinstance(message, Mapping):
         raise Elke27InvalidArgument("Raw message must be a mapping.")
@@ -3846,12 +3860,57 @@ def _split_raw_message(message: Mapping[str, Any]) -> tuple[str, str, Mapping[st
     verb, payload = next(iter(body_map.items()))
     if not isinstance(verb, str) or not verb or verb == "__root__":
         raise Elke27InvalidArgument("Raw message verb must be a non-empty string.")
-    if not isinstance(payload, Mapping):
-        raise Elke27InvalidArgument("Raw message payload must be a mapping.")
-    payload_map = cast(Mapping[str, Any], payload)
-    if "seq" in payload_map or "session_id" in payload_map:
-        raise Elke27InvalidArgument("Raw message must not set seq or session_id.")
-    return domain, verb, payload_map
+    if isinstance(payload, Mapping):
+        payload_map = cast(Mapping[str, Any], payload)
+        if "seq" in payload_map or "session_id" in payload_map:
+            raise Elke27InvalidArgument("Raw message must not set seq or session_id.")
+    _check_raw_json_value(payload, depth=0)
+    try:
+        # The exact encoding the session uses: catches unpaired surrogates and
+        # integers too long to convert, so they fail here and not after queueing.
+        # A top-level Mapping is sent as dict(payload) by the kernel; encode that.
+        encodable: object = (
+            dict(cast(Mapping[str, Any], payload)) if isinstance(payload, Mapping) else payload
+        )
+        json.dumps(encodable, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode(
+            "utf-8"
+        )
+    except (ValueError, TypeError, UnicodeEncodeError):
+        raise Elke27InvalidArgument("Raw message payload cannot be JSON-encoded.") from None
+    return domain, verb, cast(JsonValue, payload)
+
+
+_RAW_JSON_MAX_DEPTH = 32
+
+
+def _check_raw_json_value(value: object, *, depth: int) -> None:
+    """Accept only JSON values: dict, list, str, int, float, bool, None.
+
+    Exact type checks, so a bool is a JSON bool (never an int) and int/float
+    subclasses or other objects are refused. Floats must be finite. The top-level
+    verb value may be any ``Mapping`` (as before); nested objects must be dicts.
+    Errors name only the offending type, never the value (decision 34).
+    """
+    if depth > _RAW_JSON_MAX_DEPTH:
+        raise Elke27InvalidArgument("Raw message payload is nested too deeply.")
+    kind = type(value)
+    if value is None or kind is bool or kind is int or kind is str:
+        return
+    if kind is float:
+        if not math.isfinite(cast(float, value)):
+            raise Elke27InvalidArgument("Raw message payload floats must be finite.")
+        return
+    if kind is list:
+        for item in cast(list[Any], value):
+            _check_raw_json_value(item, depth=depth + 1)
+        return
+    if kind is dict or (depth == 0 and isinstance(value, Mapping)):
+        for key, item in cast(Mapping[Any, Any], value).items():
+            if type(key) is not str:
+                raise Elke27InvalidArgument("Raw message payload object keys must be strings.")
+            _check_raw_json_value(item, depth=depth + 1)
+        return
+    raise Elke27InvalidArgument(f"Raw message payload must be a JSON value (got {kind.__name__}).")
 
 
 @functools.cache
