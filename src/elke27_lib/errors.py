@@ -210,6 +210,29 @@ class E27ProtocolError(E27Error):
         )
 
 
+class E27LinkSlotsFull(E27ProtocolError):
+    """
+    api_link refused because the panel's client link table is full.
+
+    Internal; the public client maps it to ``Elke27LinkSlotsFullError``.
+    ``panel_error_message`` is the panel's raw text (e.g. "Not enough space").
+    """
+
+    def __init__(
+        self,
+        panel_error_message: str | None,
+        panel_error_code: int | None = None,
+        *,
+        context: E27ErrorContext | None = None,
+    ) -> None:
+        self.panel_error_message: str | None = panel_error_message
+        self.panel_error_code: int | None = panel_error_code
+        super().__init__(
+            f"api_link refused: panel has no free client slots ({panel_error_message!r})",
+            context=context,
+        )
+
+
 class ProtocolError(E27ProtocolError):
     """Stable public alias for protocol-level errors."""
 
@@ -619,6 +642,29 @@ class Elke27AuthError(Elke27Error):
         self, message: str = "Authentication failed.", *, user_message: str | None = None
     ) -> None:
         super().__init__(message, code="auth", is_transient=False, user_message=user_message)
+
+
+class Elke27LinkSlotsFullError(Elke27Error):
+    """Linking failed: the panel has no free client (network device) slots.
+
+    The user must remove an old network device/link on the panel, then retry.
+    `panel_error_message` keeps the panel's raw text (e.g. "Not enough space");
+    `panel_error_code` is the panel's error_code when it sent one.
+    """
+
+    def __init__(
+        self,
+        message: str = "The panel has no free client slots.",
+        *,
+        user_message: str | None = None,
+        panel_error_code: int | None = None,
+        panel_error_message: str | None = None,
+    ) -> None:
+        self.panel_error_code: int | None = panel_error_code
+        self.panel_error_message: str | None = panel_error_message
+        super().__init__(
+            message, code="link_slots_full", is_transient=False, user_message=user_message
+        )
 
 
 class Elke27LinkRequiredError(Elke27Error):
