@@ -265,14 +265,16 @@ def test_handle_kernel_event_area_paths(
     assert called["refresh"] == 2
     del client._arm_write_inflight_area_ids[1]
 
-    caplog.set_level(logging.WARNING, logger="elke27_lib.client")
+    caplog.set_level(logging.DEBUG, logger="elke27_lib.client")
     evt = AreaStatusUpdated(
         **_event_base(AreaStatusUpdated.KIND),
         area_id=1,
         changed_fields=("num_bypassed_zones",),
     )
     client._handle_kernel_event(evt)
-    assert "bypass count changed" in caplog.text
+    records = [r for r in caplog.records if "bypass count changed" in r.getMessage()]
+    assert records
+    assert all(r.levelno == logging.DEBUG for r in records)
 
     trouble_base = _event_base(AreaTroublesUpdated.KIND)
     trouble_base["classification"] = "BROADCAST"
