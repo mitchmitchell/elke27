@@ -1803,7 +1803,7 @@ class Elke27Client:
                     and not suppress_refresh
                     and area.num_bypassed_zones is not None
                 ):
-                    self._log.warning(
+                    self._log.debug(
                         "Area %s bypass count changed; no refresh (packet loss fix)",
                         evt.area_id,
                     )
