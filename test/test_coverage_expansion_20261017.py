@@ -99,7 +99,9 @@ def test_output_set_status_ack_with_status_reports_new_value() -> None:
 
 
 @pytest.mark.xfail(
-    reason="#62 (F3): bare set_status ack emits OutputStatusUpdated with stale value", strict=True
+    reason="#62 (F3): bare set_status ack emits OutputStatusUpdated with stale value",
+    strict=True,
+    raises=AssertionError,
 )
 def test_output_bare_ack_does_not_emit_stale_status() -> None:
     state = PanelState()
@@ -113,6 +115,7 @@ def test_output_bare_ack_does_not_emit_stale_status() -> None:
 @pytest.mark.xfail(
     reason="#62 (F3): bare tstat set_status ack emits TstatStatusUpdated with stale fan_mode",
     strict=True,
+    raises=AssertionError,
 )
 def test_tstat_bare_ack_does_not_emit_stale_status() -> None:
     state = PanelState()
