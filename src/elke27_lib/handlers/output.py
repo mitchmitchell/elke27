@@ -90,12 +90,6 @@ def make_output_get_status_handler(state: PanelState, emit: EmitFn, now: NowFn):
         _apply_output_status_fields(output, payload, changed)
         output.last_update_at = now()
         state.panel.last_message_at = output.last_update_at
-        if not changed:
-            # The ack carried no new state (usually just output_id/error_code), so an
-            # event would repeat the stale cached value before the panel's status
-            # broadcast arrives (#62). The broadcast or a re-read emits the update.
-            LOG.debug("Output %s set_status ack without new state", output_id)
-            return True
 
         emit(
             OutputStatusUpdated(
