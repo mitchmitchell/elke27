@@ -173,6 +173,7 @@ from .session import (
     SessionNotReadyError,
     SessionProtocolError,
 )
+from .states import BarrierState as StateBarrierState
 from .states import PanelState, update_csm_snapshot
 from .tstat_units import decode_value as decode_tstat_value
 from .types import (
@@ -1094,12 +1095,8 @@ class Elke27Client:
 
     def _build_barrier_map(self) -> Mapping[int, V2BarrierState]:
         out: dict[int, V2BarrierState] = {}
-        barriers = getattr(self._kernel.state, "barriers", {})
-        if isinstance(barriers, Mapping):
-            for barrier_id, barrier in barriers.items():
-                if not isinstance(barrier_id, int):
-                    continue
-                out[barrier_id] = _v2_barrier_from_state(barrier_id, barrier)
+        for barrier_id, barrier in self._kernel.state.barriers.items():
+            out[barrier_id] = _v2_barrier_from_state(barrier_id, barrier)
         return types_mod.MappingProxyType(out)
 
     def _build_lock_map(self) -> Mapping[int, V2LockState]:
@@ -1810,7 +1807,7 @@ class Elke27Client:
                     and not suppress_refresh
                     and area.num_bypassed_zones is not None
                 ):
-                    self._log.warning(
+                    self._log.debug(
                         "Area %s bypass count changed; no refresh (packet loss fix)",
                         evt.area_id,
                     )
@@ -2282,9 +2279,7 @@ class Elke27Client:
         if not isinstance(barrier_id, int) or isinstance(barrier_id, bool) or barrier_id < 1:
             raise Elke27InvalidArgument("barrier_id must be a positive integer.")
         inv = self._kernel.state.inventory
-        if getattr(inv, "configured_barriers_complete", False) and barrier_id not in getattr(
-            inv, "configured_barriers", set()
-        ):
+        if inv.configured_barriers_complete and barrier_id not in inv.configured_barriers:
             raise Elke27InvalidArgument(f"barrier_id {barrier_id} is not configured.")
         if not self._connected or not self._kernel.state.panel.connected:
             raise Elke27DisconnectedError("Client is not connected.")
@@ -2311,8 +2306,7 @@ class Elke27Client:
             if result.error is not None:
                 self._raise_v2_command_error(result.error)
             raise Elke27ProtocolErrorV2("Failed to read barrier status.")
-        barriers = getattr(self._kernel.state, "barriers", {})
-        barrier = barriers.get(barrier_id) if isinstance(barriers, Mapping) else None
+        barrier = self._kernel.state.barriers.get(barrier_id)
         if barrier is None:
             return None
         return _v2_barrier_from_state(barrier_id, barrier)
@@ -3425,7 +3419,7 @@ class Elke27Client:
         )
 
     @property
-    def barriers(self) -> Mapping[int, Any]:
+    def barriers(self) -> Mapping[int, StateBarrierState]:
         return _FilteredMapping(
             self._kernel.state.barriers,
             _configured_ids_from_table(self._kernel.state, "barrier"),
@@ -3826,14 +3820,12 @@ def _optional_int(value: object) -> int | None:
     return None
 
 
-def _v2_barrier_from_state(barrier_id: int, barrier: Any) -> V2BarrierState:
-    status = getattr(barrier, "status", None)
-    fields = getattr(barrier, "fields", None)
-    if not isinstance(fields, Mapping):
-        fields = {}
+def _v2_barrier_from_state(barrier_id: int, barrier: StateBarrierState) -> V2BarrierState:
+    status = barrier.status
+    fields = barrier.fields
     return V2BarrierState(
         barrier_id=barrier_id,
-        name=getattr(barrier, "name", None),
+        name=barrier.name,
         status=status,
         is_open=barrier_is_open(status),
         tamper=_optional_bool(fields.get("tamper")),
