@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import OrderedDict
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Any, cast
 
 import pytest
@@ -637,8 +640,6 @@ async def test_unencodable_json_value_rejected_before_send(value: Any) -> None:
 @pytest.mark.asyncio
 async def test_non_dict_mapping_payload_still_sent() -> None:
     """A top-level MappingProxyType passes the encode check (Bugbot, #63)."""
-    from types import MappingProxyType
-
     session = _Session()
     client = _client(session)
     task = asyncio.create_task(
@@ -653,13 +654,11 @@ async def test_non_dict_mapping_payload_still_sent() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("nested", ["proxy", "ordered"])
-async def test_nested_non_dict_mapping_rejected_before_send(nested: str) -> None:
+@pytest.mark.parametrize(
+    "inner", [MappingProxyType({"a": 1}), OrderedDict(a=1)], ids=["proxy", "ordered"]
+)
+async def test_nested_non_dict_mapping_rejected_before_send(inner: Mapping[str, int]) -> None:
     """Only the top-level verb value may be a non-dict Mapping; nested objects are dicts."""
-    from collections import OrderedDict
-    from types import MappingProxyType
-
-    inner: Any = MappingProxyType({"a": 1}) if nested == "proxy" else OrderedDict(a=1)
     session = _Session()
     client = _client(session)
     result = await client.async_raw_request({"net_dev": {"get_list": {"k": inner}}})
