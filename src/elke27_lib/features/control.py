@@ -25,6 +25,7 @@ from elke27_lib.handlers.control import (
     make_control_get_trouble_handler,
     make_control_get_version_info_handler,
 )
+from elke27_lib.util import parse_pin_digits
 
 ROUTE_CONTROL_GET_VERSION_INFO = ("control", "get_version_info")
 ROUTE_CONTROL_AUTHENTICATE = ("control", "authenticate")
@@ -67,17 +68,9 @@ def build_control_get_version_info_payload(**_kwargs: Any) -> dict[str, object]:
 
 
 def build_control_authenticate_payload(*, pin: int | str, **_kwargs: Any) -> dict[str, object]:
-    # Same rules as the client PIN checks (#67): no bool, ASCII digits only,
-    # no all-zero PIN.
-    if isinstance(pin, bool):
-        raise ValueError("pin must be an integer or numeric string")
-    if isinstance(pin, str):
-        if not (pin.isascii() and pin.isdigit()):
-            raise ValueError("pin must be an integer or numeric string")
-        pin_value = int(pin)
-    elif isinstance(pin, int):
-        pin_value = pin
-    else:
+    # Same format rules as the client PIN checks (#67), via the shared helper.
+    pin_value = parse_pin_digits(pin)
+    if pin_value is None:
         raise ValueError("pin must be an integer or numeric string")
     if pin_value == 0:
         raise ValueError("pin must be a positive number (all-zero PINs are invalid)")

@@ -1539,7 +1539,7 @@ class E27Kernel:
         """Marshal retry-state cleanup onto the event loop thread.
 
         _on_message runs on the transport recv thread; the retry timer maps and
-        request deques are owned by the loop, so mutate them only there.
+        request dequeues are owned by the loop, so mutate them only there.
         """
         loop = self._loop
         if loop is None or loop.is_closed():

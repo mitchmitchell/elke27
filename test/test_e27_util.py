@@ -8,6 +8,7 @@ import pytest
 
 from elke27_lib.util import (
     calculate_block_padding,
+    parse_pin_digits,
     parse_url,
     pretty_const,
     swap_endianness,
@@ -115,3 +116,24 @@ def test_e27_util_calculate_block_padding_validation() -> None:
 
     with pytest.raises(ValueError, match="block_size must be > 0"):
         calculate_block_padding(1, block_size=0)
+
+
+@pytest.mark.parametrize(
+    ("pin", "expected"),
+    [
+        (1234, 1234),
+        ("0123", 123),
+        ("0", 0),
+        (-1, -1),
+        (True, None),
+        ("", None),
+        ("12a", None),
+        ("\u0661\u0662", None),  # non-ASCII digits
+        (" 12", None),
+        (12.0, None),
+        (None, None),
+    ],
+)
+def test_parse_pin_digits_shared_rules(pin: object, expected: int | None) -> None:
+    """#67: one PIN format rule for the client and the request builders."""
+    assert parse_pin_digits(pin) == expected

@@ -524,5 +524,5 @@ def test_build_control_authenticate_payload_accepts_valid_pin(
 @pytest.mark.parametrize("pin", [-1, 1_000_000, "1000000"])
 def test_build_control_authenticate_payload_keeps_range_check(pin: int | str) -> None:
     """#67: the 999999 upper bound (and negatives) still raise."""
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="range"):
         features_control.build_control_authenticate_payload(pin=pin)
