@@ -6,7 +6,7 @@ import logging
 import os
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Final, Protocol, cast
 
 from .errors import (
@@ -53,9 +53,10 @@ class E27Identity:
 class E27LinkKeys:
     """Results of api_link provisioning."""
 
-    tempkey_hex: str  # 16 bytes -> 32 hex chars
-    linkkey_hex: str  # 16 bytes -> 32 hex chars
-    linkhmac_hex: str  # observed 20 bytes -> 40 hex chars (panel-specific)
+    # Secrets: kept out of repr()/str().
+    tempkey_hex: str = field(repr=False)  # 16 bytes -> 32 hex chars
+    linkkey_hex: str = field(repr=False)  # 16 bytes -> 32 hex chars
+    linkhmac_hex: str = field(repr=False)  # observed 20 bytes -> 40 hex chars (panel-specific)
 
 
 def _sha1_hex_lower(s: str) -> str:
@@ -151,12 +152,20 @@ def recv_cleartext_json_objects(
     return objs
 
 
+# Upper bound on buffered discovery bytes while waiting for the nonce.
+DISCOVERY_BUFFER_MAX = 8 * 1024
+
+
 def wait_for_discovery_nonce(sock: SocketLike, timeout_s: float = 10.0) -> str:
     """
     Wait for discovery hello containing ELKWC2017 and return nonce string.
+
+    The receive buffer is capped at DISCOVERY_BUFFER_MAX bytes. A JSON object
+    split across reads (unbalanced braces) means "need more data".
     """
     deadline = time.monotonic() + timeout_s
     buf = bytearray()
+    seen_hello = False
 
     sock.settimeout(1.0)
     while time.monotonic() < deadline:
@@ -178,16 +187,27 @@ def wait_for_discovery_nonce(sock: SocketLike, timeout_s: float = 10.0) -> str:
             )
 
         buf.extend(chunk)
-        s = buf.decode("utf-8", errors="ignore")
-        if "ELKWC2017" not in s:
-            continue
+        if len(buf) > DISCOVERY_BUFFER_MAX:
+            LOG.debug(
+                "Discovery buffer over %d bytes without a nonce; discarding older bytes",
+                DISCOVERY_BUFFER_MAX,
+            )
+            del buf[: len(buf) - min(len(chunk), DISCOVERY_BUFFER_MAX)]
+        if not seen_hello:
+            if "ELKWC2017" not in buf.decode("utf-8", errors="ignore"):
+                continue
+            seen_hello = True
 
-        nonce, local = parse_discovery_hello_and_local(bytes(buf))
+        try:
+            nonce, local = parse_discovery_hello_and_local(bytes(buf))
+        except ValueError:
+            continue  # unbalanced braces: wait for the rest of the object
         if local is not None:
             LOG.debug("Discovery LOCAL timestamp: %s", local)
         if nonce is not None:
             return nonce
-        # keep waiting if ELKWC2017 present but nonce not yet parsed
+        # Every buffered object was complete and none had the nonce: drop them.
+        buf.clear()
 
     raise E27ProvisioningTimeout(
         "Timed out waiting for discovery hello (ELKWC2017) / nonce.",

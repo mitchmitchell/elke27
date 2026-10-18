@@ -26,7 +26,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable, Container, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, cast
 
@@ -73,8 +73,9 @@ class SessionConfig:
 @dataclass(frozen=True)
 class SessionInfo:
     session_id: int
-    session_key_hex: str
-    session_hmac_hex: str
+    # Secrets: kept out of repr()/str().
+    session_key_hex: str = field(repr=False)
+    session_hmac_hex: str = field(repr=False)
 
 
 class SessionState(str, Enum):
@@ -155,6 +156,8 @@ class Session:
 
         self._tx_envelope_seq = 1
         self._last_rx_envelope_seq: int | None = None
+        # Non-increasing inbound envelope seqs seen this session (warn-only).
+        self._rx_seq_regressions: int = 0
         self._last_rx_json_seq: int | None = None
         self._last_rx_json_keys: tuple[str, ...] | None = None
         self._last_rx_json_domain: str | None = None
@@ -242,6 +245,7 @@ class Session:
         )
         self.state = SessionState.ACTIVE
         self._tx_envelope_seq = 1
+        self._reset_rx_envelope_seq()
         self._last_rx_at = time.monotonic()
         self._last_tx_at = self._last_rx_at
         self._last_exchange_at = self._last_rx_at
@@ -647,9 +651,7 @@ class Session:
                     raise SessionProtocolError(
                         f"Failed to decrypt schema-0 envelope from {self.cfg.host}:{self.cfg.port}: {e}"
                     ) from e
-                seq_val = getattr(env, "seq", None)
-                if isinstance(seq_val, int):
-                    self._last_rx_envelope_seq = seq_val
+                self._note_rx_envelope_seq(getattr(env, "envelope_seq", None))
 
                 try:
                     obj = json.loads(env.payload.decode("utf-8"))
@@ -914,6 +916,38 @@ class Session:
             self._last_tx_json_seq = seq_val
         self._last_tx_json_keys = tuple(obj.keys())
         self._last_tx_json_domain = self._extract_domain_key(obj)
+
+    def _reset_rx_envelope_seq(self) -> None:
+        """Start inbound seq tracking afresh for a new HELLO/session."""
+        self._last_rx_envelope_seq = None
+        self._rx_seq_regressions = 0
+
+    def _note_rx_envelope_seq(self, seq_val: object) -> None:
+        """Track the inbound envelope seq; warn (never drop) when it does not increase.
+
+        Warn-only for now: the frame is still processed. The WARNING is logged
+        once per session; later repeats are counted at DEBUG. Only the two
+        integers are logged.
+        """
+        if isinstance(seq_val, bool) or not isinstance(seq_val, int):
+            return
+        last = self._last_rx_envelope_seq
+        if last is not None and seq_val <= last:
+            self._rx_seq_regressions += 1
+            if self._rx_seq_regressions == 1:
+                logger.warning(
+                    "Inbound envelope seq did not increase (last=%d got=%d); frame kept",
+                    last,
+                    seq_val,
+                )
+            else:
+                logger.debug(
+                    "Inbound envelope seq did not increase (last=%d got=%d); count=%d",
+                    last,
+                    seq_val,
+                    self._rx_seq_regressions,
+                )
+        self._last_rx_envelope_seq = seq_val
 
     def _next_envelope_seq(self, current: int) -> int:
         return self._wrap_seq(current + 1, wrap_to=1)

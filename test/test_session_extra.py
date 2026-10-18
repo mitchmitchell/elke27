@@ -331,7 +331,7 @@ def test_recv_json_updates_tracking(monkeypatch: pytest.MonkeyPatch) -> None:
     idle: dict[str, int] = {"count": 0}
     sess.on_idle = lambda: idle.__setitem__("count", idle["count"] + 1)
     sess._recv_one_frame_no_crc = lambda **_k: b"\x80\x00\x00"  # type: ignore[assignment]
-    env = SimpleNamespace(seq=5, payload=b'{"seq": 9, "zone": {}}')
+    env = SimpleNamespace(envelope_seq=5, payload=b'{"seq": 9, "zone": {}}')
     monkeypatch.setattr(session_mod, "decrypt_schema0_envelope", lambda **_k: env)
     obj = sess.recv_json(timeout_s=0.0)
     assert obj["seq"] == 9

@@ -337,7 +337,8 @@ def test_user_handlers() -> None:
     assert user_state.name == "Alice"
     assert user_state.group_id == 2
     assert user_state.enabled is True
-    assert user_state.pin == 1234
+    assert user_state.pin is None
+    assert user_state.has_pin is True
     assert user_state.flags == [1]
     assert user_state.fields["extra"] == "x"
     assert state.panel.last_message_at == 8.0
@@ -363,6 +364,7 @@ def test_user_helpers() -> None:
     assert user_state.name == "Alice"
     assert user_state.group_id == 2
     assert user_state.enabled is True
-    assert user_state.pin == 1234
+    assert user_state.pin is None
+    assert user_state.has_pin is True
     assert user_state.flags == [1]
     assert user_state.fields["x"] == 1

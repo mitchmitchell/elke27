@@ -39,7 +39,7 @@ classifiers = [
 # ---- Main dependencies ----
 
 dependencies = [
-    "cryptography>=42.0.0",
+    "cryptography>=46.0.7",
     "typing_extensions>=4.9.0",
 ]
 

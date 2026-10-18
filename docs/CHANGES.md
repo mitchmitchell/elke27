@@ -1,5 +1,47 @@
   UNRELEASED
 
+  - Security round 1 (D2-D8):
+    - Secrets out of repr: `LinkKeys`, `E27LinkKeys`, `SessionKeys`,
+      `SessionInfo`, `provisioning.Credentials` and the client's internal link
+      credentials no longer show key, credential or PIN fields in
+      `repr()`/`str()`. `LinkKeys.to_json()` is unchanged (its docstring now
+      says it contains secrets).
+    - Inbound DEBUG log: the kernel's "Inbound message" line is redacted with
+      `redact_for_diagnostics` and is only built when DEBUG is enabled. The
+      kernel's redaction now uses the single key set in `redact.py`
+      (`redact.SECRET_KEYS`).
+    - User PINs are no longer stored. `UserState.pin` is kept for API
+      compatibility but is always `None` (deprecated; removal planned for the
+      next minor). New `UserState.has_pin: bool` says whether the panel
+      reported a PIN.
+    - Behaviour change, authenticate PIN cache: the client caches the PIN only
+      after the panel accepts `control.authenticate`, and forgets it on
+      disconnect, close, an auth failure, a link drop or a session change.
+      Re-sending it after a reconnect is now opt-in via the new
+      `ClientConfig.reauth_on_reconnect` (default `False`); with it on, the PIN
+      is re-sent once per accepted authenticate.
+    - Discovery: a unicast `async_discover_host` reply is accepted only from
+      the queried address, and the result's `host` is always that address
+      (never the payload's `IPV4_ADDR`). Replies whose `LISTEN_PORT` is not
+      1..65535 (or whose `ENCRYPTED_LISTEN_PORT` is not 0..65535) are ignored and
+      logged at DEBUG without the payload. Broadcast results are kept;
+      `E27System` gains `source_host` and `address_mismatch`.
+    - Inbound envelope sequence: the session now tracks the real
+      `envelope_seq` (it was never recorded). A non-increasing value logs one
+      WARNING per session (later repeats count at DEBUG); frames are not
+      dropped. Tracking resets on each new HELLO session.
+    - Limits: the linking discovery buffer is capped at 8 KiB and a JSON object
+      split across reads waits for more data instead of failing; a paged
+      reply's `block_count` above 256 (`client.MAX_PAGED_BLOCK_COUNT`) is a
+      `ProtocolError`; the kernel event deque now defaults to `maxlen=4096`
+      (`kernel.DEFAULT_EVENT_QUEUE_MAXLEN`, drop oldest, one WARNING, count in
+      `events_dropped`). An explicit `event_queue_maxlen` still wins and `0`
+      still means unbounded; `ClientConfig.event_queue_maxlen` now defaults to
+      `None` (library default).
+    - Dependencies: `cryptography>=46.0.7` (at or below Home Assistant core's
+      pin, 50.0.2); lock updated (cryptography 50.0.2, pytest 9.1.1, pygments
+      2.21.0). CI gains a pip-audit job over the locked dependencies; ignored
+      advisories: none.
   - `features.control.build_control_authenticate_payload` now applies the
     client's PIN rules (#67): an all-zero PIN (`0`, `"0000"`), a `bool`, and
     strings with non-ASCII digits (e.g. full-width `"１２３４"`) raise

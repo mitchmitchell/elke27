@@ -82,6 +82,7 @@ from .events import (
 from .handlers.area import clear_all_area_exit_delay_pending
 from .outbound import OutboundPriority
 from .pending import PendingResponseManager
+from .redact import SECRET_KEYS, redact_for_diagnostics
 from .states import PanelState
 
 RequestBuilder = Callable[..., Mapping[str, Any] | bool]  # returns payload dict or flag
@@ -218,7 +219,10 @@ class DiscoverResult:
     panels: list[discovery.E27System]
 
 
-_REDACT_KEYS = {"access_code", "accesscode", "passphrase", "pin"}
+_REDACT_KEYS = SECRET_KEYS
+
+# Default bound for the kernel's event deque (drop oldest when full).
+DEFAULT_EVENT_QUEUE_MAXLEN = 4096
 
 
 def _as_mapping(obj: object) -> Mapping[str, Any] | None:
@@ -381,7 +385,8 @@ class E27Kernel:
         self,
         *,
         now_monotonic: Callable[[], float] = time.monotonic,
-        event_queue_maxlen: int = 0,  # 0 means unbounded deque
+        # None means DEFAULT_EVENT_QUEUE_MAXLEN; an explicit 0 means unbounded.
+        event_queue_maxlen: int | None = None,
         features: Sequence[str] | None = None,
         logger: logging.Logger | None = None,
         request_timeout_s: float = 5.0,
@@ -400,7 +405,12 @@ class E27Kernel:
         self.state = PanelState()
         self.dispatcher = Dispatcher()
         self.requests = RequestRegistry()
+        if event_queue_maxlen is None:
+            event_queue_maxlen = DEFAULT_EVENT_QUEUE_MAXLEN
         self._events = deque(maxlen=(event_queue_maxlen or None))
+        # Events dropped (oldest first) because the bounded event deque was full.
+        self.events_dropped: int = 0
+        self._events_dropped_warned = False
         self._seq = 1
         self._event_lock = threading.Lock()
         self._subscribers = {}
@@ -1203,8 +1213,9 @@ class E27Kernel:
         self._last_rx_at = self.state.panel.last_message_at
         self._last_exchange_at = self.state.panel.last_message_at
 
-        if seq_val not in self._raw_passthrough_seqs:
-            self._log.debug("Inbound message: %s", msg)
+        if seq_val not in self._raw_passthrough_seqs and self._log.isEnabledFor(logging.DEBUG):
+            # Redacted, and only built when DEBUG is on (no hot-path cost).
+            self._log.debug("Inbound message: %s", redact_for_diagnostics(msg))
 
         # Raw pass-through replies (decision 34) go only to their pending future,
         # never to the feature handlers: handlers may log values and would fold
@@ -2148,9 +2159,21 @@ class E27Kernel:
         )
         self._log.debug("Emit event: %s", stamped)
 
+        warn_drop = False
         with self._event_lock:
+            maxlen = self._events.maxlen
+            if maxlen is not None and len(self._events) >= maxlen:
+                self.events_dropped += 1
+                if not self._events_dropped_warned:
+                    self._events_dropped_warned = True
+                    warn_drop = True
             self._events.append(stamped)
             subscribers = list(self._subscribers.values())
+        if warn_drop:
+            self._log.warning(
+                "Event queue full (maxlen=%d); dropping oldest events (counted in events_dropped)",
+                self._events.maxlen,
+            )
 
         for sub in subscribers:
             if sub.kinds is not None and stamped.kind not in sub.kinds:

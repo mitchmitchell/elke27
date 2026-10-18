@@ -9,26 +9,31 @@ from typing import Any, cast
 
 from .const import REDACT_DIAGNOSTICS
 
-_SECRET_KEYS = {
-    "passphrase",
-    "access_code",
-    "accesscode",
-    "pin",
-    "linkkey",
-    "link_keys",
-    "linkkey_hex",
-    "linkhmac",
-    "linkhmac_hex",
-    "tempkey",
-    "tempkey_hex",
-    "session_key",
-    "session_keys",
-    "token",
-    "hmac",
-    "secret",
-    "key",
-    "keys",
-}
+# Single shared set of secret field names (lowercase). The kernel's log
+# redaction imports this set; extend it here only.
+SECRET_KEYS: frozenset[str] = frozenset(
+    {
+        "passphrase",
+        "access_code",
+        "accesscode",
+        "pin",
+        "linkkey",
+        "link_keys",
+        "linkkey_hex",
+        "linkhmac",
+        "linkhmac_hex",
+        "tempkey",
+        "tempkey_hex",
+        "session_key",
+        "session_keys",
+        "token",
+        "hmac",
+        "secret",
+        "key",
+        "keys",
+    }
+)
+_SECRET_KEYS = SECRET_KEYS
 
 
 def _should_redact(key: str) -> bool:

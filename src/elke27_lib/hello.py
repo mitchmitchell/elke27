@@ -22,7 +22,7 @@ import json
 import logging
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import cast
 
 from .errors import (
@@ -58,8 +58,9 @@ class SessionKeys:
     """Session keys derived from hello response."""
 
     session_id: int
-    session_key_hex: str  # 16 bytes => 32 hex chars (lowercase)
-    hmac_key_hex: str  # 32 bytes => 64 hex chars (lowercase)
+    # Secrets: kept out of repr()/str().
+    session_key_hex: str = field(repr=False)  # 16 bytes => 32 hex chars (lowercase)
+    hmac_key_hex: str = field(repr=False)  # 32 bytes => 64 hex chars (lowercase)
 
 
 def build_hello_request(*, seq: int, client_identity: E27Identity) -> str:
