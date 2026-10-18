@@ -52,10 +52,11 @@
       DEBUG, count in `events_dropped`; subscribers still receive every event). An explicit `event_queue_maxlen` still wins and `0`
       still means unbounded; `ClientConfig.event_queue_maxlen` now defaults to
       `None` (library default).
-    - Dependencies: `cryptography>=46.0.7` (at or below Home Assistant core's
-      pin, 50.0.2); lock updated (cryptography 50.0.2, pytest 9.1.1, pygments
-      2.21.0). CI gains a pip-audit job over the locked dependencies; ignored
-      advisories: none.
+    - Dependencies: `cryptography>=50.0.0` (46.0.7 to 49.x have OSV
+      advisories; 50.0.0 is at or below Home Assistant core's pin, 50.0.2);
+      lock updated (cryptography 50.0.2, pytest 9.1.1, pygments 2.21.0). CI
+      gains a pip-audit job over the locked dependencies; ignored advisories:
+      none.
   - `features.control.build_control_authenticate_payload` now applies the
     client's PIN rules (#67): an all-zero PIN (`0`, `"0000"`), a `bool`, and
     strings with non-ASCII digits (e.g. full-width `"１２３４"`) raise
