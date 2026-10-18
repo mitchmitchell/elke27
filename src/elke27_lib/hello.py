@@ -28,6 +28,7 @@ from typing import cast
 from .errors import (
     E27ErrorContext,
     E27HelloLinkRequired,
+    E27HelloNoSession,
     E27HelloRejected,
     E27HelloTimeout,
     E27ProtocolError,
@@ -177,6 +178,7 @@ def perform_hello(
     # A rejected HELLO carries error_code (and no session_id/sk/shm); check it
     # before parsing the session fields so it is not reported as malformed JSON.
     _raise_for_hello_error(hello_obj)
+    _raise_for_hello_without_session(hello_obj)
 
     # Parse fields
     try:
@@ -189,7 +191,8 @@ def perform_hello(
         err = _coerce_intish(hello.get("error_code", 0) or 0, field="error_code")
     except (KeyError, TypeError, ValueError) as e:
         hello_payload = _as_mapping(hello_obj.get("hello")) or {}
-        LOG.debug("Hello response payload: %s", hello_payload)
+        # Keys only: the values include encrypted session key material.
+        LOG.debug("Malformed hello response keys: %s", sorted(hello_payload))
         raise E27ProtocolError(
             f"Malformed hello response JSON: {e}",
             context=E27ErrorContext(phase="hello_parse"),
@@ -251,7 +254,7 @@ def _raise_for_hello_error(hello_obj: Mapping[str, object]) -> None:
     if hello is None:
         return
     raw_code = hello.get("error_code")
-    if raw_code in (None, 0, "0", ""):
+    if _is_zero_error_code(raw_code):
         return
     try:
         code = _coerce_intish(raw_code, field="error_code")
@@ -274,8 +277,50 @@ def _raise_for_hello_error(hello_obj: Mapping[str, object]) -> None:
     raise E27HelloRejected(code, message, context=context)
 
 
+_HELLO_SESSION_FIELDS = ("session_id", "sk", "shm")
+
+
+def _raise_for_hello_without_session(hello_obj: Mapping[str, object]) -> None:
+    """A HELLO reply with no error code but a session field (session_id, sk,
+    shm) absent, null or empty is a refused session, not malformed JSON (#61).
+
+    A field that is present but has the wrong type is still reported as malformed.
+    """
+    hello = _as_mapping(hello_obj.get("hello"))
+    if hello is None:
+        return
+    # Only when the error code is absent or a valid zero; a wrong-type error_code
+    # stays a malformed reply, not link contention.
+    if not _is_zero_error_code(hello.get("error_code")):
+        return
+    missing = tuple(f for f in _HELLO_SESSION_FIELDS if hello.get(f) in (None, ""))
+    if not missing:
+        return
+    context = E27ErrorContext(phase="hello_parse", detail=f"missing={','.join(missing)}")
+    LOG.warning(
+        "Panel refused the session: HELLO reply had no %s (another client may be using "
+        "this link); reply keys=%s",
+        "/".join(missing),
+        sorted(hello),
+    )
+    raise E27HelloNoSession(missing, context=context)
+
+
+def _is_zero_error_code(value: object) -> bool:
+    """True for an absent or valid zero error_code (None, int 0, "0", "").
+
+    Exact types only: a bool or float that compares equal to 0 is a wrong type,
+    so the reply is malformed rather than a refused session (#65 review).
+    """
+    if value is None:
+        return True
+    if type(value) is int:
+        return value == 0
+    return isinstance(value, str) and value in ("0", "")
+
+
 def _coerce_intish(value: object, *, field: str) -> int:
-    if isinstance(value, int):
+    if isinstance(value, int) and not isinstance(value, bool):
         return value
     if isinstance(value, str) and value.isdigit():
         return int(value)

@@ -67,6 +67,9 @@ class ConnectionStateChanged(Event):
     connected: bool
     reason: str | None = None
     error_type: str | None = None
+    # True when session setup failed because the panel refused HELLO (#61):
+    # there was never an established session to lose.
+    hello_refused: bool = False
 
 
 # -------------------------

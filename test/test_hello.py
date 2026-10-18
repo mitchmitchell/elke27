@@ -5,7 +5,12 @@ import json
 import pytest
 
 from elke27_lib import hello
-from elke27_lib.errors import E27HelloTimeout, E27ProtocolError
+from elke27_lib.errors import (
+    E27HelloTimeout,
+    E27ProtocolError,
+    Elke27LinkRequiredError,
+    Elke27ProtocolError,
+)
 from elke27_lib.linking import E27Identity
 
 
@@ -276,3 +281,157 @@ def test_perform_hello_error_code_zero_completes(
     assert out.session_key_hex == "01" * 16
     assert out.hmac_key_hex == "02" * 32
     assert not [r for r in caplog.records if "rejected HELLO" in r.getMessage()]
+
+
+# --- #61: a HELLO reply without a session is a refused session, not "malformed" ---
+@pytest.mark.parametrize(
+    "hello_payload",
+    [
+        {},
+        {"session_id": None},
+        {"session_id": "", "sk": "", "shm": ""},
+        {"sk": "aa", "shm": "bb"},  # session_id missing (the #61 log line)
+        {"session_id": 5},  # no key material
+        {"error_code": 0},
+    ],
+)
+def test_perform_hello_without_session_is_refused_session(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, hello_payload: dict
+) -> None:
+    from elke27_lib.errors import E27HelloNoSession
+
+    caplog.set_level("DEBUG")
+    with pytest.raises(E27HelloNoSession) as ei:
+        _run_hello_with(monkeypatch, {"hello": hello_payload})
+    assert isinstance(ei.value, E27ProtocolError)  # existing callers still catch it
+    text = str(ei.value)
+    assert "Malformed" not in text and "another client may be using this link" in text
+    recs = [r for r in caplog.records if "refused the session" in r.getMessage()]
+    assert len(recs) == 1 and recs[0].levelname == "WARNING" and recs[0].exc_info is None
+
+
+def test_refused_session_log_has_keys_not_values(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from elke27_lib.errors import E27HelloNoSession
+
+    caplog.set_level("DEBUG")
+    with pytest.raises(E27HelloNoSession):
+        _run_hello_with(monkeypatch, {"hello": {"sk": "deadbeefcafe", "shm": "f00dbabe"}})
+    assert "deadbeefcafe" not in caplog.text and "f00dbabe" not in caplog.text
+    assert "'shm'" in caplog.text and "'sk'" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "hello_payload",
+    [
+        {"session_id": "abc", "sk": "aa", "shm": "bb"},  # wrong type: still malformed
+        {"session_id": 1, "sk": 5, "shm": "bb"},
+    ],
+)
+def test_perform_hello_wrong_type_is_still_malformed(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, hello_payload: dict
+) -> None:
+    from elke27_lib.errors import E27HelloNoSession
+
+    caplog.set_level("DEBUG")
+    with pytest.raises(E27ProtocolError) as ei:
+        _run_hello_with(monkeypatch, {"hello": hello_payload})
+    assert not isinstance(ei.value, E27HelloNoSession)
+    assert "Malformed" in str(ei.value)
+    assert '"aa"' not in caplog.text and "'aa'" not in caplog.text  # keys only
+
+
+def test_error_code_still_wins_over_missing_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    from elke27_lib.errors import E27HelloRejected
+
+    with pytest.raises(E27HelloRejected):
+        _run_hello_with(monkeypatch, {"hello": {"error_code": 11016}})
+
+
+@pytest.mark.parametrize("error_code", ["bogus", [1], False, True, 0.0])
+def test_wrong_type_error_code_without_session_is_malformed_not_refused(
+    monkeypatch: pytest.MonkeyPatch, error_code: object
+) -> None:
+    from elke27_lib.errors import E27HelloNoSession
+
+    with pytest.raises(E27ProtocolError) as ei:
+        _run_hello_with(monkeypatch, {"hello": {"error_code": error_code}})
+    assert not isinstance(ei.value, E27HelloNoSession)
+    assert "Malformed" in str(ei.value)
+
+
+class _ConnSocket(_FakeSocket):
+    """A TCP socket that connects at once; the HELLO exchange itself is faked."""
+
+    def connect(self, _addr: object) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+    def shutdown(self, _how: int) -> None:
+        return None
+
+    def fileno(self) -> int:
+        return -1
+
+
+def _hello_reply_on_connect(monkeypatch: pytest.MonkeyPatch, hello_obj: dict) -> None:
+    """Make the real Session.connect see `hello_obj` as the panel's HELLO reply."""
+    import socket
+    import types
+
+    from elke27_lib import session as session_mod
+
+    fake_socket_mod = types.SimpleNamespace(**vars(socket))
+    fake_socket_mod.socket = lambda *_a, **_k: _ConnSocket()
+    monkeypatch.setattr(session_mod, "socket", fake_socket_mod)
+    monkeypatch.setattr(hello, "send_unframed_json", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(hello, "recv_cleartext_json_objects", lambda *_a, **_k: [hello_obj])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("hello_payload", "expected_exc", "text"),
+    [
+        ({"session_id": 7}, Elke27ProtocolError, "another client may be using this link"),
+        ({"error_code": 11016, "error_message": "in_use"}, Elke27ProtocolError, "11016"),
+        (
+            {"error_code": 11006, "error_message": "invalid_id"},
+            Elke27LinkRequiredError,
+            "linking required",
+        ),
+    ],
+    ids=["no-session", "rejected", "link-required"],
+)
+async def test_hello_refusal_on_connect_raises_clear_error_without_connection_lost(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    hello_payload: dict,
+    expected_exc: type[Exception],
+    text: str,
+) -> None:
+    """async_connect against a panel that refuses HELLO: the real session and kernel
+    connect path raises the public error, logs the connect failure at DEBUG, and
+    never reports a lost connection (there was no session to lose)."""
+    import logging
+
+    from elke27_lib.client import Elke27Client, LinkKeys
+
+    _hello_reply_on_connect(monkeypatch, {"hello": hello_payload})
+    client = Elke27Client()
+    with caplog.at_level(logging.DEBUG), pytest.raises(expected_exc, match=text):
+        await client.async_connect("127.0.0.1", 2101, LinkKeys("aa", "bb", "cc"))
+    records = caplog.records
+    assert not [r for r in records if "connection lost" in r.getMessage()]
+    assert [
+        r
+        for r in records
+        if r.levelno == logging.DEBUG and "Panel connection closed" in r.getMessage()
+    ]
+    connect_failed = [r for r in records if "Connect failed" in r.getMessage()]
+    assert connect_failed and all(r.levelno == logging.DEBUG for r in connect_failed)
+    assert not [
+        r for r in records if r.name.startswith("elke27_lib.client") and r.levelno >= logging.ERROR
+    ]

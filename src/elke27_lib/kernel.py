@@ -58,7 +58,14 @@ from .dispatcher import (
     PendingRequest,
     RouteKey,
 )
-from .errors import ConnectionLost, E27Error, E27Timeout
+from .errors import (
+    ConnectionLost,
+    E27Error,
+    E27HelloLinkRequired,
+    E27HelloNoSession,
+    E27HelloRejected,
+    E27Timeout,
+)
 from .events import (
     UNSET_AT,
     UNSET_CLASSIFICATION,
@@ -78,6 +85,11 @@ from .pending import PendingResponseManager
 from .states import PanelState
 
 RequestBuilder = Callable[..., Mapping[str, Any] | bool]  # returns payload dict or flag
+
+
+# Session setup failures where the panel refused HELLO; hello.py logs them at
+# WARNING, so the client does not also report a lost connection (#61).
+_HELLO_REFUSAL_ERRORS = (E27HelloNoSession, E27HelloRejected, E27HelloLinkRequired)
 
 
 class RequestRegistry:
@@ -1251,6 +1263,7 @@ class E27Kernel:
             connected=False,
             reason=None,
             error_type=type(err).__name__ if err is not None else None,
+            hello_refused=isinstance(err, _HELLO_REFUSAL_ERRORS),
         )
 
     def _is_valid_attrib_id(self, domain: str, entity_id: int) -> bool:
@@ -2163,6 +2176,7 @@ class E27Kernel:
         connected: bool,
         reason: str | None = None,
         error_type: str | None = None,
+        hello_refused: bool = False,
     ) -> None:
         ctx = DispatchContext(
             kind=MessageKind.UNKNOWN,
@@ -2183,6 +2197,7 @@ class E27Kernel:
             connected=connected,
             reason=reason,
             error_type=error_type,
+            hello_refused=hello_refused,
         )
         self.emit(evt, ctx=ctx)
 
