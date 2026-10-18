@@ -1,5 +1,67 @@
   UNRELEASED
 
+  - Linking (security): an api_link reply with a non-zero ACK byte is now
+    logged at WARNING with the ACK byte and payload length only. The decrypted
+    reply (which carries the link key and HMAC) is never decoded into or printed
+    in any log line.
+  - Security round 1 (D2-D8):
+    - Secrets out of repr: `LinkKeys`, `E27LinkKeys`, `SessionKeys`,
+      `SessionInfo`, `provisioning.Credentials` and the client's internal link
+      credentials no longer show key, credential or PIN fields in
+      `repr()`/`str()`. `LinkKeys.to_json()` is unchanged (its docstring now
+      says it contains secrets).
+    - Inbound DEBUG log: the kernel's "Inbound message" line is redacted with
+      `redact_for_diagnostics` and is only built when DEBUG is enabled. The
+      kernel's redaction now uses the single key set in `redact.py`
+      (`redact.SECRET_KEYS`).
+    - User PINs are no longer stored. `UserState.pin` is kept for API
+      compatibility but is always `None` (deprecated; removal planned for the
+      next minor). New `UserState.has_pin: bool` says whether the panel
+      reported a PIN.
+    - Behaviour change, authenticate PIN cache: the client caches the PIN only
+      after the panel accepts `control.authenticate`, and forgets it on
+      disconnect, close, an auth failure, a link drop or a session change.
+      Re-sending it after a reconnect is now opt-in via the new
+      `ClientConfig.reauth_on_reconnect` (default `False`); with it on, the PIN
+      is re-sent once per accepted authenticate, on every reconnect whatever the
+      outage length. `async_disconnect`, `close` or a link drop cancel a re-auth
+      still in flight, and its outcome never restores the PIN. If that re-sent
+      authenticate is
+      refused, returns an error, or gets no reply within the normal request
+      timeout (no reply counts as a refusal), the client logs one WARNING with
+      the error code only (never the PIN), marks itself not authenticated (new
+      `Elke27Client.authenticated` property is `False`; the authenticated role
+      is cleared) and never re-sends the PIN. A link drop that cancels a re-auth
+      in flight logs one WARNING (no PIN); later reconnects send no authenticate
+      until the caller authenticates again. An unexpected exception in the
+      re-auth is a bug, not a refusal: it is logged at ERROR with its traceback
+      and the client is marked not authenticated. The CSM refresh after a
+      reconnect no longer carries the PIN.
+    - Discovery: a unicast `async_discover_host` reply is accepted only from
+      the queried address, and the result's `host` is always that address
+      (never the payload's `IPV4_ADDR`). Replies whose `LISTEN_PORT` is not
+      1..65535 (or whose `ENCRYPTED_LISTEN_PORT` is not 0..65535) are ignored and
+      logged at DEBUG without the payload. Broadcast results are kept;
+      `E27System` gains `source_host` and `address_mismatch`.
+    - Inbound envelope sequence: the session now tracks the real
+      `envelope_seq` (it was never recorded). A non-increasing value logs one
+      WARNING per session (later repeats count at DEBUG); frames are not
+      dropped. Tracking resets on each new HELLO session.
+    - Limits: the linking discovery buffer is capped at 8 KiB (the newest
+      8 KiB are kept) and a JSON object
+      split across reads waits for more data instead of failing (a complete
+      object that is not valid JSON raises `E27ProtocolError`); a paged
+      reply's `block_count` above 256 (`client.MAX_PAGED_BLOCK_COUNT`) is a
+      `ProtocolError`; the kernel event deque now defaults to `maxlen=4096`
+      (`kernel.DEFAULT_EVENT_QUEUE_MAXLEN`, drop oldest, first drop logged once at
+      DEBUG, count in `events_dropped`; subscribers still receive every event). An explicit `event_queue_maxlen` still wins and `0`
+      still means unbounded; `ClientConfig.event_queue_maxlen` now defaults to
+      `None` (library default).
+    - Dependencies: `cryptography>=50.0.0` (46.0.7 to 49.x have OSV
+      advisories; 50.0.0 is at or below Home Assistant core's pin, 50.0.2);
+      lock updated (cryptography 50.0.2, pytest 9.1.1, pygments 2.21.0). CI
+      gains a pip-audit job over the locked dependencies; ignored advisories:
+      none.
   - `features.control.build_control_authenticate_payload` now applies the
     client's PIN rules (#67): an all-zero PIN (`0`, `"0000"`), a `bool`, and
     strings with non-ASCII digits (e.g. full-width `"１２３４"`) raise

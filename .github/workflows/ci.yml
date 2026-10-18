@@ -71,3 +71,22 @@ jobs:
 
       - name: Run tests
         run: uv run pytest
+  audit:
+    # Dependency vulnerability audit of the locked runtime + dev dependencies.
+    # Ignored advisories: none. Any future --ignore-vuln must be listed here with
+    # its reason and in docs/CHANGES.md.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (official GitHub action)
+        uses: actions/checkout@v6
+
+      - name: Install uv (official Astral action)
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.9.25"
+          python-version: "3.13"
+
+      - name: pip-audit (locked dependencies)
+        run: |
+          uv export --frozen --no-hashes --all-groups --no-emit-project \
+            | uvx pip-audit==2.10.1 -r /dev/stdin --strict

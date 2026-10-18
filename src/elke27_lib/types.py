@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
 
@@ -17,13 +17,27 @@ class ClientConfig:
     treated as read-only thereafter.
     """
 
-    event_queue_maxlen: int = 0
+    # None: library default bound (4096, drop oldest). 0: unbounded.
+    event_queue_maxlen: int | None = None
     event_queue_size: int = 256
     request_timeout_s: float = 5.0
     outbound_min_interval_s: float = 0.05
     outbound_max_burst: int = 1
     logger_name: str | None = None
     session_wire_log: bool = False
+    reauth_on_reconnect: bool = False
+    """Re-send the last accepted authenticate PIN once after a reconnect.
+
+    Off by default: the PIN is forgotten when the link drops. When on, the client
+    sends one ``control.authenticate`` after every reconnect, whatever the outage
+    length. A disconnect, close or link drop cancels a re-auth still in flight;
+    its outcome never restores the PIN (a link drop logs one WARNING, no PIN).
+    If the panel refuses
+    it, returns an error, or does not reply within the normal request timeout
+    (no reply counts as a refusal), the client logs one WARNING with the error
+    code only (never the PIN), marks itself not authenticated
+    (``Elke27Client.authenticated`` is False) and never re-sends that PIN.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,12 +60,16 @@ class LinkKeys:
     Immutable link keys used for subsequent connections.
     """
 
-    tempkey_hex: str
-    linkkey_hex: str
-    linkhmac_hex: str
+    tempkey_hex: str = field(repr=False)
+    linkkey_hex: str = field(repr=False)
+    linkhmac_hex: str = field(repr=False)
 
     def to_json(self) -> dict[str, str]:
-        """Return a JSON-serializable representation (no redaction applied)."""
+        """Return a JSON-serializable representation (no redaction applied).
+
+        Contains secrets: the result holds the raw link keys. Store it only in
+        protected config storage and never log it.
+        """
         return {
             "tempkey_hex": self.tempkey_hex,
             "linkkey_hex": self.linkkey_hex,

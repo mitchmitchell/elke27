@@ -220,10 +220,14 @@ def _apply_user_attribs(user: UserState, payload: Mapping[str, Any], changed: se
             user.enabled = enabled
             changed.add("enabled")
     if "pin" in payload:
+        # Never store a user's PIN; record only whether one is set.
         pin = payload.get("pin")
-        if isinstance(pin, int) and user.pin != pin:
-            user.pin = pin
-            changed.add("pin")
+        has_pin = (isinstance(pin, int) and not isinstance(pin, bool) and pin > 0) or (
+            isinstance(pin, str) and pin.strip() != ""
+        )
+        if user.has_pin != has_pin:
+            user.has_pin = has_pin
+            changed.add("has_pin")
     if "flags" in payload:
         flags = payload.get("flags")
         if isinstance(flags, list) and user.flags != flags:

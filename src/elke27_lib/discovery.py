@@ -12,7 +12,7 @@ import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from .errors import Elke27InvalidArgument
 from .types import DiscoveredPanel
@@ -37,6 +37,29 @@ class E27System:
     panel_serial: str | None
     port: int
     tls_port: int
+    # Address the reply actually came from. For broadcast scans this may differ
+    # from the panel_host the payload claims; see address_mismatch.
+    source_host: str | None = None
+
+    @property
+    def address_mismatch(self) -> bool:
+        """True when the reply's source IP differs from the IPV4_ADDR it reports."""
+        return bool(self.source_host and self.panel_host and self.source_host != self.panel_host)
+
+
+def _valid_port(value: object, *, allow_zero: bool = False) -> int | None:
+    """Return the port as an int if it is 1..65535 (or 0 when allowed), else None."""
+    if isinstance(value, bool):
+        return None
+    try:
+        port = int(cast(Any, value))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if port == 0 and allow_zero:
+        return 0
+    if 1 <= port <= 65535:
+        return port
+    return None
 
 
 def create_udp_socket() -> socket.socket:
@@ -190,10 +213,18 @@ def _decode_data(raw_response: bytes) -> E27System | None:
         _LOGGER.debug("Failed to decode discovery response: %s", e)
         return None
 
+    if not isinstance(data, dict):
+        _LOGGER.debug("Ignoring discovery response: not a JSON object")
+        return None
+    data = cast(dict[str, Any], data)
     mac_address = str(data.get("MAC_ADDR", "")).strip().lower()
     panel_host = str(data.get("IPV4_ADDR", "")).strip()
-    port = int(data.get("LISTEN_PORT", 0))
-    tls_port = int(data.get("ENCRYPTED_LISTEN_PORT", 0))
+    port = _valid_port(data.get("LISTEN_PORT"))
+    tls_port = _valid_port(data.get("ENCRYPTED_LISTEN_PORT", 0), allow_zero=True)
+    if port is None or tls_port is None:
+        # No payload in the log: the reply is untrusted.
+        _LOGGER.debug("Ignoring discovery response: port out of range (1..65535)")
+        return None
     panel_name = str(data.get("NAME", "")).strip()
     panel_serial = data.get("SERIAL")
     if panel_serial is not None:
@@ -244,13 +275,20 @@ class AIOELKDiscovery:
         """
         if data is None or data == self.DISCOVER_MESSAGE or b"ELKWC2017" not in data:
             return False
+        if address is not None and from_address[0] != address:
+            # Unicast scan: only the host we asked may answer.
+            _LOGGER.debug("Ignoring discovery reply from unexpected source %s", from_address[0])
+            return False
         try:
             decoded = _decode_data(data)
         except Exception as ex:  # pylint: disable=broad-except
-            _LOGGER.warning("Failed to decode response from %s: %s", from_address, ex)
+            _LOGGER.warning(
+                "Failed to decode response from %s: %s", from_address, type(ex).__name__
+            )
             return False
         if decoded is None:
             return False
+        decoded.source_host = from_address[0]
         response_list[from_address] = decoded
         return from_address[0] == address
 
@@ -384,10 +422,11 @@ async def async_discover_host(
         return None
     if not found:
         return None
-    # Prefer the reply that names the requested address; fall back to the first.
+    # Only replies from the queried address are kept (see _process_response); the
+    # host is the address we asked, never the IPV4_ADDR the payload claims.
     system = next((s for s in found if s.panel_host == address), found[0])
     return DiscoveredPanel(
-        host=system.panel_host or address,
+        host=address,
         port=int(system.port),
         tls_port=int(system.tls_port) if system.tls_port else None,
         panel_name=system.panel_name or None,

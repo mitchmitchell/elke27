@@ -132,7 +132,10 @@ class UserState:
     group_id: int | None = None
     enabled: bool | None = None
     flags: list[dict[str, object]] | None = None
+    # Deprecated: always None. The library never stores a user's PIN; use has_pin.
+    # Kept for API compatibility; removal is planned for the next minor release.
     pin: int | None = None
+    has_pin: bool = False
     fields: dict[str, object] = field(default_factory=dict)
     last_update_at: float | None = None
 

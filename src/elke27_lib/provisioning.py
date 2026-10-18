@@ -15,13 +15,14 @@ This module:
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
 class Credentials:
-    access_code: str
-    pass_phrase: str
+    # Secrets: kept out of repr()/str().
+    access_code: str = field(repr=False)
+    pass_phrase: str = field(repr=False)
 
 
 class ProvisioningManager:
