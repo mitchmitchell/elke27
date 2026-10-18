@@ -23,7 +23,10 @@
       disconnect, close, an auth failure, a link drop or a session change.
       Re-sending it after a reconnect is now opt-in via the new
       `ClientConfig.reauth_on_reconnect` (default `False`); with it on, the PIN
-      is re-sent once per accepted authenticate. If that re-sent authenticate is
+      is re-sent once per accepted authenticate, on every reconnect whatever the
+      outage length. `async_disconnect`, `close` or a link drop cancel a re-auth
+      still in flight, and its outcome never restores the PIN. If that re-sent
+      authenticate is
       refused, returns an error, or gets no reply within the normal request
       timeout (no reply counts as a refusal), the client logs one WARNING with
       the error code only (never the PIN), marks itself not authenticated (new

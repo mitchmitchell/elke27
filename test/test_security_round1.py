@@ -137,7 +137,9 @@ class _AuthStub:
     def __init__(self, client: Elke27Client) -> None:
         self.client = client
         self.pins: list[int] = []
-        self.outcome: str = "ok"  # ok | refused | no_reply | raise
+        self.outcome: str = "ok"  # ok | refused | no_reply | raise | slow_ok
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
 
     async def __call__(self, *, pin: int, timeout_s: float | None) -> Result[Any]:
         del timeout_s
@@ -150,6 +152,11 @@ class _AuthStub:
             return Result.failure(E27Error("control_authenticate failed with error_code=11008"))
         if self.outcome == "raise":
             raise RuntimeError("boom")
+        if self.outcome == "slow_ok":
+            self.started.set()
+            await self.release.wait()
+            cast(Any, self.client)._last_auth_error_code = None
+            return Result.success({})
         await asyncio.sleep(10)  # no reply
         raise AssertionError("unreachable")
 
@@ -178,15 +185,24 @@ def _authenticate(client: Elke27Client, *, success: bool) -> None:
     cast(Any, client)._request_authenticate(("control", "authenticate"), opaque=q, pin=DUMMY_PIN)
 
 
-async def _drop_and_reconnect(client: Elke27Client) -> None:
-    """Link loss, then a reconnect after the 600 s window (the re-auth path)."""
-    times = iter([0.0, 1000.0])
-    cast(Any, client)._now_monotonic = lambda: next(times, 1000.0)
+async def _drop_and_reconnect(client: Elke27Client, *, outage_s: float = 1000.0) -> None:
+    """Link loss, then a reconnect after ``outage_s`` seconds."""
+    times = iter([0.0, outage_s])
+    cast(Any, client)._now_monotonic = lambda: next(times, outage_s)
     client._handle_kernel_event(_conn_event(False, reason="io_error"))  # pyright: ignore[reportPrivateUsage]
     client._handle_kernel_event(_conn_event(True))  # pyright: ignore[reportPrivateUsage]
     tasks = list(cast(Any, client)._reauth_tasks)
     if tasks:
-        await asyncio.gather(*tasks)
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def _reconnect_start_reauth(client: Elke27Client) -> list[asyncio.Task[None]]:
+    """Drop + quick reconnect, returning the re-auth task(s) without awaiting them."""
+    times = iter([0.0, 5.0])
+    cast(Any, client)._now_monotonic = lambda: next(times, 5.0)
+    client._handle_kernel_event(_conn_event(False, reason="io_error"))  # pyright: ignore[reportPrivateUsage]
+    client._handle_kernel_event(_conn_event(True))  # pyright: ignore[reportPrivateUsage]
+    return list(cast(Any, client)._reauth_tasks)
 
 
 def _reauth_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
@@ -276,6 +292,64 @@ async def test_opt_in_reauth_refused_or_unanswered_is_final(
     await _drop_and_reconnect(client)
     assert stub.pins == [DUMMY_PIN]
     assert len(_reauth_warnings(caplog)) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outage_s", [1.0, 600.0, 601.0])
+async def test_opt_in_reauth_fires_on_every_reconnect(outage_s: float) -> None:
+    client, sent, stub = _client(reauth=True)
+    _authenticate(client, success=True)
+    await _drop_and_reconnect(client, outage_s=outage_s)
+    assert stub.pins == [DUMMY_PIN]
+    assert client.authenticated is True
+    assert get_private(client, "_last_auth_pin") == DUMMY_PIN
+    # The 600 s window still decides only the CSM refresh.
+    assert sent == ([] if outage_s <= 600 else [None])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("how", ["async_disconnect", "close", "link_drop"])
+async def test_inflight_reauth_never_restores_pin(
+    how: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _, stub = _client(reauth=True)
+    _authenticate(client, success=True)
+    stub.outcome = "slow_ok"
+
+    async def fake_close() -> None:
+        return None
+
+    monkeypatch.setattr(get_kernel(client), "close", fake_close)
+    tasks = _reconnect_start_reauth(client)
+    assert len(tasks) == 1
+    await stub.started.wait()
+
+    if how == "async_disconnect":
+        await client.async_disconnect()
+    elif how == "close":
+        await client.close()
+    else:
+        client._handle_kernel_event(_conn_event(False, reason="io_error"))  # pyright: ignore[reportPrivateUsage]
+
+    stub.release.set()
+    await asyncio.gather(*tasks, return_exceptions=True)
+    assert tasks[0].cancelled()
+    assert get_private(client, "_last_auth_pin") is None
+    assert client.authenticated is False
+    assert get_private(client, "_reauth_tasks") == set()
+
+
+@pytest.mark.asyncio
+async def test_stale_reauth_outcome_ignored_even_if_not_cancelled() -> None:
+    """Belt and braces: an outcome from an older epoch never restores the PIN."""
+    client, _, stub = _client(reauth=True)
+    stub.outcome = "ok"
+    epoch = get_private(client, "_reauth_epoch")
+    cast(Any, client)._reauth_epoch = epoch + 1  # a disconnect happened meanwhile
+    await cast(Any, client)._async_reauth_after_reconnect(DUMMY_PIN, epoch)
+    assert stub.pins == [DUMMY_PIN]
+    assert get_private(client, "_last_auth_pin") is None
+    assert client.authenticated is False
 
 
 @pytest.mark.asyncio

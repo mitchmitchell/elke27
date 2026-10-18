@@ -514,6 +514,9 @@ class Elke27Client:
         self._authenticated: bool = False
         self._last_auth_error_code: int | None = None
         self._reauth_tasks: set[asyncio.Task[None]] = set()
+        # Bumped on disconnect/close; a re-auth started under an older epoch
+        # must not restore the PIN or the authenticated flag.
+        self._reauth_epoch: int = 0
         self._pending_bypass_by_area: dict[int, float] = {}
         self._last_disconnect_at: float | None = None
         self._reconnect_csm_snapshot: CsmSnapshot | None = None
@@ -1675,6 +1678,11 @@ class Elke27Client:
                 self._connection_lost_logged = False
                 last_disconnect_at = self._last_disconnect_at
                 if last_disconnect_at is not None:
+                    # Opt-in re-auth runs on every reconnect; the 600 s window
+                    # below only decides the CSM refresh.
+                    reauth_pin = self._take_reauth_pin()
+                    if reauth_pin is not None:
+                        self._start_reauth(reauth_pin)
                     disconnect_age = self._now_monotonic() - last_disconnect_at
                     if disconnect_age <= reconnect_window_s:
                         self._safe_request(("zone", "get_all_zones_status"))
@@ -1684,9 +1692,6 @@ class Elke27Client:
                         self._awaiting_reconnect_csm_check = True
                         if self._reconnect_csm_snapshot is None:
                             self._reconnect_csm_snapshot = self._kernel.state.csm_snapshot
-                        reauth_pin = self._take_reauth_pin()
-                        if reauth_pin is not None:
-                            self._start_reauth(reauth_pin)
                         with contextlib.suppress(Exception):
                             self._kernel.request_csm_refresh(auth_pin=None)
                 ready_evt = Elke27Event(
@@ -1729,6 +1734,8 @@ class Elke27Client:
                     )
                     self._connection_lost_logged = True
                 self._last_disconnect_at = self._now_monotonic()
+                # Any re-auth still in flight belongs to the session that just ended.
+                self._cancel_reauth()
                 self._authenticated = False
                 if evt.reason == "closed" or not self._reauth_on_reconnect:
                     self._forget_auth_pin()
@@ -2127,6 +2134,13 @@ class Elke27Client:
         self._authenticated = False
         self._auth_role = None
 
+    def _cancel_reauth(self) -> None:
+        """Cancel any in-flight re-auth; its outcome is ignored from now on."""
+        self._reauth_epoch += 1
+        for task in list(self._reauth_tasks):
+            task.cancel()
+        self._reauth_tasks.clear()
+
     def _start_reauth(self, pin: int) -> None:
         """Re-send the cached PIN once after a reconnect (reauth_on_reconnect only)."""
         try:
@@ -2135,16 +2149,18 @@ class Elke27Client:
             self._log.warning("Re-authentication after reconnect skipped: no running event loop")
             self._mark_auth_failed()
             return
-        task = loop.create_task(self._async_reauth_after_reconnect(pin))
+        task = loop.create_task(self._async_reauth_after_reconnect(pin, self._reauth_epoch))
         self._reauth_tasks.add(task)
         task.add_done_callback(self._reauth_tasks.discard)
 
-    async def _async_reauth_after_reconnect(self, pin: int) -> None:
+    async def _async_reauth_after_reconnect(self, pin: int, epoch: int) -> None:
         """One authenticate attempt; a refusal, an error or no reply is final.
 
         No reply within the normal request timeout counts as a refusal. On any
         failure: one WARNING with the error code only (never the PIN), the client
-        is marked not authenticated, and the PIN is not sent again.
+        is marked not authenticated, and the PIN is not sent again. If the client
+        disconnects or closes meanwhile (epoch changed), the outcome is ignored
+        and the PIN is never restored.
         """
         timeout_s = self._kernel.request_timeout_s
         try:
@@ -2154,12 +2170,16 @@ class Elke27Client:
         except TimeoutError:
             result = None
         except Exception as exc:  # noqa: BLE001
+            if epoch != self._reauth_epoch:
+                return
             self._mark_auth_failed()
             self._log.warning(
                 "Re-authentication after reconnect failed (%s); not resending",
                 type(exc).__name__,
             )
             return
+        if epoch != self._reauth_epoch:
+            return  # disconnected or closed meanwhile: never restore the PIN
         if result is not None and result.ok:
             self._remember_auth_pin(pin)
             return
@@ -2196,7 +2216,9 @@ class Elke27Client:
 
     async def async_disconnect(self) -> None:
         """Disconnect the current session (v2 public API)."""
+        self._cancel_reauth()
         self._forget_auth_pin()
+        self._authenticated = False
         try:
             await self._kernel.close()
         except BaseException as exc:  # noqa: BLE001
@@ -2684,7 +2706,9 @@ class Elke27Client:
             return _err(self._normalize_error(exc, phase="connect"))
 
     async def close(self) -> Result[None]:
+        self._cancel_reauth()
         self._forget_auth_pin()
+        self._authenticated = False
         try:
             await self._kernel.close()
             return _ok(None)
