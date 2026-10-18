@@ -1,5 +1,9 @@
   UNRELEASED
 
+  - Linking (security): an api_link reply with a non-zero ACK byte is now
+    logged at WARNING with the ACK byte and payload length only. The decrypted
+    reply (which carries the link key and HMAC) is never decoded into or printed
+    in any log line.
   - Security round 1 (D2-D8):
     - Secrets out of repr: `LinkKeys`, `E27LinkKeys`, `SessionKeys`,
       `SessionInfo`, `provisioning.Credentials` and the client's internal link
