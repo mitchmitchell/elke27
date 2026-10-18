@@ -315,12 +315,12 @@ def test_recv_json_error_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(SessionProtocolError):
         sess.recv_json(timeout_s=0.1)
 
-    env = SimpleNamespace(seq=1, payload=b"{bad")
+    env = SimpleNamespace(envelope_seq=1, payload=b"{bad")
     monkeypatch.setattr(session_mod, "decrypt_schema0_envelope", lambda **_k: env)
     with pytest.raises(SessionProtocolError):
         sess.recv_json(timeout_s=0.1)
 
-    env2 = SimpleNamespace(seq=2, payload=b"123")
+    env2 = SimpleNamespace(envelope_seq=2, payload=b"123")
     monkeypatch.setattr(session_mod, "decrypt_schema0_envelope", lambda **_k: env2)
     with pytest.raises(SessionProtocolError):
         sess.recv_json(timeout_s=0.1)

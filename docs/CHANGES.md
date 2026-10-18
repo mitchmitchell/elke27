@@ -31,8 +31,12 @@
       timeout (no reply counts as a refusal), the client logs one WARNING with
       the error code only (never the PIN), marks itself not authenticated (new
       `Elke27Client.authenticated` property is `False`; the authenticated role
-      is cleared) and never re-sends the PIN. The CSM refresh after a reconnect
-      no longer carries the PIN.
+      is cleared) and never re-sends the PIN. A link drop that cancels a re-auth
+      in flight logs one WARNING (no PIN); later reconnects send no authenticate
+      until the caller authenticates again. An unexpected exception in the
+      re-auth is a bug, not a refusal: it is logged at ERROR with its traceback
+      and the client is marked not authenticated. The CSM refresh after a
+      reconnect no longer carries the PIN.
     - Discovery: a unicast `async_discover_host` reply is accepted only from
       the queried address, and the result's `host` is always that address
       (never the payload's `IPV4_ADDR`). Replies whose `LISTEN_PORT` is not
@@ -43,7 +47,8 @@
       `envelope_seq` (it was never recorded). A non-increasing value logs one
       WARNING per session (later repeats count at DEBUG); frames are not
       dropped. Tracking resets on each new HELLO session.
-    - Limits: the linking discovery buffer is capped at 8 KiB and a JSON object
+    - Limits: the linking discovery buffer is capped at 8 KiB (the newest
+      8 KiB are kept) and a JSON object
       split across reads waits for more data instead of failing (a complete
       object that is not valid JSON raises `E27ProtocolError`); a paged
       reply's `block_count` above 256 (`client.MAX_PAGED_BLOCK_COUNT`) is a

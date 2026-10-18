@@ -33,12 +33,11 @@ SECRET_KEYS: frozenset[str] = frozenset(
         "keys",
     }
 )
-_SECRET_KEYS = SECRET_KEYS
 
 
 def _should_redact(key: str) -> bool:
     key_l = key.lower()
-    if key_l in _SECRET_KEYS:
+    if key_l in SECRET_KEYS:
         return True
     if "pass" in key_l or "token" in key_l or "secret" in key_l:
         return True

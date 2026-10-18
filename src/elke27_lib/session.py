@@ -651,7 +651,7 @@ class Session:
                     raise SessionProtocolError(
                         f"Failed to decrypt schema-0 envelope from {self.cfg.host}:{self.cfg.port}: {e}"
                     ) from e
-                self._note_rx_envelope_seq(getattr(env, "envelope_seq", None))
+                self._note_rx_envelope_seq(env.envelope_seq)
 
                 try:
                     obj = json.loads(env.payload.decode("utf-8"))
@@ -922,15 +922,13 @@ class Session:
         self._last_rx_envelope_seq = None
         self._rx_seq_regressions = 0
 
-    def _note_rx_envelope_seq(self, seq_val: object) -> None:
+    def _note_rx_envelope_seq(self, seq_val: int) -> None:
         """Track the inbound envelope seq; warn (never drop) when it does not increase.
 
         Warn-only for now: the frame is still processed. The WARNING is logged
         once per session; later repeats are counted at DEBUG. Only the two
         integers are logged.
         """
-        if isinstance(seq_val, bool) or not isinstance(seq_val, int):
-            return
         last = self._last_rx_envelope_seq
         if last is not None and seq_val <= last:
             self._rx_seq_regressions += 1

@@ -422,12 +422,9 @@ async def async_discover_host(
         return None
     if not found:
         return None
-    # Only replies from the queried address are kept; the host is the address
-    # we asked, never the IPV4_ADDR the payload claims.
-    candidates = [s for s in found if s.source_host in (None, address)]
-    if not candidates:
-        return None
-    system = next((s for s in candidates if s.panel_host == address), candidates[0])
+    # Only replies from the queried address are kept (see _process_response); the
+    # host is the address we asked, never the IPV4_ADDR the payload claims.
+    system = next((s for s in found if s.panel_host == address), found[0])
     return DiscoveredPanel(
         host=address,
         port=int(system.port),

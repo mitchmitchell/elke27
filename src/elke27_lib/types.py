@@ -31,7 +31,8 @@ class ClientConfig:
     Off by default: the PIN is forgotten when the link drops. When on, the client
     sends one ``control.authenticate`` after every reconnect, whatever the outage
     length. A disconnect, close or link drop cancels a re-auth still in flight;
-    its outcome never restores the PIN. If the panel refuses
+    its outcome never restores the PIN (a link drop logs one WARNING, no PIN).
+    If the panel refuses
     it, returns an error, or does not reply within the normal request timeout
     (no reply counts as a refusal), the client logs one WARNING with the error
     code only (never the PIN), marks itself not authenticated

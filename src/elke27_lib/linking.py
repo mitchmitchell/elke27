@@ -192,7 +192,9 @@ def wait_for_discovery_nonce(sock: SocketLike, timeout_s: float = 10.0) -> str:
                 "Discovery buffer over %d bytes without a nonce; discarding older bytes",
                 DISCOVERY_BUFFER_MAX,
             )
-            del buf[: len(buf) - min(len(chunk), DISCOVERY_BUFFER_MAX)]
+            # Keep the newest DISCOVERY_BUFFER_MAX bytes, not just the last chunk, so
+            # an object split across reads keeps its opening bytes.
+            del buf[:-DISCOVERY_BUFFER_MAX]
         if not seen_hello:
             if "ELKWC2017" not in buf.decode("utf-8", errors="ignore"):
                 continue

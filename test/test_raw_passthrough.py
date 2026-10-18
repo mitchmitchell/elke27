@@ -283,7 +283,7 @@ def test_rx_wire_hex_suppressed(
     monkeypatch.setattr(
         session_mod,
         "decrypt_schema0_envelope",
-        lambda **_k: SimpleNamespace(seq=1, payload=payload),
+        lambda **_k: SimpleNamespace(envelope_seq=1, payload=payload),
     )
     caplog.set_level(logging.DEBUG)
     sess.recv_json(timeout_s=0.0)

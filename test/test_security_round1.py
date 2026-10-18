@@ -1,4 +1,9 @@
-"""Security round 1 (D2-D7) regression tests. Dummy values only."""
+"""Security round 1 (D2-D8) regression tests. Dummy values only.
+
+The tests go through the public API (``async_connect``, ``async_execute``,
+``async_disconnect``, discovery scans, ``Session.connect``/``recv_json``) with
+only the transport faked, and assert on public state, the wire and the logs.
+"""
 
 from __future__ import annotations
 
@@ -6,30 +11,175 @@ import asyncio
 import contextlib
 import json
 import logging
-import queue
+import time
+from collections.abc import Callable
 from typing import Any, cast
 
 import pytest
 
+import elke27_lib.kernel as kernel_mod
 from elke27_lib import linking
-from elke27_lib.client import MAX_PAGED_BLOCK_COUNT, Elke27Client, Result
-from elke27_lib.discovery import AIOELKDiscovery, E27System, async_discover_host
-from elke27_lib.errors import E27Error, ProtocolError
+from elke27_lib import session as session_mod
+from elke27_lib.client import MAX_PAGED_BLOCK_COUNT, Elke27Client
+from elke27_lib.discovery import AIOELKDiscovery, async_discover_host
+from elke27_lib.errors import E27ProtocolError, E27ProvisioningTimeout, ProtocolError
 from elke27_lib.events import ConnectionStateChanged
-from elke27_lib.framing import DeframeState, frame_build
+from elke27_lib.framing import frame_build
 from elke27_lib.hello import SessionKeys
 from elke27_lib.kernel import DEFAULT_EVENT_QUEUE_MAXLEN, E27Kernel
 from elke27_lib.linking import E27LinkKeys
 from elke27_lib.presentation import encrypt_schema0_envelope
 from elke27_lib.provisioning import Credentials
-from elke27_lib.session import Session, SessionConfig, SessionInfo, SessionState
+from elke27_lib.session import Session, SessionConfig, SessionInfo
 from elke27_lib.types import ClientConfig, LinkKeys
-from test.helpers.internal import get_kernel, get_private
 
 DUMMY_A = "DUMMYSECRETAAAA1111"
 DUMMY_B = "DUMMYSECRETBBBB2222"
 DUMMY_C = "DUMMYSECRETCCCC3333"
 DUMMY_PIN = 424242
+HOST = "198.51.100.1"
+KEYS = LinkKeys("aa", "bb", "cc")
+
+
+# ---------------------------------------------------------------- fake transport
+
+
+class _FakePanel:
+    """The panel behind a fake transport: records the wire and answers requests.
+
+    Only ``session.Session`` is replaced; the kernel, dispatch and client are real.
+    """
+
+    def __init__(self) -> None:
+        self.sessions: list[_FakeSession] = []
+        # accept | refuse | silent | hold
+        self.auth: str = "accept"
+        self.held: list[tuple[_FakeSession, dict[str, Any]]] = []
+        # (domain, name) -> reply builder; overrides the default empty ack.
+        self.overrides: dict[tuple[str, str], Callable[[dict[str, Any]], dict[str, Any]]] = {}
+
+    @property
+    def session(self) -> _FakeSession:
+        return self.sessions[-1]
+
+    def wire(self) -> list[dict[str, Any]]:
+        return [m for s in self.sessions for m in s.sent]
+
+    def auth_requests(self, session: _FakeSession | None = None) -> list[dict[str, Any]]:
+        sent = (session or self.session).sent
+        return [m for m in sent if "authenticate" in m]
+
+    def drop_link(self) -> None:
+        self.session.on_disconnected(session_mod.SessionIOError("link dropped"))
+
+    def release_held(self) -> None:
+        for session, reply in self.held:
+            session.on_message(reply)
+        self.held.clear()
+
+    def reply(self, session: _FakeSession, msg: dict[str, Any]) -> None:
+        loop = asyncio.get_running_loop()
+        seq = msg["seq"]
+        if "authenticate" in msg:
+            if self.auth == "silent":
+                return
+            code = 11008 if self.auth == "refuse" else 0
+            reply = {"seq": seq, "authenticate": {"error_code": code}}
+            if self.auth == "hold":
+                self.held.append((session, reply))
+                return
+            loop.call_soon(session.on_message, reply)
+            return
+        domain = next(k for k in msg if k not in ("seq", "session_id"))
+        name = next(iter(msg[domain]))
+        build = self.overrides.get((domain, name))
+        if build is not None:
+            reply = build(msg)
+        elif name == "get_configured":
+            body = {"block_id": 1, "block_count": 1, "error_code": 0}
+            reply = {"seq": seq, domain: {name: body}}
+        else:
+            reply = {"seq": seq, domain: {name: {"error_code": 0}}}
+        loop.call_soon(session.on_message, reply)
+
+
+class _FakeSession:
+    def __init__(self, panel: _FakePanel) -> None:
+        self.panel = panel
+        self.state = session_mod.SessionState.ACTIVE
+        self.info = SessionInfo(
+            session_id=11 + len(panel.sessions), session_key_hex="00", session_hmac_hex="11"
+        )
+        self.wire_log_suppress_seqs: object = None
+        self.on_message: Any = None
+        self.on_disconnected: Any = None
+        self.on_idle: Any = None
+        self.sent: list[dict[str, Any]] = []
+        panel.sessions.append(self)
+
+    def connect(self) -> SessionInfo:
+        return self.info
+
+    def enable_outbound_queue(self, **_kwargs: object) -> None:
+        return None
+
+    def start_auto_receive(self) -> None:
+        return None
+
+    def send_json(
+        self,
+        msg: dict[str, Any],
+        *,
+        priority: object = None,
+        on_sent: Callable[[float], None] | None = None,
+        on_fail: Callable[[BaseException], None] | None = None,
+    ) -> None:
+        del priority, on_fail
+        self.sent.append(msg)
+        if on_sent is not None:
+            on_sent(time.monotonic())
+        self.panel.reply(self, msg)
+
+    def close(self) -> None:
+        self.state = session_mod.SessionState.DISCONNECTED
+
+
+@pytest.fixture
+def panel(monkeypatch: pytest.MonkeyPatch) -> _FakePanel:
+    fake = _FakePanel()
+
+    def _factory(*, cfg: object, client_identity: object, link_key_hex: str) -> _FakeSession:
+        del cfg, client_identity, link_key_hex
+        return _FakeSession(fake)
+
+    monkeypatch.setattr(session_mod, "Session", _factory)
+    return fake
+
+
+class _Clock:
+    """Monotonic clock with a settable outage jump."""
+
+    def __init__(self) -> None:
+        self.offset = 0.0
+
+    def __call__(self) -> float:
+        return time.monotonic() + self.offset
+
+
+async def _until(cond: Callable[[], bool], timeout_s: float = 1.0) -> None:
+    deadline = time.monotonic() + timeout_s
+    while not cond():
+        if time.monotonic() > deadline:
+            raise AssertionError("condition not met in time")
+        await asyncio.sleep(0.005)
+
+
+async def _settle() -> None:
+    await asyncio.sleep(0.05)
+
+
+def _pin_messages(wire: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [m for m in wire if str(DUMMY_PIN) in json.dumps(m)]
 
 
 # ---------------------------------------------------------------- D2
@@ -63,9 +213,9 @@ def test_link_keys_to_json_unchanged() -> None:
 
 @pytest.mark.asyncio
 async def test_link_credentials_hidden_in_repr(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The client's internal _Credentials passed to the kernel hides both fields."""
-    client = Elke27Client()
-    kernel = get_kernel(client)
+    """The credentials the client hands to ``kernel.link`` hide both fields."""
+    kernel = E27Kernel()
+    client = Elke27Client(kernel=kernel)
     seen: list[str] = []
 
     async def fake_link(panel: object, identity: object, creds: object, **_k: object) -> Any:
@@ -76,7 +226,7 @@ async def test_link_credentials_hidden_in_repr(monkeypatch: pytest.MonkeyPatch) 
     identity = linking.E27Identity(mn="1", sn="2", fwver="0", hwver="0", osver="0")
     with contextlib.suppress(Exception):  # only the creds repr matters here
         await client.async_link(
-            "198.51.100.1",
+            HOST,
             2101,
             access_code=DUMMY_A,
             passphrase=DUMMY_B,
@@ -89,287 +239,278 @@ async def test_link_credentials_hidden_in_repr(monkeypatch: pytest.MonkeyPatch) 
 # ---------------------------------------------------------------- D3
 
 
-def test_inbound_debug_log_redacts_pin_and_user_pin_not_stored(
-    caplog: pytest.LogCaptureFixture,
+@pytest.mark.asyncio
+async def test_inbound_debug_log_redacts_pin_and_user_pin_not_stored(
+    panel: _FakePanel, caplog: pytest.LogCaptureFixture
 ) -> None:
     kernel = E27Kernel()
-    kernel.load_features_blocking()
+    client = Elke27Client(kernel=kernel)
+    await client.async_connect(HOST, 2101, KEYS)
     caplog.set_level(logging.DEBUG)
-    on_message = get_private(kernel, "_on_message")
-    on_message({"user": {"get_attribs": {"user_id": 1, "name": "U1", "pin": DUMMY_PIN}}})
+    panel.session.on_message(
+        {"user": {"get_attribs": {"user_id": 1, "name": "U1", "pin": DUMMY_PIN}}}
+    )
     assert str(DUMMY_PIN) not in caplog.text
     assert "Inbound message" in caplog.text
     user = kernel.state.users[1]
     assert user.pin is None
     assert user.has_pin is True
+    await client.async_disconnect()
 
 
-def test_inbound_log_not_built_without_debug(monkeypatch: pytest.MonkeyPatch) -> None:
-    import elke27_lib.kernel as kernel_mod
-
+@pytest.mark.asyncio
+async def test_inbound_log_not_built_without_debug(
+    panel: _FakePanel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log = logging.getLogger("elke27.test.nodebug")
+    log.setLevel(logging.INFO)
+    client = Elke27Client(logger=log)
+    await client.async_connect(HOST, 2101, KEYS)
     calls: list[object] = []
     monkeypatch.setattr(kernel_mod, "redact_for_diagnostics", lambda m: calls.append(m) or m)
-    kernel = E27Kernel(logger=logging.getLogger("elke27.test.nodebug"))
-    logging.getLogger("elke27.test.nodebug").setLevel(logging.INFO)
-    get_private(kernel, "_on_message")({"user": {"get_attribs": {"user_id": 1, "pin": 1}}})
+    panel.session.on_message({"user": {"get_attribs": {"user_id": 1, "pin": 1}}})
     assert calls == []
+    await client.async_disconnect()
 
 
 # ---------------------------------------------------------------- D4
 
 
-def _conn_event(connected: bool, reason: str | None = None) -> ConnectionStateChanged:
-    return ConnectionStateChanged(
-        kind=ConnectionStateChanged.KIND,
-        at=0.0,
-        seq=None,
-        classification="LOCAL",
-        route=("__local__", ConnectionStateChanged.KIND),
-        session_id=1,
-        connected=connected,
-        reason=reason,
-    )
+async def _connected(
+    *, reauth: bool = False, request_timeout_s: float = 5.0, kernel: E27Kernel | None = None
+) -> tuple[Elke27Client, _Clock]:
+    clock = _Clock()
+    config = ClientConfig(reauth_on_reconnect=reauth, request_timeout_s=request_timeout_s)
+    client = Elke27Client(config, kernel=kernel, now_monotonic=clock)
+    await client.async_connect(HOST, 2101, KEYS)
+    return client, clock
 
 
-class _AuthStub:
-    """Stands in for the client's one authenticate round trip."""
-
-    def __init__(self, client: Elke27Client) -> None:
-        self.client = client
-        self.pins: list[int] = []
-        self.outcome: str = "ok"  # ok | refused | no_reply | raise | slow_ok
-        self.started = asyncio.Event()
-        self.release = asyncio.Event()
-
-    async def __call__(self, *, pin: int, timeout_s: float | None) -> Result[Any]:
-        del timeout_s
-        self.pins.append(pin)
-        if self.outcome == "ok":
-            cast(Any, self.client)._last_auth_error_code = None
-            return Result.success({})
-        if self.outcome == "refused":
-            cast(Any, self.client)._last_auth_error_code = 11008
-            return Result.failure(E27Error("control_authenticate failed with error_code=11008"))
-        if self.outcome == "raise":
-            raise RuntimeError("boom")
-        if self.outcome == "slow_ok":
-            self.started.set()
-            await self.release.wait()
-            cast(Any, self.client)._last_auth_error_code = None
-            return Result.success({})
-        await asyncio.sleep(10)  # no reply
-        raise AssertionError("unreachable")
+async def _authenticate(client: Elke27Client) -> bool:
+    result = await client.async_execute("control_authenticate", pin=DUMMY_PIN)
+    return result.ok
 
 
-def _client(*, reauth: bool = False) -> tuple[Elke27Client, list[int | None], _AuthStub]:
-    kernel = E27Kernel(request_timeout_s=0.05)
-    client = Elke27Client(ClientConfig(reauth_on_reconnect=reauth), kernel=kernel)
-    sent: list[int | None] = []
-
-    def fake_refresh(*, auth_pin: int | None = None, domains: object = None) -> None:
-        del domains
-        sent.append(auth_pin)
-
-    cast(Any, kernel).request_csm_refresh = fake_refresh
-    cast(Any, client)._safe_request = lambda *_a, **_k: None
-    stub = _AuthStub(client)
-    cast(Any, client)._async_authenticate = stub
-    return client, sent, stub
+async def _drop_and_reconnect(
+    client: Elke27Client, panel: _FakePanel, clock: _Clock, *, outage_s: float = 1000.0
+) -> None:
+    """Link loss, then a reconnect ``outage_s`` seconds later."""
+    panel.drop_link()
+    clock.offset += outage_s
+    await client.async_connect(HOST, 2101, KEYS)
 
 
-def _authenticate(client: Elke27Client, *, success: bool) -> None:
-    kernel = get_kernel(client)
-    cast(Any, kernel).request = lambda *_a, **_k: 5
-    q: queue.Queue[dict[str, object]] = queue.Queue(maxsize=1)
-    q.put({"success": success, "error_code": 0 if success else 2})
-    cast(Any, client)._request_authenticate(("control", "authenticate"), opaque=q, pin=DUMMY_PIN)
-
-
-async def _drop_and_reconnect(client: Elke27Client, *, outage_s: float = 1000.0) -> None:
-    """Link loss, then a reconnect after ``outage_s`` seconds."""
-    times = iter([0.0, outage_s])
-    cast(Any, client)._now_monotonic = lambda: next(times, outage_s)
-    client._handle_kernel_event(_conn_event(False, reason="io_error"))  # pyright: ignore[reportPrivateUsage]
-    client._handle_kernel_event(_conn_event(True))  # pyright: ignore[reportPrivateUsage]
-    tasks = list(cast(Any, client)._reauth_tasks)
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
-
-
-def _reconnect_start_reauth(client: Elke27Client) -> list[asyncio.Task[None]]:
-    """Drop + quick reconnect, returning the re-auth task(s) without awaiting them."""
-    times = iter([0.0, 5.0])
-    cast(Any, client)._now_monotonic = lambda: next(times, 5.0)
-    client._handle_kernel_event(_conn_event(False, reason="io_error"))  # pyright: ignore[reportPrivateUsage]
-    client._handle_kernel_event(_conn_event(True))  # pyright: ignore[reportPrivateUsage]
-    return list(cast(Any, client)._reauth_tasks)
-
-
-def _reauth_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+def _reauth_logs(caplog: pytest.LogCaptureFixture, level: int = logging.WARNING) -> list[str]:
     return [
         r.getMessage()
         for r in caplog.records
-        if r.levelno == logging.WARNING and "Re-authentication" in r.getMessage()
+        if r.levelno == level and "Re-authentication" in r.getMessage()
     ]
 
 
 @pytest.mark.asyncio
-async def test_failed_auth_is_not_cached_or_resent() -> None:
-    client, sent, stub = _client(reauth=True)
-    _authenticate(client, success=False)
-    assert get_private(client, "_last_auth_pin") is None
+async def test_failed_auth_is_not_cached_or_resent(panel: _FakePanel) -> None:
+    client, clock = await _connected(reauth=True)
+    panel.auth = "refuse"
+    assert await _authenticate(client) is False
     assert client.authenticated is False
-    await _drop_and_reconnect(client)
-    assert stub.pins == []
-    assert sent == [None]
-
-
-@pytest.mark.asyncio
-async def test_disconnect_clears_cached_pin(monkeypatch: pytest.MonkeyPatch) -> None:
-    client, _, _ = _client(reauth=True)
-    _authenticate(client, success=True)
-    assert get_private(client, "_last_auth_pin") == DUMMY_PIN
-    assert client.authenticated is True
-
-    async def fake_close() -> None:
-        return None
-
-    monkeypatch.setattr(get_kernel(client), "close", fake_close)
+    panel.auth = "accept"
+    await _drop_and_reconnect(client, panel, clock)
+    await _settle()
+    assert panel.auth_requests() == []
+    assert len(_pin_messages(panel.wire())) == 1  # only the refused authenticate
     await client.async_disconnect()
-    assert get_private(client, "_last_auth_pin") is None
 
 
 @pytest.mark.asyncio
-async def test_default_reconnect_sends_no_authenticate() -> None:
-    client, sent, stub = _client()
-    _authenticate(client, success=True)
-    await _drop_and_reconnect(client)
-    assert stub.pins == []
-    assert sent == [None]
-    assert get_private(client, "_last_auth_pin") is None
-    assert client.authenticated is False
-
-
-@pytest.mark.asyncio
-async def test_opt_in_reconnect_resends_pin_exactly_once_per_acceptance() -> None:
-    client, sent, stub = _client(reauth=True)
-    _authenticate(client, success=True)
-    await _drop_and_reconnect(client)
-    assert stub.pins == [DUMMY_PIN]
+async def test_disconnect_clears_cached_pin(panel: _FakePanel) -> None:
+    client, _ = await _connected(reauth=True)
+    assert await _authenticate(client) is True
     assert client.authenticated is True
-    assert sent == [None]  # the CSM refresh never carries the PIN
+    await client.async_disconnect()
+    assert client.authenticated is False
+    # A new connect after a deliberate disconnect sends no authenticate.
+    await client.async_connect(HOST, 2101, KEYS)
+    await _settle()
+    assert panel.auth_requests() == []
+    await client.async_disconnect()
+
+
+@pytest.mark.asyncio
+async def test_default_reconnect_sends_no_authenticate(panel: _FakePanel) -> None:
+    client, clock = await _connected()
+    assert await _authenticate(client) is True
+    await _drop_and_reconnect(client, panel, clock)
+    await _settle()
+    assert panel.auth_requests() == []
+    assert len(_pin_messages(panel.wire())) == 1
+    assert client.authenticated is False
+    await client.async_disconnect()
+
+
+@pytest.mark.asyncio
+async def test_opt_in_reconnect_resends_pin_exactly_once_per_acceptance(
+    panel: _FakePanel,
+) -> None:
+    client, clock = await _connected(reauth=True)
+    assert await _authenticate(client) is True
+    await _drop_and_reconnect(client, panel, clock)
+    await _until(lambda: client.authenticated)
+    assert panel.auth_requests() == [
+        {
+            "seq": panel.auth_requests()[0]["seq"],
+            "session_id": 12,
+            "authenticate": {"pin": DUMMY_PIN},
+        }
+    ]
+    # Only the two authenticates carry the PIN: the CSM refresh never does.
+    assert _pin_messages(panel.wire()) == [
+        m for s in panel.sessions for m in panel.auth_requests(s)
+    ]
+    await client.async_disconnect()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("outcome", "expected"),
     [
-        ("refused", "Re-authentication after reconnect refused (error_code=11008); not resending"),
+        ("refuse", "Re-authentication after reconnect refused (error_code=11008); not resending"),
         (
-            "no_reply",
+            "silent",
             "Re-authentication after reconnect got no reply or an error; "
             "treated as refused; not resending",
         ),
-        ("raise", "Re-authentication after reconnect failed (RuntimeError); not resending"),
     ],
 )
 async def test_opt_in_reauth_refused_or_unanswered_is_final(
-    outcome: str, expected: str, caplog: pytest.LogCaptureFixture
+    panel: _FakePanel, outcome: str, expected: str, caplog: pytest.LogCaptureFixture
 ) -> None:
-    client, _, stub = _client(reauth=True)
-    _authenticate(client, success=True)
-    cast(Any, client).set_authenticated_role("master")
-    stub.outcome = outcome
+    client, clock = await _connected(reauth=True, request_timeout_s=0.1)
+    assert await _authenticate(client) is True
+    panel.auth = outcome
     caplog.set_level(logging.DEBUG)
-    await _drop_and_reconnect(client)
-    assert stub.pins == [DUMMY_PIN]
-    assert _reauth_warnings(caplog) == [expected]
+    await _drop_and_reconnect(client, panel, clock)
+    await _until(lambda: bool(_reauth_logs(caplog)))
+    assert len(panel.auth_requests()) == 1
+    assert _reauth_logs(caplog) == [expected]
     assert str(DUMMY_PIN) not in caplog.text
     assert client.authenticated is False
-    assert get_private(client, "_auth_role") is None
-    assert get_private(client, "_last_auth_pin") is None
     # Never re-sent: a later reconnect sends nothing.
-    await _drop_and_reconnect(client)
-    assert stub.pins == [DUMMY_PIN]
-    assert len(_reauth_warnings(caplog)) == 1
+    panel.auth = "accept"
+    await _drop_and_reconnect(client, panel, clock)
+    await _settle()
+    assert panel.auth_requests() == []
+    assert len(_reauth_logs(caplog)) == 1
+    await client.async_disconnect()
+
+
+class _Bug(Exception):
+    """An unexpected (non-client) exception: a bug, not a refusal."""
+
+
+@pytest.mark.asyncio
+async def test_opt_in_reauth_unexpected_error_propagates_as_a_bug(
+    panel: _FakePanel, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    kernel = E27Kernel()
+    client, clock = await _connected(reauth=True, kernel=kernel)
+    assert await _authenticate(client) is True
+    real_send = kernel.send_request_with_seq
+
+    def _send(seq: int, domain: str, name: str, *args: Any, **kwargs: Any) -> Any:
+        if domain == "authenticate":
+            raise _Bug("unexpected")
+        return real_send(seq, domain, name, *args, **kwargs)
+
+    monkeypatch.setattr(kernel, "send_request_with_seq", _send)
+    caplog.set_level(logging.DEBUG)
+    await _drop_and_reconnect(client, panel, clock)
+    await _until(lambda: bool(_reauth_logs(caplog, logging.ERROR)))
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert [r.getMessage() for r in errors] == ["Re-authentication after reconnect raised"]
+    assert errors[0].exc_info is not None and errors[0].exc_info[0] is _Bug
+    assert _reauth_logs(caplog) == []  # not reported as a refusal
+    assert client.authenticated is False
+    assert str(DUMMY_PIN) not in caplog.text
+    await client.async_disconnect()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("outage_s", [1.0, 600.0, 601.0])
-async def test_opt_in_reauth_fires_on_every_reconnect(outage_s: float) -> None:
-    client, sent, stub = _client(reauth=True)
-    _authenticate(client, success=True)
-    await _drop_and_reconnect(client, outage_s=outage_s)
-    assert stub.pins == [DUMMY_PIN]
-    assert client.authenticated is True
-    assert get_private(client, "_last_auth_pin") == DUMMY_PIN
-    # The 600 s window still decides only the CSM refresh.
-    assert sent == ([] if outage_s <= 600 else [None])
+async def test_opt_in_reauth_fires_on_every_reconnect(panel: _FakePanel, outage_s: float) -> None:
+    client, clock = await _connected(reauth=True)
+    assert await _authenticate(client) is True
+    await _drop_and_reconnect(client, panel, clock, outage_s=outage_s)
+    await _until(lambda: client.authenticated)
+    assert len(panel.auth_requests()) == 1
+    # Whatever the outage (the 600 s window only decides the CSM refresh), the
+    # PIN goes out in the two authenticates only.
+    await _settle()
+    assert len(_pin_messages(panel.wire())) == 2
+    await client.async_disconnect()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("how", ["async_disconnect", "close", "link_drop"])
 async def test_inflight_reauth_never_restores_pin(
-    how: str, monkeypatch: pytest.MonkeyPatch
+    panel: _FakePanel, how: str, caplog: pytest.LogCaptureFixture
 ) -> None:
-    client, _, stub = _client(reauth=True)
-    _authenticate(client, success=True)
-    stub.outcome = "slow_ok"
-
-    async def fake_close() -> None:
-        return None
-
-    monkeypatch.setattr(get_kernel(client), "close", fake_close)
-    tasks = _reconnect_start_reauth(client)
-    assert len(tasks) == 1
-    await stub.started.wait()
+    client, clock = await _connected(reauth=True)
+    assert await _authenticate(client) is True
+    panel.auth = "hold"
+    caplog.set_level(logging.DEBUG)
+    await _drop_and_reconnect(client, panel, clock)
+    await _until(lambda: bool(panel.held))
 
     if how == "async_disconnect":
         await client.async_disconnect()
     elif how == "close":
         await client.close()
     else:
-        client._handle_kernel_event(_conn_event(False, reason="io_error"))  # pyright: ignore[reportPrivateUsage]
+        panel.drop_link()
 
-    stub.release.set()
-    await asyncio.gather(*tasks, return_exceptions=True)
-    assert tasks[0].cancelled()
-    assert get_private(client, "_last_auth_pin") is None
+    panel.release_held()  # the panel accepts, too late
+    await _settle()
     assert client.authenticated is False
-    assert get_private(client, "_reauth_tasks") == set()
+    link_drop_warnings = [m for m in _reauth_logs(caplog) if "cancelled by a link drop" in m]
+    assert len(link_drop_warnings) == (1 if how == "link_drop" else 0)
+    assert str(DUMMY_PIN) not in caplog.text
+    if how == "close":
+        return
+    # The PIN was not restored: the next connect sends no authenticate.
+    panel.auth = "accept"
+    await client.async_connect(HOST, 2101, KEYS)
+    await _settle()
+    assert panel.auth_requests() == []
+    assert client.authenticated is False
+    await client.async_disconnect()
 
 
 @pytest.mark.asyncio
-async def test_stale_reauth_outcome_ignored_even_if_not_cancelled() -> None:
-    """Belt and braces: an outcome from an older epoch never restores the PIN."""
-    client, _, stub = _client(reauth=True)
-    stub.outcome = "ok"
-    epoch = get_private(client, "_reauth_epoch")
-    cast(Any, client)._reauth_epoch = epoch + 1  # a disconnect happened meanwhile
-    await cast(Any, client)._async_reauth_after_reconnect(DUMMY_PIN, epoch)
-    assert stub.pins == [DUMMY_PIN]
-    assert get_private(client, "_last_auth_pin") is None
+async def test_deliberate_close_event_clears_pin_even_with_opt_in(panel: _FakePanel) -> None:
+    client, _ = await _connected(reauth=True)
+    assert await _authenticate(client) is True
+    await client.async_disconnect()  # the kernel reports reason="closed"
     assert client.authenticated is False
+    await client.async_connect(HOST, 2101, KEYS)
+    await _settle()
+    assert panel.auth_requests() == []
+    await client.async_disconnect()
 
 
 @pytest.mark.asyncio
-async def test_deliberate_close_event_clears_pin_even_with_opt_in() -> None:
-    client, _, _ = _client(reauth=True)
-    _authenticate(client, success=True)
-    client._handle_kernel_event(_conn_event(False, reason="closed"))  # pyright: ignore[reportPrivateUsage]
-    assert get_private(client, "_last_auth_pin") is None
-    assert client.authenticated is False
-
-
-def test_session_change_clears_pin_for_refresh_csm() -> None:
-    client, _, _ = _client()
-    kernel = get_kernel(client)
-    kernel.state.panel.session_id = 1
-    _authenticate(client, success=True)
-    assert cast(Any, client)._session_auth_pin() == DUMMY_PIN
-    kernel.state.panel.session_id = 2
-    assert cast(Any, client)._session_auth_pin() is None
-    assert get_private(client, "_last_auth_pin") is None
+async def test_session_change_clears_pin_for_refresh_csm(panel: _FakePanel) -> None:
+    client, _ = await _connected(request_timeout_s=0.05)
+    assert await _authenticate(client) is True
+    await client.async_refresh_csm()
+    first = panel.session
+    assert len(_pin_messages(first.sent)) == 2  # authenticate + the refresh's authenticate
+    # A new session (new session_id) without a link-drop event in between.
+    await client.async_connect(HOST, 2101, KEYS)
+    assert panel.session is not first
+    await client.async_refresh_csm()
+    assert _pin_messages(panel.session.sent) == []
+    await client.async_disconnect()
 
 
 # ---------------------------------------------------------------- D5
@@ -415,52 +556,61 @@ def _patch_endpoint(
     monkeypatch.setattr(loop, "create_datagram_endpoint", fake_endpoint)
 
 
+def _no_socket() -> Any:
+    return cast(Any, object())
+
+
 @pytest.mark.asyncio
 async def test_unicast_discovery_ignores_other_sources(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_endpoint(monkeypatch, [(_discovery_reply("203.0.113.5"), ("198.51.100.9", 2362))])
-    result = await async_discover_host(
-        "198.51.100.1", timeout=0.2, socket_factory=lambda: cast(Any, object())
-    )
+    result = await async_discover_host(HOST, timeout=0.2, socket_factory=_no_socket)
     assert result is None
 
 
 @pytest.mark.asyncio
 async def test_unicast_discovery_returns_queried_address(monkeypatch: pytest.MonkeyPatch) -> None:
-    _patch_endpoint(monkeypatch, [(_discovery_reply("203.0.113.5"), ("198.51.100.1", 2362))])
-    result = await async_discover_host(
-        "198.51.100.1", timeout=0.2, socket_factory=lambda: cast(Any, object())
-    )
+    _patch_endpoint(monkeypatch, [(_discovery_reply("203.0.113.5"), (HOST, 2362))])
+    result = await async_discover_host(HOST, timeout=0.2, socket_factory=_no_socket)
     assert result is not None
-    assert result.host == "198.51.100.1"
+    assert result.host == HOST
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("port", [99999999, 0, -1, 65536, "x", True])
-def test_discovery_rejects_out_of_range_port(
-    port: object, caplog: pytest.LogCaptureFixture
+async def test_discovery_rejects_out_of_range_port(
+    port: object, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     caplog.set_level(logging.DEBUG)
-    found: dict[tuple[str, int], E27System] = {}
-    scanner = AIOELKDiscovery()
-    stop = scanner._process_response(  # pyright: ignore[reportPrivateUsage]
-        _discovery_reply("198.51.100.1", port=port), ("198.51.100.1", 2362), None, found
-    )
-    assert stop is False
-    assert found == {}
-    assert "aa:bb:cc:dd:ee:ff" not in caplog.text.split("<=")[-1]
+    _patch_endpoint(monkeypatch, [(_discovery_reply(HOST, port=port), (HOST, 2362))])
+    found = await AIOELKDiscovery().async_scan(timeout=0.2, address=HOST, sock=_no_socket())
+    assert found == []
+    assert "port out of range" in caplog.text
+    ignored = [r for r in caplog.records if "port out of range" in r.getMessage()]
+    assert all("aa:bb:cc:dd:ee:ff" not in r.getMessage() for r in ignored)
 
 
-def test_broadcast_discovery_flags_address_mismatch() -> None:
-    found: dict[tuple[str, int], E27System] = {}
-    scanner = AIOELKDiscovery()
-    scanner._process_response(  # pyright: ignore[reportPrivateUsage]
-        _discovery_reply("203.0.113.5"), ("198.51.100.9", 2362), None, found
+@pytest.mark.asyncio
+async def test_broadcast_discovery_flags_address_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_endpoint(
+        monkeypatch,
+        [
+            (_discovery_reply("203.0.113.5"), ("198.51.100.9", 2362)),
+            (_discovery_reply("198.51.100.7"), ("198.51.100.7", 2362)),
+        ],
     )
-    scanner._process_response(  # pyright: ignore[reportPrivateUsage]
-        _discovery_reply("198.51.100.7"), ("198.51.100.7", 2362), None, found
-    )
-    by_source = {s.source_host: s for s in found.values()}
+    found = await AIOELKDiscovery().async_scan(timeout=0.2, sock=_no_socket())
+    by_source = {s.source_host: s for s in found}
     assert by_source["198.51.100.9"].address_mismatch is True
     assert by_source["198.51.100.7"].address_mismatch is False
+
+
+@pytest.mark.asyncio
+async def test_discovery_non_object_reply_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_endpoint(monkeypatch, [(b'["ELKWC2017"]', (HOST, 2362))])
+    found = await AIOELKDiscovery().async_scan(timeout=0.2, address=HOST, sock=_no_socket())
+    assert found == []
 
 
 # ---------------------------------------------------------------- D6
@@ -478,61 +628,101 @@ def _frame(envelope_seq: int) -> bytes:
 
 
 class _FrameSocket:
+    """A TCP socket that delivers the given frames, then times out."""
+
     def __init__(self, frames: list[bytes]) -> None:
         self.frames = frames
+
+    def settimeout(self, _t: float | None) -> None:
+        return None
+
+    def setsockopt(self, *_a: object) -> None:
+        return None
+
+    def connect(self, _addr: object) -> None:
+        return None
 
     def recv(self, _n: int) -> bytes:
         if self.frames:
             return self.frames.pop(0)
         raise TimeoutError
 
+    def sendall(self, _data: bytes) -> None:
+        return None
 
-def _session(frames: list[bytes]) -> Session:
+    def shutdown(self, _how: int) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
+def _connected_session(monkeypatch: pytest.MonkeyPatch, frames: list[bytes]) -> Session:
+    """A Session that ran connect() (HELLO faked) and will receive ``frames``."""
+    sock = _FrameSocket(frames)
+    monkeypatch.setattr(session_mod.socket, "socket", lambda *_a, **_k: sock)
+    monkeypatch.setattr(
+        session_mod,
+        "perform_hello",
+        lambda **_k: SessionKeys(session_id=1, session_key_hex=_KEY.hex(), hmac_key_hex="00" * 32),
+    )
     s = Session(
-        SessionConfig(host="198.51.100.1"),
+        SessionConfig(host=HOST, auto_receive=False),
         client_identity=linking.E27Identity("1", "2", "0", "0", "0"),
         link_key_hex="00" * 16,
     )
-    cast(Any, s).sock = _FrameSocket(frames)
-    cast(Any, s)._deframe_state = DeframeState()
-    s.info = SessionInfo(1, _KEY.hex(), "00" * 32)
-    s.state = SessionState.ACTIVE
+    s.connect()
     return s
 
 
-def _warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
-    return [r for r in caplog.records if r.levelno == logging.WARNING and "seq" in r.getMessage()]
+def _seq_logs(caplog: pytest.LogCaptureFixture, level: int) -> list[str]:
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno == level and "envelope seq did not increase" in r.getMessage()
+    ]
 
 
-def test_replayed_frame_warns_once_and_is_kept(caplog: pytest.LogCaptureFixture) -> None:
+def test_replayed_frame_warns_once_and_is_kept(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     caplog.set_level(logging.DEBUG)
     frame = _frame(7)
-    s = _session([frame, frame, frame])
+    s = _connected_session(monkeypatch, [frame, frame, frame])
     first = s.recv_json(timeout_s=1)
-    assert get_private(s, "_last_rx_envelope_seq") == 7
-    assert _warnings(caplog) == []
+    assert _seq_logs(caplog, logging.WARNING) == []
     second = s.recv_json(timeout_s=1)
     third = s.recv_json(timeout_s=1)
     assert first == second == third  # warn-only: never dropped
-    warns = _warnings(caplog)
-    assert len(warns) == 1
-    assert warns[0].getMessage() == (
+    assert _seq_logs(caplog, logging.WARNING) == [
         "Inbound envelope seq did not increase (last=7 got=7); frame kept"
-    )
-    assert get_private(s, "_rx_seq_regressions") == 2
+    ]
+    assert _seq_logs(caplog, logging.DEBUG) == [
+        "Inbound envelope seq did not increase (last=7 got=7); count=2"
+    ]
 
 
-def test_rx_seq_tracker_resets_for_new_session(caplog: pytest.LogCaptureFixture) -> None:
+def test_rx_seq_tracker_resets_for_new_session(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     caplog.set_level(logging.DEBUG)
-    s = _session([_frame(9)])
+    s = _connected_session(monkeypatch, [_frame(9)])
     s.recv_json(timeout_s=1)
-    assert get_private(s, "_last_rx_envelope_seq") == 9
-    cast(Any, s)._reset_rx_envelope_seq()  # what connect() does after HELLO
-    assert get_private(s, "_last_rx_envelope_seq") is None
-    cast(Any, s).sock = _FrameSocket([_frame(1)])
+    # A new HELLO session starts the tracker afresh: seq 1 after 9 is fine.
+    monkeypatch.setattr(session_mod.socket, "socket", lambda *_a, **_k: _FrameSocket([_frame(1)]))
+    s.connect()
     s.recv_json(timeout_s=1)
-    assert _warnings(caplog) == []
-    assert get_private(s, "_last_rx_envelope_seq") == 1
+    assert _seq_logs(caplog, logging.WARNING) == []
+    # Within that session, a lower seq still warns.
+    monkeypatch.setattr(
+        session_mod.socket, "socket", lambda *_a, **_k: _FrameSocket([_frame(5), _frame(4)])
+    )
+    s.connect()
+    s.recv_json(timeout_s=1)
+    s.recv_json(timeout_s=1)
+    assert _seq_logs(caplog, logging.WARNING) == [
+        "Inbound envelope seq did not increase (last=5 got=4); frame kept"
+    ]
 
 
 # ---------------------------------------------------------------- D7
@@ -557,27 +747,24 @@ def test_discovery_nonce_split_across_chunks() -> None:
     assert linking.wait_for_discovery_nonce(cast(Any, sock), timeout_s=1.0) == "DUMMYNONCE"
 
 
-def test_discovery_invalid_json_is_an_error_not_need_more_data() -> None:
-    from elke27_lib.errors import E27ProtocolError
+def test_discovery_cap_keeps_split_hello_prefix() -> None:
+    """Over the cap, the newest bytes are kept, not just the last chunk (Bugbot)."""
+    raw = b'{"ELKWC2017":"dummy","nonce":"DUMMYNONCE"}'
+    junk = b"x" * (linking.DISCOVERY_BUFFER_MAX - 22)
+    sock = _ChunkSocket([junk, raw[:20], raw[20:]])
+    assert len(junk) + len(raw) > linking.DISCOVERY_BUFFER_MAX
+    assert linking.wait_for_discovery_nonce(cast(Any, sock), timeout_s=1.0) == "DUMMYNONCE"
 
+
+def test_discovery_invalid_json_is_an_error_not_need_more_data() -> None:
     sock = _ChunkSocket([b'{"ELKWC2017":"dummy","nonce":}'])
     with pytest.raises(E27ProtocolError):
         linking.wait_for_discovery_nonce(cast(Any, sock), timeout_s=1.0)
 
 
-def test_discovery_non_object_reply_ignored() -> None:
-    found: dict[tuple[str, int], E27System] = {}
-    stop = AIOELKDiscovery()._process_response(  # pyright: ignore[reportPrivateUsage]
-        b'["ELKWC2017"]', ("198.51.100.1", 2362), None, found
-    )
-    assert stop is False and found == {}
-
-
 def test_discovery_buffer_capped_for_large_nonceless_stream(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import time
-
     sizes: list[int] = []
     real_parse = linking.parse_discovery_hello_and_local
 
@@ -591,7 +778,7 @@ def test_discovery_buffer_capped_for_large_nonceless_stream(
     chunks = [stream[i : i + 4096] for i in range(0, len(stream), 4096)]
     timeout_s = 1.0
     start = time.monotonic()
-    with pytest.raises(Exception):  # noqa: B017 - times out without a nonce
+    with pytest.raises(E27ProvisioningTimeout):
         linking.wait_for_discovery_nonce(cast(Any, _ChunkSocket(chunks)), timeout_s=timeout_s)
     assert time.monotonic() - start <= timeout_s + 2
     assert sizes
@@ -599,38 +786,38 @@ def test_discovery_buffer_capped_for_large_nonceless_stream(
 
 
 @pytest.mark.asyncio
-async def test_paged_block_count_over_cap_is_protocol_error() -> None:
-    from test.test_e27_async_execute_paged import _FakeSession, _set_session
-
+async def test_paged_block_count_over_cap_is_protocol_error(panel: _FakePanel) -> None:
     client = Elke27Client()
-    kernel = get_kernel(client)
-    fake_session = _FakeSession()
-    _set_session(kernel, fake_session)
-    kernel.state.panel.session_id = 1
-
-    task = asyncio.create_task(client.async_execute("zone_get_configured"))
-    await asyncio.sleep(0)
-    seq1 = fake_session.sent[0]["seq"]
-    get_private(kernel, "_on_message")(
-        {
-            "seq": seq1,
-            "zone": {"get_configured": {"block_id": 1, "block_count": 10_000, "zones": [1]}},
-        }
-    )
-    result = await asyncio.wait_for(task, timeout=1.0)
+    await client.async_connect(HOST, 2101, KEYS)
+    await _settle()
+    panel.overrides[("zone", "get_configured")] = lambda msg: {
+        "seq": msg["seq"],
+        "zone": {"get_configured": {"block_id": 1, "block_count": 10_000, "zones": [1]}},
+    }
+    before = len(panel.session.sent)
+    result = await asyncio.wait_for(client.async_execute("zone_get_configured"), timeout=1.0)
     assert result.ok is False
     assert isinstance(result.error, ProtocolError)
     assert str(MAX_PAGED_BLOCK_COUNT) in str(result.error)
-    assert len(fake_session.sent) == 1
+    requested = [m for m in panel.session.sent[before:] if "zone" in m]
+    assert len(requested) == 1  # no second block requested
+    await client.async_disconnect()
 
 
-def test_event_deque_default_bound_and_drop_counter(caplog: pytest.LogCaptureFixture) -> None:
-    assert DEFAULT_EVENT_QUEUE_MAXLEN == 4096
-    assert get_private(E27Kernel(), "_events").maxlen == 4096
-    assert get_private(E27Kernel(event_queue_maxlen=0), "_events").maxlen is None
-    assert get_private(E27Kernel(event_queue_maxlen=3), "_events").maxlen == 3
+def _conn_event() -> ConnectionStateChanged:
+    return ConnectionStateChanged(
+        kind=ConnectionStateChanged.KIND,
+        at=0.0,
+        seq=None,
+        classification="LOCAL",
+        route=("__local__", ConnectionStateChanged.KIND),
+        session_id=1,
+        connected=True,
+        reason=None,
+    )
 
-    kernel = E27Kernel(event_queue_maxlen=2)
+
+def _emit(kernel: E27Kernel, count: int) -> None:
     ctx = cast(
         Any,
         type(
@@ -639,10 +826,27 @@ def test_event_deque_default_bound_and_drop_counter(caplog: pytest.LogCaptureFix
             {"seq": None, "classification": "LOCAL", "route": ("a", "b"), "session_id": 1},
         )(),
     )
+    for _ in range(count):
+        kernel.emit(_conn_event(), ctx)
+
+
+@pytest.mark.parametrize(
+    ("maxlen", "kept"),
+    [(None, DEFAULT_EVENT_QUEUE_MAXLEN), (0, DEFAULT_EVENT_QUEUE_MAXLEN + 2), (3, 3)],
+)
+def test_event_deque_bounds(maxlen: int | None, kept: int) -> None:
+    assert DEFAULT_EVENT_QUEUE_MAXLEN == 4096
+    kernel = E27Kernel(event_queue_maxlen=maxlen)
+    _emit(kernel, DEFAULT_EVENT_QUEUE_MAXLEN + 2)
+    assert len(kernel.drain_events()) == kept
+    assert kernel.events_dropped == DEFAULT_EVENT_QUEUE_MAXLEN + 2 - kept
+
+
+def test_event_deque_drop_logged_once_at_debug(caplog: pytest.LogCaptureFixture) -> None:
+    kernel = E27Kernel(event_queue_maxlen=2)
     caplog.set_level(logging.DEBUG)
-    for _ in range(5):
-        kernel.emit(_conn_event(True), ctx)
-    assert len(get_private(kernel, "_events")) == 2
+    _emit(kernel, 5)
+    assert len(kernel.drain_events()) == 2
     assert kernel.events_dropped == 3
     full = [r for r in caplog.records if "Event queue full" in r.getMessage()]
     assert len(full) == 1 and full[0].levelno == logging.DEBUG
@@ -656,17 +860,8 @@ def test_default_event_queue_full_with_subscriber_logs_no_warning(
     kernel = E27Kernel()
     delivered: list[object] = []
     kernel.subscribe(delivered.append)
-    ctx = cast(
-        Any,
-        type(
-            "Ctx",
-            (),
-            {"seq": None, "classification": "LOCAL", "route": ("a", "b"), "session_id": 1},
-        )(),
-    )
     caplog.set_level(logging.DEBUG)
-    for _ in range(DEFAULT_EVENT_QUEUE_MAXLEN + 4):
-        kernel.emit(_conn_event(True), ctx)
+    _emit(kernel, DEFAULT_EVENT_QUEUE_MAXLEN + 4)
     assert len(delivered) == DEFAULT_EVENT_QUEUE_MAXLEN + 4
     assert kernel.events_dropped == 4
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]

@@ -219,8 +219,6 @@ class DiscoverResult:
     panels: list[discovery.E27System]
 
 
-_REDACT_KEYS = SECRET_KEYS
-
 # Default bound for the kernel's event deque (drop oldest when full).
 DEFAULT_EVENT_QUEUE_MAXLEN = 4096
 
@@ -237,7 +235,7 @@ def _redact_value(value: Any) -> Any:
     if isinstance(value, Mapping):
         mapping = cast(Mapping[str, Any], value)
         return {
-            key: ("***" if str(key).lower() in _REDACT_KEYS else _redact_value(val))
+            key: ("***" if str(key).lower() in SECRET_KEYS else _redact_value(val))
             for key, val in mapping.items()
         }
     if isinstance(value, list):

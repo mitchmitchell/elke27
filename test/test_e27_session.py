@@ -15,9 +15,10 @@
 
 from __future__ import annotations
 
+import itertools
 import socket
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, cast
 
 import pytest
@@ -84,9 +85,14 @@ class _DeframeResult:
     frame_no_crc: bytes = b""
 
 
+_ENVELOPE_SEQS = itertools.count(1)
+
+
 @dataclass
 class _DecryptEnvelope:
     payload: bytes
+    # Like the real E27DecryptedEnvelope; increasing so replay warnings stay quiet.
+    envelope_seq: int = field(default_factory=lambda: next(_ENVELOPE_SEQS))
 
 
 def _make_session_ready(monkeypatch: pytest.MonkeyPatch) -> tuple[session_mod.Session, _FakeSocket]:

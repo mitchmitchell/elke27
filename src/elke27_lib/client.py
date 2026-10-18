@@ -509,7 +509,7 @@ class Elke27Client:
         self._last_auth_pin: int | None = None
         self._auth_pin_session_id: int | None = None
         # Opt-in (off by default): re-send that PIN once after a reconnect.
-        self._reauth_on_reconnect: bool = bool(config.reauth_on_reconnect) if config else False
+        self._reauth_on_reconnect: bool = config.reauth_on_reconnect if config else False
         # True while the panel has accepted an authenticate in the current session.
         self._authenticated: bool = False
         self._last_auth_error_code: int | None = None
@@ -1735,7 +1735,13 @@ class Elke27Client:
                     self._connection_lost_logged = True
                 self._last_disconnect_at = self._now_monotonic()
                 # Any re-auth still in flight belongs to the session that just ended.
-                self._cancel_reauth()
+                if self._cancel_reauth() and evt.reason != "closed":
+                    # Its one-shot PIN is not restored (D4), so later reconnects send
+                    # no authenticate until the caller authenticates again.
+                    self._log.warning(
+                        "Re-authentication after reconnect cancelled by a link drop; "
+                        "not resending until the next accepted authenticate"
+                    )
                 self._authenticated = False
                 if evt.reason == "closed" or not self._reauth_on_reconnect:
                     self._forget_auth_pin()
@@ -2134,12 +2140,17 @@ class Elke27Client:
         self._authenticated = False
         self._auth_role = None
 
-    def _cancel_reauth(self) -> None:
-        """Cancel any in-flight re-auth; its outcome is ignored from now on."""
+    def _cancel_reauth(self) -> bool:
+        """Cancel any in-flight re-auth; its outcome is ignored from now on.
+
+        Returns True if a re-auth was still in flight.
+        """
         self._reauth_epoch += 1
-        for task in list(self._reauth_tasks):
+        inflight = [task for task in self._reauth_tasks if not task.done()]
+        for task in inflight:
             task.cancel()
         self._reauth_tasks.clear()
+        return bool(inflight)
 
     def _start_reauth(self, pin: int) -> None:
         """Re-send the cached PIN once after a reconnect (reauth_on_reconnect only)."""
@@ -2151,16 +2162,28 @@ class Elke27Client:
             return
         task = loop.create_task(self._async_reauth_after_reconnect(pin, self._reauth_epoch))
         self._reauth_tasks.add(task)
-        task.add_done_callback(self._reauth_tasks.discard)
+        task.add_done_callback(self._on_reauth_done)
+
+    def _on_reauth_done(self, task: asyncio.Task[None]) -> None:
+        self._reauth_tasks.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            # A bug, not a refusal (_async_authenticate turns client errors into a
+            # failed Result): surface it with its traceback. The PIN is not logged.
+            self._log.error("Re-authentication after reconnect raised", exc_info=exc)
 
     async def _async_reauth_after_reconnect(self, pin: int, epoch: int) -> None:
-        """One authenticate attempt; a refusal, an error or no reply is final.
+        """One authenticate attempt; a refusal, an error reply or no reply is final.
 
         No reply within the normal request timeout counts as a refusal. On any
-        failure: one WARNING with the error code only (never the PIN), the client
-        is marked not authenticated, and the PIN is not sent again. If the client
-        disconnects or closes meanwhile (epoch changed), the outcome is ignored
-        and the PIN is never restored.
+        such failure: one WARNING with the error code only (never the PIN), the
+        client is marked not authenticated, and the PIN is not sent again. An
+        unexpected exception is a bug: the client is marked not authenticated and
+        the exception propagates (logged at ERROR by the task's done callback). If
+        the client disconnects, closes or the link drops meanwhile (epoch changed),
+        the outcome is ignored and the PIN is never restored.
         """
         timeout_s = self._kernel.request_timeout_s
         try:
@@ -2169,15 +2192,12 @@ class Elke27Client:
             )
         except TimeoutError:
             result = None
-        except Exception as exc:  # noqa: BLE001
-            if epoch != self._reauth_epoch:
-                return
-            self._mark_auth_failed()
-            self._log.warning(
-                "Re-authentication after reconnect failed (%s); not resending",
-                type(exc).__name__,
-            )
-            return
+        except BaseException:
+            # Cancelled (disconnect/close/link drop bumped the epoch) or a bug: either
+            # way the PIN is not re-sent, and a bug still propagates.
+            if epoch == self._reauth_epoch:
+                self._mark_auth_failed()
+            raise
         if epoch != self._reauth_epoch:
             return  # disconnected or closed meanwhile: never restore the PIN
         if result is not None and result.ok:
