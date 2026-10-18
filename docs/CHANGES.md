@@ -1,5 +1,9 @@
   UNRELEASED
 
+  - `features.control.build_control_authenticate_payload` now applies the
+    client's PIN rules (#67): an all-zero PIN (`0`, `"0000"`), a `bool`, and
+    strings with non-ASCII digits (e.g. full-width `"１２３４"`) raise
+    `ValueError`. Valid PINs 1..999999 build the same payload as before.
   - Raw pass-through: `async_raw_request` now accepts any JSON value as the
     verb's value, not only a mapping (e.g. `{"net_dev": {"get_list": 1}}` or
     `{"net_dev": {"logout": true}}`), and sends it unchanged. Only dict, list,

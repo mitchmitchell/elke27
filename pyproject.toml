@@ -168,6 +168,7 @@ reportUnreachable = false
 [tool.codespell]
 # Add here as needed:
 # ignore-words-list = "foo,bar"
+ignore-words-list = "deques"
 # skip = "foo.py,bar.py"
 
 [tool.pytest.ini_options]
