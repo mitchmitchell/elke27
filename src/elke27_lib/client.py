@@ -213,6 +213,7 @@ from .types import (
 from .types import (
     ZoneState as V2ZoneState,
 )
+from .util import is_ascii_digit_string, parse_pin_digits
 
 T = TypeVar("T")
 
@@ -370,11 +371,6 @@ def _generator_pin_wants_int(generator: Callable[..., Any], pin_param: inspect.P
     return "int" in names and "str" not in names
 
 
-def _is_ascii_digit_string(value: str) -> bool:
-    """True when ``value`` is non-empty and contains only ASCII digits 0-9."""
-    return bool(value) and value.isascii() and value.isdigit()
-
-
 def _normalize_area_pin(pin: object, *, action: str) -> int:
     """Validate an arm/disarm PIN and return the integer sent on the wire.
 
@@ -384,15 +380,8 @@ def _normalize_area_pin(pin: object, *, action: str) -> int:
     """
     if pin is None or pin == "":
         raise Elke27InvalidArgument(f"PIN is required to {action}.")
-    if isinstance(pin, bool):
-        raise Elke27InvalidArgument("PIN must be a non-empty digit string.")
-    if isinstance(pin, int):
-        pin_value = pin
-    elif isinstance(pin, str):
-        if not _is_ascii_digit_string(pin):
-            raise Elke27InvalidArgument("PIN must be a non-empty digit string.")
-        pin_value = int(pin)
-    else:
+    pin_value = parse_pin_digits(pin)
+    if pin_value is None:
         raise Elke27InvalidArgument("PIN must be a non-empty digit string.")
     if pin_value <= 0:
         raise Elke27InvalidArgument("PIN must be a positive number (all-zero PINs are invalid).")
@@ -921,7 +910,7 @@ class Elke27Client:
         pin_param = signature.parameters.get("pin")
         if pin_param is None:
             return None
-        if _generator_pin_wants_int(spec.generator, pin_param) and not _is_ascii_digit_string(
+        if _generator_pin_wants_int(spec.generator, pin_param) and not is_ascii_digit_string(
             pin_value
         ):
             return Elke27InvalidArgument("PIN must be a non-empty digit string.")
@@ -2664,7 +2653,9 @@ class Elke27Client:
         Unknown routes (not in elke27's permission table) are sent as opaque
         installer-level messages: the library cannot check what they do, whether
         they need the panel disarmed, or whether they are safe to repeat. The
-        caller owns the safety of every unknown route.
+        caller owns the safety of every unknown route. Raw requests, ``get_*``
+        verbs included, are never resent: a sent request whose reply is lost
+        comes back with ``Elke27CommandOutcomeUnknownError`` as its ``error``.
 
         Not part of the Home Assistant contract: the client must be constructed
         with ``enable_raw_passthrough=True``. Messages whose route needs more than
@@ -2821,7 +2812,7 @@ class Elke27Client:
             # Bad PINs are caller errors, rejected before anything is sent, the
             # same as the other PIN paths (Elke27InvalidArgument, not InvalidPinError).
             if isinstance(pin_value, str):
-                if not _is_ascii_digit_string(pin_value):
+                if not is_ascii_digit_string(pin_value):
                     return _err(Elke27InvalidArgument("PIN must be a non-empty digit string."))
                 # The authenticate "pin" is a JSON number (Dealer API: {"pin":3456}), so a
                 # leading zero cannot be sent. Refuse rather than silently drop it.
@@ -2865,7 +2856,7 @@ class Elke27Client:
             if pin_value is None or (isinstance(pin_value, str) and not pin_value):
                 return _err(Elke27PinRequiredError())
             if isinstance(pin_value, str):
-                if not _is_ascii_digit_string(pin_value):
+                if not is_ascii_digit_string(pin_value):
                     return _err(Elke27InvalidArgument("PIN must be a non-empty digit string."))
             elif isinstance(pin_value, int):
                 if pin_value <= 0:
@@ -3288,7 +3279,7 @@ class Elke27Client:
         if not hasattr(auth_queue, "get"):
             return _err(ProtocolError("Authenticate opaque must support get()."))
         pin_value = kwargs.get("pin")
-        if isinstance(pin_value, str) and _is_ascii_digit_string(pin_value):
+        if isinstance(pin_value, str) and is_ascii_digit_string(pin_value):
             self._last_auth_pin = int(pin_value)
         elif isinstance(pin_value, int):
             self._last_auth_pin = pin_value
@@ -3609,7 +3600,7 @@ class Elke27Client:
             elif (
                 pin_param is not None
                 and isinstance(pin_value, str)
-                and _is_ascii_digit_string(pin_value)
+                and is_ascii_digit_string(pin_value)
                 and _generator_pin_wants_int(spec.generator, pin_param)
             ):
                 # The wire field is a JSON integer, so leading zeros are not
