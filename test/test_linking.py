@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import types
 
 import pytest
@@ -348,3 +349,44 @@ def test_coerce_intish_default_and_invalid() -> None:
     assert linking._coerce_intish("12") == 12
     with pytest.raises(ValueError):
         linking._coerce_intish("bad")
+
+
+def test_api_link_nonzero_ack_does_not_log_keys(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A non-zero api_link ACK logs the ACK byte and length, never the link key or HMAC."""
+    from elke27_lib.framing import frame_build
+    from elke27_lib.presentation import encrypt_schema0_envelope
+    from elke27_lib.util import swap_endianness
+
+    cnonce = "00" * 20
+    monkeypatch.setattr(linking, "_random_cnonce_hex_lower", lambda n=20: cnonce)
+    _, tempkey = linking.derive_pass_tempkey_with_cnonce(
+        access_code="1111", passphrase="dummy-pass", nonce="N", cnonce=cnonce, mn="1", sn="2"
+    )
+    dummy_key = "DUMMYLINKKEY0123456789"
+    dummy_hmac = "DUMMYHMAC9876543210"
+    body = json.dumps({"api_link": {"enc": dummy_key, "hmac": dummy_hmac, "error_code": 0}})
+    proto, ciphertext = encrypt_schema0_envelope(
+        payload=body.encode(),
+        session_key=swap_endianness(bytes.fromhex(tempkey)),
+        head=0x05,
+    )
+    sock = _FakeSocket([frame_build(protocol_byte=proto, data_frame=ciphertext)])
+    identity = linking.E27Identity(mn="1", sn="2", fwver="0", hwver="0", osver="0")
+
+    caplog.set_level(logging.DEBUG)
+    keys = linking.perform_api_link(
+        sock=sock,
+        client_identity=identity,
+        access_code="1111",
+        passphrase="dummy-pass",
+        mn_for_hash="1",
+        discovery_nonce=b"N",
+        timeout_s=1,
+    )
+
+    assert keys.linkkey_hex == dummy_key
+    assert "nonzero ACK 0x05" in caplog.text
+    assert dummy_key not in caplog.text
+    assert dummy_hmac not in caplog.text

@@ -1,5 +1,9 @@
   UNRELEASED
 
+  - Linking (security): an api_link reply with a non-zero ACK byte is now
+    logged at WARNING with the ACK byte and payload length only. The decrypted
+    reply (which carries the link key and HMAC) is never decoded into or printed
+    in any log line.
   - `features.control.build_control_authenticate_payload` now applies the
     client's PIN rules (#67): an all-zero PIN (`0`, `"0000"`), a `bool`, and
     strings with non-ASCII digits (e.g. full-width `"１２３４"`) raise

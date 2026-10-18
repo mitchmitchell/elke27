@@ -415,10 +415,9 @@ def perform_api_link(
 
     # Most captures show 0x00 ACK; log and continue if a different ACK is used.
     if ack != 0x00:
+        # ACK byte and length only: the decrypted reply carries the link key and HMAC.
         LOG.warning(
-            "api_link nonzero ACK 0x%02x; continuing decode; decrypted=%s",
-            ack,
-            json_bytes.decode("utf-8", errors="replace"),
+            "api_link nonzero ACK 0x%02x; continuing decode; bytes_len=%d", ack, len(json_bytes)
         )
 
     # Panel may concatenate JSON objects back-to-back; parse the first one with api_link.
