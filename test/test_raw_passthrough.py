@@ -650,3 +650,18 @@ async def test_non_dict_mapping_payload_still_sent() -> None:
     result = await asyncio.wait_for(task, 2.0)
     assert result.ok
     assert session.sent[0]["net_dev"] == {"get_list": {"block_id": 1}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("nested", ["proxy", "ordered"])
+async def test_nested_non_dict_mapping_rejected_before_send(nested: str) -> None:
+    """Only the top-level verb value may be a non-dict Mapping; nested objects are dicts."""
+    from collections import OrderedDict
+    from types import MappingProxyType
+
+    inner: Any = MappingProxyType({"a": 1}) if nested == "proxy" else OrderedDict(a=1)
+    session = _Session()
+    client = _client(session)
+    result = await client.async_raw_request({"net_dev": {"get_list": {"k": inner}}})
+    assert isinstance(result.error, Elke27InvalidArgument)
+    assert session.sent == []

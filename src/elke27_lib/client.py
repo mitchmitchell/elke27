@@ -2660,7 +2660,11 @@ class Elke27Client:
         Unknown routes (not in elke27's permission table) are sent as opaque
         installer-level messages: the library cannot check what they do, whether
         they need the panel disarmed, or whether they are safe to repeat. The
-        caller owns the safety of every unknown route.
+        caller owns the safety of every unknown route. One exception: any raw
+        route whose verb starts with ``get_`` is treated as a read, like the
+        library's own reads, so it may be resent after a lost reply (up to the
+        request retry limit). Don't send a raw ``get_`` verb unless repeating it
+        is safe.
 
         Not part of the Home Assistant contract: the client must be constructed
         with ``enable_raw_passthrough=True``. Messages whose route needs more than
