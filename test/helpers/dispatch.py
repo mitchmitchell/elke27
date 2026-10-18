@@ -18,3 +18,13 @@ def make_ctx(
         route=route,
         classification=classification,
     )
+
+
+class EmitSpy:
+    """Records every event a handler emits, for handler-level tests."""
+
+    def __init__(self) -> None:
+        self.events: list[object] = []
+
+    def __call__(self, evt: object, _ctx: DispatchContext) -> None:
+        self.events.append(evt)
