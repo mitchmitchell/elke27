@@ -200,6 +200,13 @@ def wait_for_discovery_nonce(sock: SocketLike, timeout_s: float = 10.0) -> str:
 
         try:
             nonce, local = parse_discovery_hello_and_local(bytes(buf))
+        except json.JSONDecodeError as e:
+            # A complete object that is not valid JSON is an error, not "need more data".
+            raise E27ProtocolError(
+                "Discovery hello is not valid JSON.",
+                context=E27ErrorContext(phase="discovery_parse"),
+                cause=e,
+            ) from e
         except ValueError:
             continue  # unbalanced braces: wait for the rest of the object
         if local is not None:

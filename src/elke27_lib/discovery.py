@@ -213,11 +213,12 @@ def _decode_data(raw_response: bytes) -> E27System | None:
         _LOGGER.debug("Failed to decode discovery response: %s", e)
         return None
 
-    mac_address = str(data.get("MAC_ADDR", "")).strip().lower()
-    panel_host = str(data.get("IPV4_ADDR", "")).strip()
     if not isinstance(data, dict):
         _LOGGER.debug("Ignoring discovery response: not a JSON object")
         return None
+    data = cast(dict[str, Any], data)
+    mac_address = str(data.get("MAC_ADDR", "")).strip().lower()
+    panel_host = str(data.get("IPV4_ADDR", "")).strip()
     port = _valid_port(data.get("LISTEN_PORT"))
     tls_port = _valid_port(data.get("ENCRYPTED_LISTEN_PORT", 0), allow_zero=True)
     if port is None or tls_port is None:

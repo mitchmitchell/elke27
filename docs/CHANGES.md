@@ -19,7 +19,13 @@
       disconnect, close, an auth failure, a link drop or a session change.
       Re-sending it after a reconnect is now opt-in via the new
       `ClientConfig.reauth_on_reconnect` (default `False`); with it on, the PIN
-      is re-sent once per accepted authenticate.
+      is re-sent once per accepted authenticate. If that re-sent authenticate is
+      refused, returns an error, or gets no reply within the normal request
+      timeout (no reply counts as a refusal), the client logs one WARNING with
+      the error code only (never the PIN), marks itself not authenticated (new
+      `Elke27Client.authenticated` property is `False`; the authenticated role
+      is cleared) and never re-sends the PIN. The CSM refresh after a reconnect
+      no longer carries the PIN.
     - Discovery: a unicast `async_discover_host` reply is accepted only from
       the queried address, and the result's `host` is always that address
       (never the payload's `IPV4_ADDR`). Replies whose `LISTEN_PORT` is not
@@ -31,11 +37,12 @@
       WARNING per session (later repeats count at DEBUG); frames are not
       dropped. Tracking resets on each new HELLO session.
     - Limits: the linking discovery buffer is capped at 8 KiB and a JSON object
-      split across reads waits for more data instead of failing; a paged
+      split across reads waits for more data instead of failing (a complete
+      object that is not valid JSON raises `E27ProtocolError`); a paged
       reply's `block_count` above 256 (`client.MAX_PAGED_BLOCK_COUNT`) is a
       `ProtocolError`; the kernel event deque now defaults to `maxlen=4096`
-      (`kernel.DEFAULT_EVENT_QUEUE_MAXLEN`, drop oldest, one WARNING, count in
-      `events_dropped`). An explicit `event_queue_maxlen` still wins and `0`
+      (`kernel.DEFAULT_EVENT_QUEUE_MAXLEN`, drop oldest, first drop logged once at
+      DEBUG, count in `events_dropped`; subscribers still receive every event). An explicit `event_queue_maxlen` still wins and `0`
       still means unbounded; `ClientConfig.event_queue_maxlen` now defaults to
       `None` (library default).
     - Dependencies: `cryptography>=46.0.7` (at or below Home Assistant core's

@@ -2170,7 +2170,9 @@ class E27Kernel:
             self._events.append(stamped)
             subscribers = list(self._subscribers.values())
         if warn_drop:
-            self._log.warning(
+            # DEBUG, not WARNING: subscriber-only clients (e.g. Home Assistant) never
+            # drain the deque, so it fills in normal use while subscribers miss nothing.
+            self._log.debug(
                 "Event queue full (maxlen=%d); dropping oldest events (counted in events_dropped)",
                 self._events.maxlen,
             )

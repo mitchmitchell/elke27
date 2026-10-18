@@ -510,6 +510,10 @@ class Elke27Client:
         self._auth_pin_session_id: int | None = None
         # Opt-in (off by default): re-send that PIN once after a reconnect.
         self._reauth_on_reconnect: bool = bool(config.reauth_on_reconnect) if config else False
+        # True while the panel has accepted an authenticate in the current session.
+        self._authenticated: bool = False
+        self._last_auth_error_code: int | None = None
+        self._reauth_tasks: set[asyncio.Task[None]] = set()
         self._pending_bypass_by_area: dict[int, float] = {}
         self._last_disconnect_at: float | None = None
         self._reconnect_csm_snapshot: CsmSnapshot | None = None
@@ -1680,8 +1684,11 @@ class Elke27Client:
                         self._awaiting_reconnect_csm_check = True
                         if self._reconnect_csm_snapshot is None:
                             self._reconnect_csm_snapshot = self._kernel.state.csm_snapshot
+                        reauth_pin = self._take_reauth_pin()
+                        if reauth_pin is not None:
+                            self._start_reauth(reauth_pin)
                         with contextlib.suppress(Exception):
-                            self._kernel.request_csm_refresh(auth_pin=self._take_reauth_pin())
+                            self._kernel.request_csm_refresh(auth_pin=None)
                 ready_evt = Elke27Event(
                     event_type=EventType.READY,
                     data={"connected": True},
@@ -1722,6 +1729,7 @@ class Elke27Client:
                     )
                     self._connection_lost_logged = True
                 self._last_disconnect_at = self._now_monotonic()
+                self._authenticated = False
                 if evt.reason == "closed" or not self._reauth_on_reconnect:
                     self._forget_auth_pin()
                 self._reconnect_csm_snapshot = self._kernel.state.csm_snapshot
@@ -2099,6 +2107,11 @@ class Elke27Client:
                 type(exc).__name__,
             )
 
+    @property
+    def authenticated(self) -> bool:
+        """True while the panel has accepted an authenticate in the current session."""
+        return self._authenticated
+
     def _forget_auth_pin(self) -> None:
         self._last_auth_pin = None
         self._auth_pin_session_id = None
@@ -2107,6 +2120,61 @@ class Elke27Client:
         """Cache a PIN only after the panel accepted it."""
         self._last_auth_pin = pin
         self._auth_pin_session_id = self._kernel.state.panel.session_id
+        self._authenticated = True
+
+    def _mark_auth_failed(self) -> None:
+        self._forget_auth_pin()
+        self._authenticated = False
+        self._auth_role = None
+
+    def _start_reauth(self, pin: int) -> None:
+        """Re-send the cached PIN once after a reconnect (reauth_on_reconnect only)."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._log.warning("Re-authentication after reconnect skipped: no running event loop")
+            self._mark_auth_failed()
+            return
+        task = loop.create_task(self._async_reauth_after_reconnect(pin))
+        self._reauth_tasks.add(task)
+        task.add_done_callback(self._reauth_tasks.discard)
+
+    async def _async_reauth_after_reconnect(self, pin: int) -> None:
+        """One authenticate attempt; a refusal, an error or no reply is final.
+
+        No reply within the normal request timeout counts as a refusal. On any
+        failure: one WARNING with the error code only (never the PIN), the client
+        is marked not authenticated, and the PIN is not sent again.
+        """
+        timeout_s = self._kernel.request_timeout_s
+        try:
+            result = await asyncio.wait_for(
+                self._async_authenticate(pin=pin, timeout_s=timeout_s), timeout=timeout_s
+            )
+        except TimeoutError:
+            result = None
+        except Exception as exc:  # noqa: BLE001
+            self._mark_auth_failed()
+            self._log.warning(
+                "Re-authentication after reconnect failed (%s); not resending",
+                type(exc).__name__,
+            )
+            return
+        if result is not None and result.ok:
+            self._remember_auth_pin(pin)
+            return
+        self._mark_auth_failed()
+        code = self._last_auth_error_code if result is not None else None
+        if code is None:
+            self._log.warning(
+                "Re-authentication after reconnect got no reply or an error; "
+                "treated as refused; not resending"
+            )
+        else:
+            self._log.warning(
+                "Re-authentication after reconnect refused (error_code=%d); not resending",
+                code,
+            )
 
     def _session_auth_pin(self) -> int | None:
         """The cached PIN if it was accepted in the current session, else None."""
@@ -2875,7 +2943,7 @@ class Elke27Client:
             if auth_result.ok:
                 self._remember_auth_pin(pin_int)
             else:
-                self._forget_auth_pin()
+                self._mark_auth_failed()
             return auth_result
 
         spec = COMMANDS.get(command_key)
@@ -3356,7 +3424,7 @@ class Elke27Client:
             if accepted_pin is not None:
                 self._remember_auth_pin(accepted_pin)
             return _ok(seq)
-        self._forget_auth_pin()
+        self._mark_auth_failed()
         if isinstance(error_code, int):
             return _err(InvalidPin(f"Authenticate failed with error_code={error_code}"))
         return _err(InvalidPin("Authenticate failed with unknown error."))
@@ -3365,6 +3433,7 @@ class Elke27Client:
         self, *, pin: int, timeout_s: float | None
     ) -> Result[Mapping[str, Any]]:
         loop = asyncio.get_running_loop()
+        self._last_auth_error_code = None
         seq = self._kernel.next_seq()
         expected_route: RouteKey = ("authenticate", "__root__")
         future = self._kernel.pending_responses.create(
@@ -3415,6 +3484,7 @@ class Elke27Client:
             )
 
         error_code = self._extract_error_code(msg, expected_route)
+        self._last_auth_error_code = error_code
         if error_code is not None:
             if error_code == 11008:
                 return _err(AuthorizationRequired("Authorization is required for this operation."))

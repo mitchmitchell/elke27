@@ -25,9 +25,16 @@ class ClientConfig:
     outbound_max_burst: int = 1
     logger_name: str | None = None
     session_wire_log: bool = False
-    # Re-send the last accepted authenticate PIN once after a reconnect. Off by
-    # default: the PIN is forgotten when the link drops.
     reauth_on_reconnect: bool = False
+    """Re-send the last accepted authenticate PIN once after a reconnect.
+
+    Off by default: the PIN is forgotten when the link drops. When on, the client
+    sends one ``control.authenticate`` after the reconnect. If the panel refuses
+    it, returns an error, or does not reply within the normal request timeout
+    (no reply counts as a refusal), the client logs one WARNING with the error
+    code only (never the PIN), marks itself not authenticated
+    (``Elke27Client.authenticated`` is False) and never re-sends that PIN.
+    """
 
 
 @dataclass(frozen=True, slots=True)
