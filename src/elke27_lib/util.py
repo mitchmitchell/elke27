@@ -109,3 +109,25 @@ def calculate_block_padding(length: int, block_size: int = 16) -> int:
 
     # For block_size=16, this matches the JS exactly:
     return (block_size - (length % block_size)) % block_size
+
+
+def is_ascii_digit_string(value: str) -> bool:
+    """True when ``value`` is non-empty and contains only ASCII digits 0-9."""
+    return bool(value) and value.isascii() and value.isdigit()
+
+
+def parse_pin_digits(pin: object) -> int | None:
+    """Shared PIN format rules (#67) for the client and the request builders.
+
+    Returns the integer value of an ``int`` (never a ``bool``) or a non-empty
+    ASCII digit string (leading zeros allowed, so ``"0123"`` is ``123``), or
+    ``None`` when ``pin`` has any other type or form. Range checks (all-zero,
+    negative, upper bound) are left to the caller.
+    """
+    if isinstance(pin, bool):
+        return None
+    if isinstance(pin, int):
+        return pin
+    if isinstance(pin, str) and is_ascii_digit_string(pin):
+        return int(pin)
+    return None

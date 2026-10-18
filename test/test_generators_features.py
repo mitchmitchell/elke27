@@ -485,3 +485,44 @@ def test_features_control_register_and_builders() -> None:
         features_control.build_control_authenticate_payload(pin="12ab")
     with pytest.raises(ValueError):
         features_control.build_control_authenticate_payload(pin=1_000_000)
+
+
+@pytest.mark.parametrize("pin", [0, "0", "0000", "000000"])
+def test_build_control_authenticate_payload_rejects_all_zero_pin(pin: int | str) -> None:
+    """#67: the builder rejects an all-zero PIN, like the client checks."""
+    with pytest.raises(ValueError, match="positive"):
+        features_control.build_control_authenticate_payload(pin=pin)
+
+
+@pytest.mark.parametrize("pin", [True, False])
+def test_build_control_authenticate_payload_rejects_bool(pin: bool) -> None:
+    """#67: a bool is not a PIN (bool is an int subclass)."""
+    with pytest.raises(ValueError, match="integer or numeric string"):
+        features_control.build_control_authenticate_payload(pin=pin)
+
+
+@pytest.mark.parametrize(
+    "pin", ["\uff11\uff12\uff13\uff14", "\u0661\u0662\u0663\u0664", "", " 1234", "+1234"]
+)
+def test_build_control_authenticate_payload_requires_ascii_digits(pin: str) -> None:
+    """#67: strings must be ASCII digits only (full-width digits are rejected)."""
+    with pytest.raises(ValueError, match="integer or numeric string"):
+        features_control.build_control_authenticate_payload(pin=pin)
+
+
+@pytest.mark.parametrize(
+    ("pin", "expected"),
+    [(1, 1), ("1", 1), ("0001", 1), (1234, 1234), ("999999", 999999), (999_999, 999_999)],
+)
+def test_build_control_authenticate_payload_accepts_valid_pin(
+    pin: int | str, expected: int
+) -> None:
+    """#67: valid PINs still build the same payload, up to 999999."""
+    assert features_control.build_control_authenticate_payload(pin=pin) == {"pin": expected}
+
+
+@pytest.mark.parametrize("pin", [-1, 1_000_000, "1000000"])
+def test_build_control_authenticate_payload_keeps_range_check(pin: int | str) -> None:
+    """#67: the 999999 upper bound (and negatives) still raise."""
+    with pytest.raises(ValueError, match="range"):
+        features_control.build_control_authenticate_payload(pin=pin)
