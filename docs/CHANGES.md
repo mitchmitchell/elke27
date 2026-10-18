@@ -7,6 +7,11 @@
     sets, tuples, NaN/Infinity and other objects raise `Elke27InvalidArgument`
     before sending. Permission still keys only on the exact (domain, verb) pair,
     and the value is never logged.
+  - Events (#62): an `output.set_status` or `tstat.set_status` ack that carries
+    no new state (usually just the id and `error_code`) no longer emits
+    `OutputStatusUpdated` / `TstatStatusUpdated` with the stale cached value.
+    The panel's status broadcast (or a re-read) emits the update. An ack that
+    does change state still emits. Matches the light ack handling.
   - HELLO (#61): a HELLO reply with no error code but no session (session_id,
     sk or shm absent, null or empty), as seen when two clients contend for the
     same link, now raises the new `E27HelloNoSession` (a `E27ProtocolError`)
