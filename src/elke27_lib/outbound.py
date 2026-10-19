@@ -153,7 +153,7 @@ class OutboundQueue:
             def _run() -> None:
                 try:
                     done.set_result(_cancel_on_loop())
-                except BaseException as exc:
+                except BaseException as exc:  # noqa: BLE001
                     done.set_exception(exc)
 
             self._loop.call_soon_threadsafe(_run)
@@ -183,7 +183,7 @@ class OutboundQueue:
                 if item.on_fail is not None:
                     try:
                         item.on_fail(exc)
-                    except Exception as fail_exc:
+                    except Exception as fail_exc:  # noqa: BLE001
                         self._log.warning(
                             "Outbound on_fail callback failed: seq=%s kind=%s error=%s",
                             item.seq,
@@ -225,7 +225,7 @@ class OutboundQueue:
                         len(item.payload),
                         waited,
                     )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 if item.on_fail is not None:
                     item.on_fail(exc)
                 self._log.warning(

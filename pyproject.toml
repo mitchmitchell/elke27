@@ -107,6 +107,9 @@ select = [
     "UP", # https://docs.astral.sh/ruff/rules/#pyupgrade-up
     "B", # https://docs.astral.sh/ruff/rules/#flake8-bugbear-b
     "I", # https://docs.astral.sh/ruff/rules/#isort-i
+    # Repeat review findings (see test/test_review_guards.py):
+    "SLF001", # https://docs.astral.sh/ruff/rules/private-member-access/ (tests use the public API)
+    "BLE001", # https://docs.astral.sh/ruff/rules/blind-except/ (no broad except Exception)
     # Other possibilities:
     # "D" # https://docs.astral.sh/ruff/rules/#pydocstyle-d
     # "Q" # https://docs.astral.sh/ruff/rules/#flake8-quotes-q
@@ -135,6 +138,89 @@ ignore = [
     "COM819", # https://docs.astral.sh/ruff/rules/prohibited-trailing-comma/
     "ISC002", # https://docs.astral.sh/ruff/rules/multi-line-implicit-string-concatenation/
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# Test helpers may catch broadly (they report failures, never hide them).
+"test/helpers/*" = ["SLF001", "BLE001"]
+# Legacy tests that read private members. This list may only shrink: new tests use
+# the public API, and test_review_guards fails when a listed file is clean.
+"test/conftest.py" = ["SLF001"]
+"test/test_all_handlers.py" = ["SLF001"]
+"test/test_area_arm_pin_regression.py" = ["SLF001"]
+"test/test_area_exit_delay_state.py" = ["SLF001"]
+"test/test_area_get_trouble_route.py" = ["SLF001"]
+"test/test_async_execute_panel_errors_and_pins.py" = ["SLF001"]
+"test/test_barrier_commands.py" = ["SLF001"]
+"test/test_bootstrap_readiness.py" = ["SLF001"]
+"test/test_client_execute_coverage.py" = ["SLF001"]
+"test/test_client_extra.py" = ["SLF001"]
+"test/test_client_more.py" = ["SLF001"]
+"test/test_command_outcome_unknown.py" = ["SLF001"]
+"test/test_command_result.py" = ["SLF001"]
+"test/test_dead_link_detection.py" = ["SLF001"]
+"test/test_discovery.py" = ["SLF001"]
+"test/test_dispatcher_extra.py" = ["SLF001"]
+"test/test_e27_area_set_arm_state_async_execute.py" = ["SLF001"]
+"test/test_e27_area_set_status_async_execute.py" = ["SLF001"]
+"test/test_e27_async_execute_paged.py" = ["SLF001"]
+"test/test_e27_async_execute_permissions.py" = ["SLF001"]
+"test/test_e27_async_execute_seq.py" = ["SLF001"]
+"test/test_e27_configured_inventory.py" = ["SLF001"]
+"test/test_e27_hello_concat_json.py" = ["SLF001"]
+"test/test_e27_hello_roundtrip.py" = ["SLF001"]
+"test/test_e27_presentation.py" = ["SLF001"]
+"test/test_e27_retry_seq.py" = ["SLF001"]
+"test/test_e27_seq.py" = ["SLF001"]
+"test/test_e27_session.py" = ["SLF001"]
+"test/test_e27_zone_status_string.py" = ["SLF001"]
+"test/test_encryption.py" = ["SLF001"]
+"test/test_events_errors_framing.py" = ["SLF001"]
+"test/test_generators_registry.py" = ["SLF001"]
+"test/test_handlers_area_extra.py" = ["SLF001"]
+"test/test_handlers_barrier_extra.py" = ["SLF001"]
+"test/test_handlers_control_extra.py" = ["SLF001"]
+"test/test_handlers_keypad_extra.py" = ["SLF001"]
+"test/test_handlers_light_extra.py" = ["SLF001"]
+"test/test_handlers_lock_extra.py" = ["SLF001"]
+"test/test_handlers_log_extra.py" = ["SLF001"]
+"test/test_handlers_misc.py" = ["SLF001"]
+"test/test_handlers_output_extra.py" = ["SLF001"]
+"test/test_handlers_system_extra.py" = ["SLF001"]
+"test/test_handlers_tstat_extra.py" = ["SLF001"]
+"test/test_handlers_zone_extra.py" = ["SLF001"]
+"test/test_hello.py" = ["SLF001"]
+"test/test_kernel_close_noise.py" = ["SLF001"]
+"test/test_kernel_coverage.py" = ["SLF001"]
+"test/test_kernel_extra.py" = ["SLF001"]
+"test/test_kernel_request_state.py" = ["SLF001"]
+"test/test_keypad_enumeration.py" = ["SLF001"]
+"test/test_light_status_derivation.py" = ["SLF001"]
+"test/test_linking.py" = ["SLF001"]
+"test/test_live_e27_authenticate.py" = ["SLF001"]
+"test/test_live_e27_keepalive.py" = ["SLF001"]
+"test/test_live_e27_users_download.py" = ["SLF001"]
+"test/test_outbound.py" = ["SLF001"]
+"test/test_outbound_queue.py" = ["SLF001"]
+"test/test_panel_errors_ready_night.py" = ["SLF001"]
+"test/test_panel_version_info.py" = ["SLF001"]
+"test/test_presentation_errors.py" = ["SLF001"]
+"test/test_public_api_imports.py" = ["SLF001"]
+"test/test_raw_passthrough.py" = ["SLF001"]
+"test/test_redact.py" = ["SLF001"]
+"test/test_root_error_envelope.py" = ["SLF001"]
+"test/test_rule_get_rules_paging.py" = ["SLF001"]
+"test/test_session_extra.py" = ["SLF001"]
+"test/test_session_io_tstat_regression.py" = ["SLF001"]
+"test/test_set_status_ack_no_stale_event.py" = ["SLF001"]
+"test/test_snapshot_after_arm_bypass.py" = ["SLF001"]
+"test/test_timeout_start_on_send.py" = ["SLF001"]
+"test/test_transport_command_retry.py" = ["SLF001"]
+"test/test_tstat_units.py" = ["SLF001"]
+"test/test_user_enumeration.py" = ["SLF001"]
+"test/test_util_states_pending_permissions.py" = ["SLF001"]
+"test/test_v2_commands.py" = ["SLF001"]
+"test/test_v2_events_snapshot.py" = ["SLF001"]
+"test/test_v2_wait_ready.py" = ["SLF001"]
 
 [tool.basedpyright]
 # BasedPyright currently seems like the best type checker option, much faster
@@ -172,6 +258,8 @@ ignore-words-list = "deques"
 # skip = "foo.py,bar.py"
 
 [tool.pytest.ini_options]
+# An xfail that starts passing fails the run, so it is removed with the fix.
+xfail_strict = true
 python_files = ["*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]

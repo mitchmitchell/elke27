@@ -2038,7 +2038,7 @@ class Elke27Client:
                 )
                 connect_exc = None
                 break
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 connect_exc = exc
                 will_retry = attempt + 1 < max_attempts and self._is_retryable_connect_error(exc)
                 self._log_connect_attempt_failure(attempt + 1, exc, will_retry=will_retry)
@@ -3422,7 +3422,7 @@ class Elke27Client:
 
         try:
             merged_payload = cast(Mapping[str, Any], merge_fn(blocks, block_count or len(blocks)))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             return _err(ProtocolError(f"{command_key} merge failed: {exc}"))
 
         return _ok(merged_payload)

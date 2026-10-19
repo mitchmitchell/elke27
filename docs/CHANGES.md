@@ -1,5 +1,14 @@
   UNRELEASED
 
+  - Dev/CI only (no library change): repeat review findings are now checks.
+    Ruff enables `SLF001` (private member access; legacy test files are listed
+    in per-file-ignores and the list may only shrink) and `BLE001` (blind
+    except; the 14 existing library sites carry a line-level `noqa`). pytest
+    runs with `xfail_strict = true`. New `test/test_review_guards.py` fails on
+    private library access via helpers/imports in new tests, helpers imported
+    from another test module, xfails without `raises=` or a linked issue,
+    retry/resend wording in a public docstring without a registered behaviour
+    test, and new literal-name `getattr`/`hasattr` calls in the library.
   - Linking (security): an api_link reply with a non-zero ACK byte is now
     logged at WARNING with the ACK byte and payload length only. The decrypted
     reply (which carries the link key and HMAC) is never decoded into or printed

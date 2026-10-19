@@ -947,7 +947,7 @@ class E27Kernel:
                     priority=OutboundPriority.HIGH,
                     timeout_s=self._keepalive_timeout_s,
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001
                 self._pending_responses.drop(seq)
                 return False
             queued_at = self.now()
@@ -978,7 +978,7 @@ class E27Kernel:
                         self.state.panel.session_id,
                     )
                 return self._last_rx_at > sent_at
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 self._log.warning(
                     "E27 keepalive check failed: seq=%s session_id=%s error=%s",
                     seq,
@@ -1344,7 +1344,7 @@ class E27Kernel:
                 loop.call_soon_threadsafe(event.set)
             else:
                 event.set()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._log.warning("Event set failed: %s", exc, exc_info=True)
             event.set()
 
@@ -1451,7 +1451,7 @@ class E27Kernel:
                 on_sent=lambda _: self._on_request_sent(item.seq, item.timeout_s),
                 on_fail=lambda exc: self._handle_send_failure(item.seq, exc),
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._handle_send_failure(item.seq, exc)
 
     def _on_request_sent(self, seq: int, timeout_s: float) -> None:

@@ -342,14 +342,14 @@ def _notify_auth_opaque(ctx: DispatchContext, *, success: bool, error_code: int 
         try:
             put_nowait(payload)
             return
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             LOG.warning("auth opaque put_nowait failed: %s", exc, exc_info=True)
             return
     put = getattr(opaque, "put", None)
     if callable(put):
         try:
             put(payload)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             LOG.warning("auth opaque put failed: %s", exc, exc_info=True)
             return
 
