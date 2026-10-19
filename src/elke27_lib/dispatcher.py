@@ -430,7 +430,7 @@ class Dispatcher:
                     continue
                 try:
                     spec.request_block(next_block, transfer_key)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     LOG.warning(
                         "Paged request_block failed: route=%s.%s block=%s key=%s error=%s",
                         route[0],

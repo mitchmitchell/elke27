@@ -281,7 +281,7 @@ class AIOELKDiscovery:
             return False
         try:
             decoded = _decode_data(data)
-        except Exception as ex:  # pylint: disable=broad-except
+        except Exception as ex:  # pylint: disable=broad-except  # noqa: BLE001
             _LOGGER.warning(
                 "Failed to decode response from %s: %s", from_address, type(ex).__name__
             )

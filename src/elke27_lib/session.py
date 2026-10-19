@@ -848,7 +848,7 @@ class Session:
                     break
                 self._handle_disconnect(e)
                 break
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 if stop_event.is_set() or self._is_disconnect_handled() or self._closing:
                     break
                 self._handle_disconnect(e)
