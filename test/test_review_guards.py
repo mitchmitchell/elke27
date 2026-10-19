@@ -7,7 +7,8 @@ into a check, so CI catches it before review does:
 - helper code imported from another test module;
 - strict xfails without ``raises=`` or a linked issue;
 - docstrings that promise retry/resend behaviour without a test pinning it;
-- ``getattr``/``hasattr`` with a literal name instead of a typed member.
+- ``getattr``/``hasattr`` with a literal name instead of a typed member;
+- new ``noqa`` escapes for SLF001/BLE001 (ruff PGH004 also bans a bare noqa).
 
 Legacy code is listed explicitly. The lists may only shrink: when you fix a
 file, remove it from the list (the stale-entry checks fail until you do).
@@ -17,8 +18,8 @@ from __future__ import annotations
 
 import ast
 import re
+import tokenize
 import tomllib
-from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -120,6 +121,39 @@ def test_private_access_only_in_legacy_test_files() -> None:
     )
 
 
+# Number of legacy test files in SLF001 per-file-ignores. Lower it when you remove
+# one; it never goes up (new tests use the public API).
+SLF001_LEGACY_FILE_COUNT = 77
+
+
+def test_slf001_legacy_list_does_not_grow() -> None:
+    """The SLF001 per-file-ignores list only shrinks."""
+    assert len(_slf001_legacy_files()) == SLF001_LEGACY_FILE_COUNT, (
+        "Do not add test files to the SLF001 per-file-ignores; use the public API. "
+        "If you removed one, lower SLF001_LEGACY_FILE_COUNT."
+    )
+
+
+def _helper_modules() -> list[Path]:
+    return _files(TEST / "helpers")
+
+
+# Helper modules (exempt from SLF001 via test/helpers/*) that touch private members.
+# New helpers use the public API. Remove an entry when its module is clean.
+LEGACY_PRIVATE_HELPERS = {"test/helpers/internal.py"}
+
+
+def test_private_access_in_helpers_only_in_legacy_modules() -> None:
+    """test/helpers/* is exempt from SLF001, so new helper modules are checked here."""
+    found = {
+        _rel(p) for p in _helper_modules() if _private_access(p) or _private_attribute_access(p)
+    }
+    assert found - LEGACY_PRIVATE_HELPERS == set(), (
+        "New test helpers must use the public API, not private members."
+    )
+    assert LEGACY_PRIVATE_HELPERS - found == set(), "Drop clean LEGACY_PRIVATE_HELPERS entries"
+
+
 def test_slf001_legacy_list_has_no_stale_entries() -> None:
     """Once a legacy file is clean, it leaves the per-file-ignores list."""
     stale = sorted(
@@ -144,18 +178,33 @@ LEGACY_TEST_MODULE_IMPORTS = {
     ("test/test_raw_passthrough.py", "test.test_session_extra"),
     ("test/test_snapshot_after_arm_bypass.py", "test.test_panel_errors_ready_night"),
 }
-_TEST_MODULE = re.compile(r"^(test\.)?test_\w+$")
+_TEST_PACKAGES = {"", "test", "tests"}
+
+
+def _imported_test_modules(path: Path) -> set[str]:
+    """Every test module imported, in any form: import x.test_y, import test_y,
+    from x.test_y import z, from test import test_y, from . import test_y."""
+    found: set[str] = set()
+    for node in ast.walk(_tree(path)):
+        if isinstance(node, ast.Import):
+            found |= {a.name for a in node.names if a.name.split(".")[-1].startswith("test_")}
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if module.split(".")[-1].startswith("test_"):
+                found.add(module)
+            elif node.level or module in _TEST_PACKAGES:
+                prefix = f"{module}." if module else "." * node.level
+                found |= {f"{prefix}{a.name}" for a in node.names if a.name.startswith("test_")}
+    return found
 
 
 def test_no_new_helper_imports_between_test_modules() -> None:
     """Shared fakes live in test/helpers/, not in another test module."""
-    found: set[tuple[str, str]] = set()
-    for path in _test_modules():
-        for node in ast.walk(_tree(path)):
-            if isinstance(node, ast.ImportFrom) and node.module:
-                if node.level or _TEST_MODULE.match(node.module):
-                    if node.module.split(".")[-1].startswith("test_"):
-                        found.add((_rel(path), node.module))
+    found = {
+        (_rel(path), module)
+        for path in [*_test_modules(), *_helper_modules()]
+        for module in _imported_test_modules(path)
+    }
     assert found - LEGACY_TEST_MODULE_IMPORTS == set(), "Move shared fakes to test/helpers/"
     assert LEGACY_TEST_MODULE_IMPORTS - found == set(), "Drop fixed LEGACY_TEST_MODULE_IMPORTS"
 
@@ -310,5 +359,65 @@ def _getattr_literals(path: Path) -> int:
 
 def test_getattr_literal_names_do_not_grow() -> None:
     """Typed members instead of getattr/hasattr probes (repeat review finding)."""
-    counts = Counter({_rel(p): n for p in _files(SRC) if (n := _getattr_literals(p))})
-    assert dict(counts) == GETATTR_LITERAL_CEILING
+    counts = {_rel(p): n for p in _files(SRC) if (n := _getattr_literals(p))}
+    assert counts == GETATTR_LITERAL_CEILING
+
+
+# --- noqa escapes for SLF001 / BLE001 ----------------------------------------------
+
+_NOQA = re.compile(r"#\s*(ruff:\s*)?noqa\b(?::([^#]*))?", re.IGNORECASE)
+WATCHED = ("SLF001", "BLE001")
+
+# "<file>:<code>" -> comments that silence it. The key ends in ":file" for a
+# file-level ruff noqa header. Only real comments count (tokenized, so noqa text in
+# strings and docstrings is ignored). Matching is case-insensitive, codes may be
+# comma- or space-separated, and a bare noqa (no codes) counts for every watched
+# code. Lower an entry when you remove an escape; never raise it.
+NOQA_CEILING: dict[str, int] = {
+    "src/elke27_lib/client.py:BLE001": 12,
+    "src/elke27_lib/discovery.py:BLE001": 1,
+    "src/elke27_lib/dispatcher.py:BLE001": 1,
+    "src/elke27_lib/handlers/control.py:BLE001": 2,
+    "src/elke27_lib/kernel.py:BLE001": 4,
+    "src/elke27_lib/outbound.py:BLE001": 3,
+    "src/elke27_lib/session.py:BLE001": 1,
+    "test/conftest.py:BLE001": 2,
+    "test/test_e27_area_get_status_live.py:BLE001": 1,
+    "test/test_e27_area_info_live.py:BLE001": 1,
+    "test/test_e27_configured_names_live.py:BLE001": 1,
+    "test/test_e27_network_param_live.py:BLE001": 1,
+    "test/test_e27_output_tstat_live.py:BLE001": 1,
+    "test/test_e27_table_info_live.py:BLE001": 1,
+    "test/test_e27_zone_defs_live.py:BLE001": 1,
+    "test/test_e27_zone_live.py:BLE001": 1,
+    "test/test_snapshot_after_arm_bypass.py:BLE001": 1,
+}
+
+
+def _comments(path: Path) -> list[str]:
+    with path.open("rb") as handle:
+        return [
+            tok.string for tok in tokenize.tokenize(handle.readline) if tok.type == tokenize.COMMENT
+        ]
+
+
+def _noqa_counts() -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for path in [*_files(SRC), *_files(TEST), *_files(ROOT / "devtools")]:
+        for comment in _comments(path):
+            for match in _NOQA.finditer(comment):
+                listed = (match.group(2) or "").strip()
+                codes = set(re.split(r"[\s,]+", listed.upper()))
+                for code in WATCHED:
+                    if not listed or code in codes:
+                        key = f"{_rel(path)}:{code}" + (":file" if match.group(1) else "")
+                        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def test_no_new_noqa_for_private_access_or_broad_except() -> None:
+    """SLF001/BLE001 escapes only shrink (repeat review finding)."""
+    assert _noqa_counts() == NOQA_CEILING, (
+        "Use the public API instead of silencing SLF001, and catch specific exceptions "
+        "instead of silencing BLE001. If you removed an escape, lower NOQA_CEILING."
+    )
