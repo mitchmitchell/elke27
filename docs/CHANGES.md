@@ -12,9 +12,11 @@
   - Dev/CI only: review guards hardened. Ruff `PGH004` (no bare noqa) is on.
     A tokenized noqa ceiling stops new SLF001/BLE001 escapes (any case, comma or
     space separated, bare, and file-level). The cross-test-module import check
-    covers every import form, including relative ones. The SLF001 legacy file
-    count and the helper modules that touch private members are frozen. The
-    stale pylint comment in discovery is gone.
+    covers every import form, including relative ones. The ruff per-file-ignores
+    table is frozen, each legacy test file has a shrink-only private-access
+    ceiling (new test files must have none), and only the existing helper
+    module may touch private members. Flake8-style file-level noqa headers
+    count too. The stale pylint comment in discovery is gone.
   - Linking (security): an api_link reply with a non-zero ACK byte is now
     logged at WARNING with the ACK byte and payload length only. The decrypted
     reply (which carries the link key and HMAC) is never decoded into or printed
