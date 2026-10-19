@@ -110,6 +110,7 @@ select = [
     # Repeat review findings (see test/test_review_guards.py):
     "SLF001", # https://docs.astral.sh/ruff/rules/private-member-access/ (tests use the public API)
     "BLE001", # https://docs.astral.sh/ruff/rules/blind-except/ (no broad except Exception)
+    "PGH004", # https://docs.astral.sh/ruff/rules/blanket-noqa/ (no bare noqa)
     # Other possibilities:
     # "D" # https://docs.astral.sh/ruff/rules/#pydocstyle-d
     # "Q" # https://docs.astral.sh/ruff/rules/#flake8-quotes-q

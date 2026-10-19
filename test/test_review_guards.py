@@ -7,7 +7,8 @@ into a check, so CI catches it before review does:
 - helper code imported from another test module;
 - strict xfails without ``raises=`` or a linked issue;
 - docstrings that promise retry/resend behaviour without a test pinning it;
-- ``getattr``/``hasattr`` with a literal name instead of a typed member.
+- ``getattr``/``hasattr`` with a literal name instead of a typed member;
+- new ``noqa`` escapes for SLF001/BLE001 (ruff PGH004 also bans a bare noqa).
 
 Legacy code is listed explicitly. The lists may only shrink: when you fix a
 file, remove it from the list (the stale-entry checks fail until you do).
@@ -17,8 +18,8 @@ from __future__ import annotations
 
 import ast
 import re
+import tokenize
 import tomllib
-from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -120,6 +121,186 @@ def test_private_access_only_in_legacy_test_files() -> None:
     )
 
 
+# Non-legacy entries in [tool.ruff.lint.per-file-ignores]. Every other entry is a
+# legacy test file with exactly ["SLF001"], and those files are exactly the keys of
+# PRIVATE_ACCESS_CEILING (which carries each file's count). Adding a file, swapping
+# one for another, or adding a code such as BLE001 fails here.
+FROZEN_EXTRA_PER_FILE_IGNORES: dict[str, list[str]] = {
+    "test/helpers/*": ["SLF001", "BLE001"],
+}
+
+
+def test_per_file_ignores_table_is_frozen() -> None:
+    """The per-file-ignores table only shrinks, in step with PRIVATE_ACCESS_CEILING."""
+    config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    table: dict[str, list[str]] = config["tool"]["ruff"]["lint"]["per-file-ignores"]
+    expected = {path: ["SLF001"] for path in PRIVATE_ACCESS_CEILING}
+    expected.update(FROZEN_EXTRA_PER_FILE_IGNORES)
+    actual = {path: sorted(codes) for path, codes in table.items()}
+    assert actual == {path: sorted(codes) for path, codes in expected.items()}, (
+        "Do not add or swap per-file ignores; new tests use the public API. When a "
+        "legacy file is clean, drop it here and from PRIVATE_ACCESS_CEILING together."
+    )
+
+
+def _helper_modules() -> list[Path]:
+    return _files(TEST / "helpers")
+
+
+# Helper modules (exempt from SLF001 via test/helpers/*) that touch private members.
+# New helpers use the public API. Remove an entry when its module is clean.
+LEGACY_PRIVATE_HELPERS = {"test/helpers/internal.py"}
+
+
+def test_private_access_in_helpers_only_in_legacy_modules() -> None:
+    """test/helpers/* is exempt from SLF001, so new helper modules are checked here."""
+    found = {
+        _rel(p) for p in _helper_modules() if _private_access(p) or _private_attribute_access(p)
+    }
+    assert found - LEGACY_PRIVATE_HELPERS == set(), (
+        "New test helpers must use the public API, not private members."
+    )
+    assert LEGACY_PRIVATE_HELPERS - found == set(), "Drop clean LEGACY_PRIVATE_HELPERS entries"
+
+
+# Names ruff SLF001 ignores by default (namedtuple/enum API) and owner names it skips.
+_SLF001_IGNORED_NAMES = {
+    "_make",
+    "_asdict",
+    "_replace",
+    "_fields",
+    "_field_defaults",
+    "_name_",
+    "_value_",
+}
+_SLF001_OWNERS = {"self", "cls", "mcs"}
+
+
+def _private_access_count(path: Path) -> int:
+    """SLF001-type accesses (obj._x outside self/cls/mcs) plus the hidden forms."""
+    attributes = sum(
+        1
+        for node in ast.walk(_tree(path))
+        if isinstance(node, ast.Attribute)
+        and _is_private(node.attr)
+        and node.attr not in _SLF001_IGNORED_NAMES
+        and not (isinstance(node.value, ast.Name) and node.value.id in _SLF001_OWNERS)
+        and not (
+            isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == "super"
+        )
+    )
+    return attributes + len(_private_access(path))
+
+
+# Private accesses per test file, frozen at the count when the ceiling was added.
+# Counts only go down: an increase fails, a file not listed must have zero, and a
+# drop fails until you lower the entry here (or remove it at zero).
+PRIVATE_ACCESS_CEILING: dict[str, int] = {
+    "test/conftest.py": 13,
+    "test/test_all_handlers.py": 1,
+    "test/test_area_arm_pin_regression.py": 9,
+    "test/test_area_exit_delay_state.py": 8,
+    "test/test_area_get_trouble_route.py": 1,
+    "test/test_async_execute_panel_errors_and_pins.py": 6,
+    "test/test_barrier_commands.py": 9,
+    "test/test_bootstrap_readiness.py": 2,
+    "test/test_client_execute_coverage.py": 149,
+    "test/test_client_extra.py": 192,
+    "test/test_client_more.py": 116,
+    "test/test_command_outcome_unknown.py": 11,
+    "test/test_command_result.py": 1,
+    "test/test_dead_link_detection.py": 101,
+    "test/test_discovery.py": 22,
+    "test/test_dispatcher_extra.py": 50,
+    "test/test_e27_area_set_arm_state_async_execute.py": 12,
+    "test/test_e27_area_set_status_async_execute.py": 8,
+    "test/test_e27_async_execute_paged.py": 9,
+    "test/test_e27_async_execute_permissions.py": 4,
+    "test/test_e27_async_execute_seq.py": 10,
+    "test/test_e27_configured_inventory.py": 9,
+    "test/test_e27_hello_concat_json.py": 1,
+    "test/test_e27_hello_roundtrip.py": 1,
+    "test/test_e27_presentation.py": 1,
+    "test/test_e27_retry_seq.py": 3,
+    "test/test_e27_seq.py": 2,
+    "test/test_e27_session.py": 22,
+    "test/test_e27_zone_status_string.py": 1,
+    "test/test_encryption.py": 9,
+    "test/test_events_errors_framing.py": 2,
+    "test/test_generators_registry.py": 1,
+    "test/test_handlers_area_extra.py": 50,
+    "test/test_handlers_barrier_extra.py": 12,
+    "test/test_handlers_control_extra.py": 15,
+    "test/test_handlers_keypad_extra.py": 15,
+    "test/test_handlers_light_extra.py": 16,
+    "test/test_handlers_lock_extra.py": 15,
+    "test/test_handlers_log_extra.py": 5,
+    "test/test_handlers_misc.py": 30,
+    "test/test_handlers_output_extra.py": 19,
+    "test/test_handlers_system_extra.py": 8,
+    "test/test_handlers_tstat_extra.py": 11,
+    "test/test_handlers_zone_extra.py": 69,
+    "test/test_hello.py": 8,
+    "test/test_kernel_close_noise.py": 3,
+    "test/test_kernel_coverage.py": 277,
+    "test/test_kernel_extra.py": 40,
+    "test/test_kernel_request_state.py": 27,
+    "test/test_keypad_enumeration.py": 1,
+    "test/test_light_status_derivation.py": 6,
+    "test/test_linking.py": 9,
+    "test/test_live_e27_authenticate.py": 4,
+    "test/test_live_e27_keepalive.py": 9,
+    "test/test_live_e27_users_download.py": 4,
+    "test/test_outbound.py": 16,
+    "test/test_outbound_queue.py": 3,
+    "test/test_panel_errors_ready_night.py": 13,
+    "test/test_panel_version_info.py": 17,
+    "test/test_presentation_errors.py": 10,
+    "test/test_public_api_imports.py": 5,
+    "test/test_raw_passthrough.py": 17,
+    "test/test_redact.py": 9,
+    "test/test_root_error_envelope.py": 1,
+    "test/test_rule_get_rules_paging.py": 6,
+    "test/test_session_extra.py": 51,
+    "test/test_session_io_tstat_regression.py": 40,
+    "test/test_set_status_ack_no_stale_event.py": 1,
+    "test/test_snapshot_after_arm_bypass.py": 96,
+    "test/test_timeout_start_on_send.py": 1,
+    "test/test_transport_command_retry.py": 85,
+    "test/test_tstat_units.py": 1,
+    "test/test_user_enumeration.py": 1,
+    "test/test_util_states_pending_permissions.py": 1,
+    "test/test_v2_commands.py": 1,
+    "test/test_v2_events_snapshot.py": 42,
+    "test/test_v2_wait_ready.py": 3,
+}
+
+
+def test_private_access_per_file_does_not_grow() -> None:
+    """Legacy test files never gain private accesses; new files have none."""
+    counts = {_rel(p): n for p in _test_modules() if (n := _private_access_count(p))}
+    grown = {
+        f: (n, PRIVATE_ACCESS_CEILING.get(f, 0))
+        for f, n in counts.items()
+        if n > PRIVATE_ACCESS_CEILING.get(f, 0)
+    }
+    assert grown == {}, (
+        "Private access grew (file: (now, ceiling)). Use the public API instead; "
+        "new test files must have none."
+    )
+    shrunk = {
+        f: (counts.get(f, 0), ceiling)
+        for f, ceiling in PRIVATE_ACCESS_CEILING.items()
+        if counts.get(f, 0) < ceiling
+    }
+    assert shrunk == {}, (
+        "Private access went down (file: (now, ceiling)). Lower PRIVATE_ACCESS_CEILING "
+        "to the new count, or drop the entry at zero."
+    )
+
+
 def test_slf001_legacy_list_has_no_stale_entries() -> None:
     """Once a legacy file is clean, it leaves the per-file-ignores list."""
     stale = sorted(
@@ -144,18 +325,33 @@ LEGACY_TEST_MODULE_IMPORTS = {
     ("test/test_raw_passthrough.py", "test.test_session_extra"),
     ("test/test_snapshot_after_arm_bypass.py", "test.test_panel_errors_ready_night"),
 }
-_TEST_MODULE = re.compile(r"^(test\.)?test_\w+$")
+_TEST_PACKAGES = {"", "test", "tests"}
+
+
+def _imported_test_modules(path: Path) -> set[str]:
+    """Every test module imported, in any form: import x.test_y, import test_y,
+    from x.test_y import z, from test import test_y, from . import test_y."""
+    found: set[str] = set()
+    for node in ast.walk(_tree(path)):
+        if isinstance(node, ast.Import):
+            found |= {a.name for a in node.names if a.name.split(".")[-1].startswith("test_")}
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if module.split(".")[-1].startswith("test_"):
+                found.add(module)
+            elif node.level or module in _TEST_PACKAGES:
+                prefix = f"{module}." if module else "." * node.level
+                found |= {f"{prefix}{a.name}" for a in node.names if a.name.startswith("test_")}
+    return found
 
 
 def test_no_new_helper_imports_between_test_modules() -> None:
     """Shared fakes live in test/helpers/, not in another test module."""
-    found: set[tuple[str, str]] = set()
-    for path in _test_modules():
-        for node in ast.walk(_tree(path)):
-            if isinstance(node, ast.ImportFrom) and node.module:
-                if node.level or _TEST_MODULE.match(node.module):
-                    if node.module.split(".")[-1].startswith("test_"):
-                        found.add((_rel(path), node.module))
+    found = {
+        (_rel(path), module)
+        for path in [*_test_modules(), *_helper_modules()]
+        for module in _imported_test_modules(path)
+    }
     assert found - LEGACY_TEST_MODULE_IMPORTS == set(), "Move shared fakes to test/helpers/"
     assert LEGACY_TEST_MODULE_IMPORTS - found == set(), "Drop fixed LEGACY_TEST_MODULE_IMPORTS"
 
@@ -310,5 +506,65 @@ def _getattr_literals(path: Path) -> int:
 
 def test_getattr_literal_names_do_not_grow() -> None:
     """Typed members instead of getattr/hasattr probes (repeat review finding)."""
-    counts = Counter({_rel(p): n for p in _files(SRC) if (n := _getattr_literals(p))})
-    assert dict(counts) == GETATTR_LITERAL_CEILING
+    counts = {_rel(p): n for p in _files(SRC) if (n := _getattr_literals(p))}
+    assert counts == GETATTR_LITERAL_CEILING
+
+
+# --- noqa escapes for SLF001 / BLE001 ----------------------------------------------
+
+_NOQA = re.compile(r"#\s*((?:ruff|flake8):\s*)?noqa\b(?::([^#]*))?", re.IGNORECASE)
+WATCHED = ("SLF001", "BLE001")
+
+# "<file>:<code>" -> comments that silence it. The key ends in ":file" for a
+# file-level header (ruff's or the Flake8-style one, which ruff also honours). Only real comments count (tokenized, so noqa text in
+# strings and docstrings is ignored). Matching is case-insensitive, codes may be
+# comma- or space-separated, and a bare noqa (no codes) counts for every watched
+# code. Lower an entry when you remove an escape; never raise it.
+NOQA_CEILING: dict[str, int] = {
+    "src/elke27_lib/client.py:BLE001": 12,
+    "src/elke27_lib/discovery.py:BLE001": 1,
+    "src/elke27_lib/dispatcher.py:BLE001": 1,
+    "src/elke27_lib/handlers/control.py:BLE001": 2,
+    "src/elke27_lib/kernel.py:BLE001": 4,
+    "src/elke27_lib/outbound.py:BLE001": 3,
+    "src/elke27_lib/session.py:BLE001": 1,
+    "test/conftest.py:BLE001": 2,
+    "test/test_e27_area_get_status_live.py:BLE001": 1,
+    "test/test_e27_area_info_live.py:BLE001": 1,
+    "test/test_e27_configured_names_live.py:BLE001": 1,
+    "test/test_e27_network_param_live.py:BLE001": 1,
+    "test/test_e27_output_tstat_live.py:BLE001": 1,
+    "test/test_e27_table_info_live.py:BLE001": 1,
+    "test/test_e27_zone_defs_live.py:BLE001": 1,
+    "test/test_e27_zone_live.py:BLE001": 1,
+    "test/test_snapshot_after_arm_bypass.py:BLE001": 1,
+}
+
+
+def _comments(path: Path) -> list[str]:
+    with path.open("rb") as handle:
+        return [
+            tok.string for tok in tokenize.tokenize(handle.readline) if tok.type == tokenize.COMMENT
+        ]
+
+
+def _noqa_counts() -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for path in [*_files(SRC), *_files(TEST), *_files(ROOT / "devtools")]:
+        for comment in _comments(path):
+            for match in _NOQA.finditer(comment):
+                listed = (match.group(2) or "").strip()
+                codes = set(re.split(r"[\s,]+", listed.upper()))
+                for code in WATCHED:
+                    if not listed or code in codes:
+                        key = f"{_rel(path)}:{code}" + (":file" if match.group(1) else "")
+                        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def test_no_new_noqa_for_private_access_or_broad_except() -> None:
+    """SLF001/BLE001 escapes only shrink (repeat review finding)."""
+    assert _noqa_counts() == NOQA_CEILING, (
+        "Use the public API instead of silencing SLF001, and catch specific exceptions "
+        "instead of silencing BLE001. If you removed an escape, lower NOQA_CEILING."
+    )
