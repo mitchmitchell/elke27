@@ -1,4 +1,4 @@
-  UNRELEASED
+  Security Hardening, Barriers, Link Slots, Raw Pass-through (0.3.15)
 
   - Dev/CI only (no library change): repeat review findings are now checks.
     Ruff enables `SLF001` (private member access; legacy test files are listed
@@ -21,7 +21,7 @@
     logged at WARNING with the ACK byte and payload length only. The decrypted
     reply (which carries the link key and HMAC) is never decoded into or printed
     in any log line.
-  - Security round 1 (D2-D8):
+  - Security round 1 (D2-D8, #71):
     - Secrets out of repr: `LinkKeys`, `E27LinkKeys`, `SessionKeys`,
       `SessionInfo`, `provisioning.Credentials` and the client's internal link
       credentials no longer show key, credential or PIN fields in
@@ -80,7 +80,7 @@
       gains a pip-audit job over the locked dependencies; ignored advisories:
       none.
   - `features.control.build_control_authenticate_payload` now applies the
-    client's PIN rules (#67): an all-zero PIN (`0`, `"0000"`), a `bool`, and
+    client's PIN rules (#67, #68): an all-zero PIN (`0`, `"0000"`), a `bool`, and
     strings with non-ASCII digits (e.g. full-width `"１２３４"`) raise
     `ValueError`. Valid PINs 1..999999 build the same payload as before.
   - Raw pass-through: `async_raw_request` now accepts any JSON value as the
@@ -90,12 +90,12 @@
     sets, tuples, NaN/Infinity and other objects raise `Elke27InvalidArgument`
     before sending. Permission still keys only on the exact (domain, verb) pair,
     and the value is never logged.
-  - Events (#62): an `output.set_status` or `tstat.set_status` ack that carries
+  - Events (#62, #64): an `output.set_status` or `tstat.set_status` ack that carries
     no new state (usually just the id and `error_code`) no longer emits
     `OutputStatusUpdated` / `TstatStatusUpdated` with the stale cached value.
     The panel's status broadcast (or a re-read) emits the update. An ack that
     does change state still emits. Matches the light ack handling.
-  - HELLO (#61): a HELLO reply with no error code but no session (session_id,
+  - HELLO (#61, #65): a HELLO reply with no error code but no session (session_id,
     sk or shm absent, null or empty), as seen when two clients contend for the
     same link, now raises the new `E27HelloNoSession` (a `E27ProtocolError`)
     with "Panel refused the session ... (another client may be using this
@@ -107,20 +107,38 @@
     gains `hello_refused` (default `False`), set when session setup failed
     because the panel refused HELLO, so the client does not also log
     "Panel connection lost" for a session that never existed.
-  - Barriers (garage-door design §6): new `async_set_barrier(barrier_id, *, open)`
-    sends one `barrier.set_status` (lowercase `open`/`close`) and never retries it (the kernel disables
-    transport retries for the route and panel-busy replies are not resent); a
+  - Barriers (#48): new `async_set_barrier(barrier_id, *, open)` sends one
+    `barrier.set_status` (lowercase `open`/`close`) and never retries it (the
+    kernel disables transport retries for the route and panel-busy replies are not resent); a
     missing reply raises `Elke27CommandOutcomeUnknownError`. New optional
     `async_refresh_barrier(barrier_id)` does one status read and returns the
     state. `V2BarrierState` gains `is_open` (OPEN -> True, CLOSE/CLOSED -> False,
     anything else -> None), `tamper`, `low_batt` and `rssi`; raw `status` is kept.
-  - Linking (target 0.3.15): when the panel's client link table is full, api_link
+  - Linking (#49): when the panel's client link table is full, api_link
     replies with an error message ("Not enough space") and no link keys.
     `async_link` now raises the new public `Elke27LinkSlotsFullError`
     (code `link_slots_full`, not transient) with the panel's raw text in
     `panel_error_message` and its `error_code`, if any, in `panel_error_code`,
     instead of a generic protocol error. Any other panel message in a keyless
     api_link reply is now included in the protocol error text.
+    `Elke27LinkSlotsFullError` subclasses `Elke27Error`, not
+    `Elke27ProtocolError`; callers that caught `Elke27ProtocolError` from
+    `async_link` for a full link table must also catch the new error.
+  - New opt-in raw pass-through that lets an application implement API
+    messages the library doesn't natively support, over the library's
+    connection. It is off by default, and message and reply contents are
+    never logged (#60, #63).
+  - Logging: link and authentication frames are no longer hex-dumped in
+    debug logs (#60).
+  - Framing: the `deframe discard: waiting for startchar` message for bytes
+    that arrive before the first frame on a new link is now logged at DEBUG
+    instead of ERROR; a discard after the first good frame is logged at
+    WARNING (#52, #54).
+  - Area status: the `area.get_status no changes` message after a re-read that
+    finds nothing new (for example after a disarm) is now logged at DEBUG
+    instead of WARNING (#53, #55).
+  - Area bypass: the bypass-count message during normal bypass and unbypass
+    is now logged at DEBUG instead of WARNING (#57, #58).
 
   Public Command Result, Typed Package (0.3.14)
 
