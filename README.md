@@ -123,7 +123,7 @@ example programs and pytest live tests.
 
 ### 3) Minimal “hello world” connect + version info
 - `examples/e27_simple_program.py`
-  - Discover → link → connect → request `control.get_version_info` → pump events until results arrive.
+  - Discover → link → connect → request the panel's version info → pump events until results arrive.
 
 ### 4) Monitor unsolicited messages/events
 - `examples/e27_unsolicited_monitor.py`

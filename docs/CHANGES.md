@@ -187,13 +187,13 @@
   Command Reliability, Fresh Status After Arm/Bypass, Panel Identity (0.3.12)
 
   - Panel identity (E1 follow-up, refs #40): a placeholder serial from
-    `control.get_version_info` (empty, all zeros, the fixed placeholder the
+    the panel's version info request (empty, all zeros, the fixed placeholder the
     panel reports on hardware, all F) is ignored and `PanelInfo.serial` stays `None`, so it is never used as an
     identity. `model` and `firmware` come from the panel's version info; `mac`
     stays `None` (the MAC is only in the discovery reply).
     The version-info reply is now classified RESPONSE, not UNSOLICITED.
 
-  - Panel identity (E1): after HELLO, `async_connect` sends `control.get_version_info`
+  - Panel identity (E1): after HELLO, `async_connect` sends the panel's version info request
     (fire-and-forget: no reply wait, retry or queue slot). The reply fills `PanelSnapshot.panel` `serial`, `mac` (new on
     `PanelMetaState`), `model` and `firmware`. A send failure, an error reply or
     missing fields never break connect: fields not yet known stay `None`, a
