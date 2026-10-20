@@ -159,7 +159,7 @@
   Panel MAC Discovery, HELLO Link Errors, Session Close (0.3.13)
 
   - New public helper `async_discover_host(host, timeout=3.0)` (E1a, panel MAC
-    from discovery): sends a unicast `{"FIND":"ELKWCID"}` to the host's UDP 2362 on
+    from discovery): sends the discovery request as a unicast to the host's UDP 2362 on
     its own socket, never touching a client session, and returns a
     `DiscoveredPanel` (MAC_ADDR, IPV4_ADDR, ports, NAME, SERIAL) or `None` when no
     valid reply arrives within the timeout or the host cannot be resolved.
@@ -186,7 +186,7 @@
   Command Reliability, Fresh Status After Arm/Bypass, Panel Identity (0.3.12)
 
   - Panel identity (E1 follow-up, refs #40): a placeholder serial from
-    `control.get_version_info` (empty, all zeros, `00000001`, all F) is ignored
+    `control.get_version_info` (empty, all zeros, the panel's placeholder serial number, all F) is ignored
     and `PanelInfo.serial` stays `None`, so it is never used as an identity. On
     hardware the panel reports that placeholder serial. `model` comes from `hw` and
     `firmware` from `SSP`; `mac` stays `None` (the MAC is only in UDP discovery).
