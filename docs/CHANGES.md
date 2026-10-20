@@ -17,7 +17,7 @@
     ceiling (new test files must have none), and only the existing helper
     module may touch private members. Flake8-style file-level noqa headers
     count too. The stale pylint comment in discovery is gone.
-  - Linking (security): an api_link reply with a non-zero ACK byte is now
+  - Linking (security): a link reply with a non-zero ACK byte is now
     logged at WARNING with the ACK byte and payload length only. The decrypted
     reply (which carries the link key and HMAC) is never decoded into or printed
     in any log line.
@@ -56,12 +56,12 @@
       reconnect no longer carries the PIN.
     - Discovery: a unicast `async_discover_host` reply is accepted only from
       the queried address, and the result's `host` is always that address
-      (never the payload's `IPV4_ADDR`). Replies whose `LISTEN_PORT` is not
-      1..65535 (or whose `ENCRYPTED_LISTEN_PORT` is not 0..65535) are ignored and
+      (never the address the reply reports). Replies whose listen port is not
+      1..65535 (or whose encrypted listen port is not 0..65535) are ignored and
       logged at DEBUG without the payload. Broadcast results are kept;
       `E27System` gains `source_host` and `address_mismatch`.
     - Inbound envelope sequence: the session now tracks the real
-      `envelope_seq` (it was never recorded). A non-increasing value logs one
+      inbound frame sequence number (it was never recorded). A non-increasing value logs one
       WARNING per session (later repeats count at DEBUG); frames are not
       dropped. Tracking resets on each new HELLO session.
     - Limits: the linking discovery buffer is capped at 8 KiB (the newest
@@ -84,8 +84,8 @@
     strings with non-ASCII digits (e.g. full-width `"１２３４"`) raise
     `ValueError`. Valid PINs 1..999999 build the same payload as before.
   - Raw pass-through: `async_raw_request` now accepts any JSON value as the
-    verb's value, not only a mapping (e.g. `{"net_dev": {"get_list": 1}}` or
-    `{"net_dev": {"logout": true}}`), and sends it unchanged. Only dict, list,
+    verb's value, not only a mapping (for example a plain number or boolean),
+    and sends it unchanged. Only dict, list,
     str, int, float (finite), bool and None are accepted, by exact type; bytes,
     sets, tuples, NaN/Infinity and other objects raise `Elke27InvalidArgument`
     before sending. Permission still keys only on the exact (domain, verb) pair,
@@ -115,12 +115,12 @@
     state. `V2BarrierState` gains `is_open` (OPEN -> True, CLOSE/CLOSED -> False,
     anything else -> None), `tamper`, `low_batt` and `rssi`; raw `status` is kept.
   - Linking (#49): linking fails when the panel has no free link slots; the
-    api_link reply then carries an error message and no link keys.
+    link reply then carries an error message and no link keys.
     `async_link` now raises the new public `Elke27LinkSlotsFullError`
     (code `link_slots_full`, not transient) with the panel's raw text in
     `panel_error_message` and its `error_code`, if any, in `panel_error_code`,
     instead of a generic protocol error. Any other panel message in a keyless
-    api_link reply is now included in the protocol error text.
+    link reply is now included in the protocol error text.
     `Elke27LinkSlotsFullError` subclasses `Elke27Error`, not
     `Elke27ProtocolError`; callers that caught `Elke27ProtocolError` from
     `async_link` for a full link table must also catch the new error.
@@ -159,17 +159,18 @@
   Panel MAC Discovery, HELLO Link Errors, Session Close (0.3.13)
 
   - New public helper `async_discover_host(host, timeout=3.0)` (E1a, panel MAC
-    from discovery): sends a unicast `{"FIND":"ELKWCID"}` to the host's UDP 2362 on
-    its own socket, never touching a client session, and returns a
-    `DiscoveredPanel` (MAC_ADDR, IPV4_ADDR, ports, NAME, SERIAL) or `None` when no
-    valid reply arrives within the timeout or the host cannot be resolved.
+    from discovery): sends the discovery request directly to the host's
+    discovery port on its own socket, never touching a client session, and
+    returns a `DiscoveredPanel` (MAC, IPv4 address, ports, name and serial from
+    the discovery reply) or `None` when no valid reply arrives within the
+    timeout or the host cannot be resolved.
     `panel_mac` is normalized to 12 uppercase hex characters with no separators.
     Also exported: `normalize_panel_mac(value)`.
 
   - HELLO errors (refs Tester hardware report 2026-10-13): a HELLO reply that
     carries `error_code` is checked before `session_id` is parsed. 11006
-    (`invalid_id`: the client sn is not linked, or its link was revoked) and 11008
-    (`noauth`) now raise `Elke27LinkRequiredError` (new optional attributes
+    (`invalid_id`: the client is not linked, or its link was revoked) and 11008
+    (the session is not authorized) now raise `Elke27LinkRequiredError` (new optional attributes
     `panel_error_code` / `panel_error_message`) so callers start reauth instead of
     retrying. Other codes raise `Elke27ProtocolError` naming the code. Before, the
     reply surfaced as `Malformed hello response JSON: hello.session_id must be an
@@ -186,13 +187,13 @@
   Command Reliability, Fresh Status After Arm/Bypass, Panel Identity (0.3.12)
 
   - Panel identity (E1 follow-up, refs #40): a placeholder serial from
-    `control.get_version_info` (empty, all zeros, `00000001`, all F) is ignored
-    and `PanelInfo.serial` stays `None`, so it is never used as an identity. On
-    hardware the panel reports `sn` "00000001". `model` comes from `hw` and
-    `firmware` from `SSP`; `mac` stays `None` (the MAC is only in UDP discovery).
+    the panel's version info request (empty, all zeros, the fixed placeholder the
+    panel reports on hardware, all F) is ignored and `PanelInfo.serial` stays `None`, so it is never used as an
+    identity. `model` and `firmware` come from the panel's version info; `mac`
+    stays `None` (the MAC is only in the discovery reply).
     The version-info reply is now classified RESPONSE, not UNSOLICITED.
 
-  - Panel identity (E1): after HELLO, `async_connect` sends `control.get_version_info`
+  - Panel identity (E1): after HELLO, `async_connect` sends the panel's version info request
     (fire-and-forget: no reply wait, retry or queue slot). The reply fills `PanelSnapshot.panel` `serial`, `mac` (new on
     `PanelMetaState`), `model` and `firmware`. A send failure, an error reply or
     missing fields never break connect: fields not yet known stay `None`, a
