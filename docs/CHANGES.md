@@ -114,8 +114,8 @@
     `async_refresh_barrier(barrier_id)` does one status read and returns the
     state. `V2BarrierState` gains `is_open` (OPEN -> True, CLOSE/CLOSED -> False,
     anything else -> None), `tamper`, `low_batt` and `rssi`; raw `status` is kept.
-  - Linking (#49): when the panel's client link table is full, api_link
-    replies with an error message ("Not enough space") and no link keys.
+  - Linking (#49): linking fails when the panel has no free link slots; the
+    api_link reply then carries an error message and no link keys.
     `async_link` now raises the new public `Elke27LinkSlotsFullError`
     (code `link_slots_full`, not transient) with the panel's raw text in
     `panel_error_message` and its `error_code`, if any, in `panel_error_code`,
@@ -188,7 +188,7 @@
   - Panel identity (E1 follow-up, refs #40): a placeholder serial from
     `control.get_version_info` (empty, all zeros, `00000001`, all F) is ignored
     and `PanelInfo.serial` stays `None`, so it is never used as an identity. On
-    hardware the panel reports `sn` "00000001". `model` comes from `hw` and
+    hardware the panel reports that placeholder serial. `model` comes from `hw` and
     `firmware` from `SSP`; `mac` stays `None` (the MAC is only in UDP discovery).
     The version-info reply is now classified RESPONSE, not UNSOLICITED.
 
