@@ -756,6 +756,13 @@ class E27Kernel:
             self._retire_connecting(s)
             raise KernelError(f"Session connect failed for {host}:{port}: {e}") from e
 
+        # An early close() (or a newer connect()) can land while this attempt is still
+        # inside Session.connect(). Session.close() is not synchronized with
+        # Session.connect(), so if it runs before the socket is assigned, the attempt
+        # can still finish connecting and start its receiver. That is safe here: the
+        # attempt was retired, so its callbacks are ignored, and the check below closes
+        # it as soon as the attempt returns, so it is never installed and nothing
+        # reaches the app. An ownership guard inside Session itself is future work.
         with self._owner_lock:
             superseded = self._session_gen != gen or self._close_requested_gen >= gen
             if self._connecting is s:
