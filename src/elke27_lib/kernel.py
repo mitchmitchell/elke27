@@ -349,6 +349,13 @@ class E27Kernel:
     _pending_responses: PendingResponseManager
     _closing: bool
     _closed_explicitly: bool
+    # Session ownership (0.3.16): every connect() attempt gets a new generation.
+    # Only the owning session (installed or in-flight connect) may change kernel state.
+    _session_gen: int
+    _connecting: session_mod.Session | None
+    _connecting_gen: int
+    _close_requested_gen: int
+    _owner_lock: threading.Lock
     _sent_events: dict[int, asyncio.Event]
     _sent_event_lock: threading.Lock
     _loop: asyncio.AbstractEventLoop | None
@@ -460,6 +467,11 @@ class E27Kernel:
         self._raw_passthrough_seqs: RawSeqTracker = RawSeqTracker()
         self._closing = False
         self._closed_explicitly = False
+        self._session_gen = 0
+        self._connecting = None
+        self._connecting_gen = 0
+        self._close_requested_gen = 0
+        self._owner_lock = threading.Lock()
         self._sent_events = {}
         self._sent_event_lock = threading.Lock()
         self._confirmed_sent_seqs: set[int] = set()
@@ -668,14 +680,51 @@ class E27Kernel:
         self._keepalive_max_missed = int(cfg.keepalive_max_missed)
         cfg = replace(cfg, keepalive_enabled=False)
 
+        # Ownership: a kernel owns at most one live session. Close any earlier
+        # installed session first, and retire any in-flight attempt by bumping the
+        # generation. A session still reported connected gets its one connected=False;
+        # one already lost (its False was emitted) is closed quietly.
+        if self._session is not None:
+            if self.state.panel.connected:
+                await self.close()
+            else:
+                self._stop_keepalive()
+                with self._owner_lock:
+                    prior = self._session
+                    self._session = None
+                if prior is not None:
+                    with contextlib.suppress(Exception):
+                        await asyncio.to_thread(prior.close)
         self._closed_explicitly = False
         s = session_mod.Session(cfg=cfg, client_identity=client_identity, link_key_hex=link_key_hex)
         s.wire_log_suppress_seqs = self._raw_passthrough_seqs
+        with self._owner_lock:
+            self._session_gen += 1
+            gen = self._session_gen
+            prior_connecting = self._connecting
+            self._connecting = s
+            self._connecting_gen = gen
+        if prior_connecting is not None:
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(prior_connecting.close)
 
         # Wire callbacks before connecting so HELLO path can report, if needed.
-        s.on_message = self._on_message
-        s.on_disconnected = self._on_session_disconnected
-        s.on_idle = self._on_idle
+        # Each callback is bound to this session; the kernel ignores it once the
+        # session no longer owns the kernel.
+        def _on_message_owned(msg: Mapping[str, Any]) -> None:
+            if self._is_owner(s):
+                self._on_message(msg)
+
+        def _on_disconnected_owned(err: Exception | None) -> None:
+            self._on_session_disconnected(err, session=s)
+
+        def _on_idle_owned() -> None:
+            if self._is_owner(s):
+                self._on_idle()
+
+        s.on_message = _on_message_owned
+        s.on_disconnected = _on_disconnected_owned
+        s.on_idle = _on_idle_owned
 
         def _do_connect_sync() -> session_mod.SessionInfo:
             return s.connect()
@@ -701,13 +750,26 @@ class E27Kernel:
                     s.close()
 
             connect_cf.add_done_callback(_close_after_connect)
+            self._retire_connecting(s)
             raise
         except Exception as e:
+            self._retire_connecting(s)
             raise KernelError(f"Session connect failed for {host}:{port}: {e}") from e
 
-        self._session = s
-
+        with self._owner_lock:
+            superseded = self._session_gen != gen or self._close_requested_gen >= gen
+            if self._connecting is s:
+                self._connecting = None
+            if not superseded and s.state == session_mod.SessionState.ACTIVE:
+                # Install only once ACTIVE and still current.
+                self._session = s
+        if superseded:
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(s.close)
+            raise KernelError("Session connect abandoned: kernel was closed or reconnected.")
         if s.state != session_mod.SessionState.ACTIVE:
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(s.close)
             raise KernelError(
                 f"Session connect completed but session.state is {s.state!r}, not ACTIVE."
             )
@@ -780,6 +842,15 @@ class E27Kernel:
             else KernelError("Kernel closed with no active session.")
         )
         if self._session is None:
+            # Close racing connect: retire the in-flight attempt so it is never installed.
+            with self._owner_lock:
+                pending = self._connecting
+                if pending is not None:
+                    self._close_requested_gen = self._connecting_gen
+                    self._connecting = None
+            if pending is not None:
+                with contextlib.suppress(Exception):
+                    await asyncio.to_thread(pending.close)
             self._fail_all_pending_commands(close_exc)
             self._cancel_all_transport_retry_timers()
             return
@@ -787,8 +858,9 @@ class E27Kernel:
         self._fail_all_pending_commands(close_exc)
         self._cancel_all_transport_retry_timers()
 
-        s = self._session
-        self._session = None
+        with self._owner_lock:
+            s = self._session
+            self._session = None
         self._closing = True
         self._closed_explicitly = True
         self.state.panel.connected = False
@@ -1297,10 +1369,27 @@ class E27Kernel:
     def _on_idle(self) -> None:
         self._try_send_next()
 
-    def _on_session_disconnected(self, err: Exception | None) -> None:
+    def _is_owner(self, s: session_mod.Session) -> bool:
+        return s is self._session or s is self._connecting
+
+    def _retire_connecting(self, s: session_mod.Session) -> None:
+        with self._owner_lock:
+            if self._connecting is s:
+                self._connecting = None
+
+    def _on_session_disconnected(
+        self,
+        err: Exception | None,
+        *,
+        session: session_mod.Session | None = None,
+    ) -> None:
         if self._closing:
             return
         if self._closed_explicitly and isinstance(err, session_mod.SessionIOError):
+            return
+        if session is not None and not self._is_owner(session):
+            # Ownership: a session that no longer owns the kernel (superseded,
+            # orphaned by cancel, or closed) must not change kernel state.
             return
         self._log.debug(
             "E27Kernel._on_session_disconnected: session reported disconnect err=%s",
