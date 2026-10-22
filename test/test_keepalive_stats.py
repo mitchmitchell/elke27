@@ -23,8 +23,9 @@ _NO_IDS = re.compile(r"seq|session_id|mac|serial|pin|key|code|\d{6,}", re.IGNORE
 
 
 class _FakeSession:
-    def __init__(self, answer: bool) -> None:
+    def __init__(self, answer: bool, rescue: bool = False) -> None:
         self.answer = answer
+        self.rescue = rescue
         self.state = session_mod.SessionState.DISCONNECTED
         self.info = session_mod.SessionInfo(
             session_id=1, session_key_hex="00", session_hmac_hex="11"
@@ -51,6 +52,11 @@ class _FakeSession:
             on_sent(time.monotonic())
         if self.answer and self.on_message is not None:
             self.on_message(dict(msg))
+        elif self.rescue and self.on_message is not None:
+            # No reply to the probe, but some other (unsolicited) message
+            # arrives shortly after it was sent.
+            handler = self.on_message
+            asyncio.get_running_loop().call_later(0.01, handler, {"seq": 0})
 
     def handle_disconnect(self, err: Exception | None) -> None:
         self.disconnects.append(err)
@@ -61,12 +67,12 @@ class _FakeSession:
 
 
 def _kernel(
-    monkeypatch: pytest.MonkeyPatch, *, answer: bool
+    monkeypatch: pytest.MonkeyPatch, *, answer: bool, rescue: bool = False
 ) -> tuple[E27Kernel, list[_FakeSession]]:
     made: list[_FakeSession] = []
 
     def _factory(**_kwargs: object) -> _FakeSession:
-        made.append(_FakeSession(answer))
+        made.append(_FakeSession(answer, rescue))
         return made[-1]
 
     monkeypatch.setattr(session_mod, "Session", _factory)
@@ -143,3 +149,25 @@ async def test_unanswered_probe_counts_miss_and_logs(
     msgs = [r.getMessage() for r in caplog.records]
     assert any("keepalive missed (missed=1 of 1)" in m for m in msgs)
     await kernel.close()
+
+
+@pytest.mark.asyncio
+async def test_unanswered_probe_rescued_by_later_traffic(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    kernel, made = _kernel(monkeypatch, answer=False, rescue=True)
+    with caplog.at_level(logging.DEBUG, logger="elke27_lib.kernel"):
+        await kernel.connect(KEYS, session_config=_cfg(), client_identity=IDENTITY)
+        await _wait(lambda: (kernel.keepalive_stats["rescued"] or 0) >= 1)
+        stats = kernel.keepalive_stats
+        assert made[0].disconnects == []
+        await kernel.close()
+    assert stats["probes_sent"] >= 1
+    assert stats["replies"] == 0
+    assert stats["misses"] == 0
+    assert stats["consecutive_missed"] == 0
+    rescued = [r for r in caplog.records if "later traffic kept the link" in r.getMessage()]
+    assert rescued
+    for r in rescued:
+        assert r.levelno == logging.DEBUG
+        assert not _NO_IDS.search(r.getMessage())
