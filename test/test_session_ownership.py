@@ -163,3 +163,90 @@ async def test_superseded_in_flight_connect_is_closed(setup: Any) -> None:
     assert sessions[0].close_count >= 1
     assert kernel.session is not None
     assert events == [True]
+
+
+async def _wait_sessions(sessions: list[_GatedSession], n: int) -> None:
+    for _ in range(400):
+        if len(sessions) >= n and sessions[n - 1].started.is_set():
+            return
+        await asyncio.sleep(0.005)
+    raise AssertionError("connect never started")
+
+
+@pytest.mark.asyncio
+async def test_superseded_mid_hello_callbacks_are_ignored(setup: Any) -> None:
+    """Race (a): two concurrent connects; the first is superseded while still connecting."""
+    kernel, sessions, gates, events = setup
+    gate1, gate2 = threading.Event(), threading.Event()
+    gates.extend([gate1, gate2])
+    first = asyncio.create_task(_connect(kernel))
+    await _wait_sessions(sessions, 1)
+    second = asyncio.create_task(_connect(kernel))
+    await _wait_sessions(sessions, 2)
+    # The superseded attempt reports from its receiver thread mid-connect.
+    t = threading.Thread(
+        target=sessions[0].on_disconnected,
+        args=(session_mod.SessionProtocolError("late (fake)"),),
+    )
+    t.start()
+    t.join(5)
+    sessions[0].on_message({"seq": 0})
+    gate1.set()
+    gate2.set()
+    await second
+    with pytest.raises(KernelError):
+        await first
+    assert sessions[0].close_count >= 1
+    assert sessions[1].close_count == 0
+    assert kernel.session is not None
+    assert events == [True]
+    assert kernel.state.panel.connected
+
+
+@pytest.mark.asyncio
+async def test_close_during_connect_does_not_block_next_in_flight_connect(setup: Any) -> None:
+    """Race (b): the close-during-connect mark must not retire the next generation."""
+    kernel, sessions, gates, events = setup
+    gate1, gate2 = threading.Event(), threading.Event()
+    gates.extend([gate1, gate2])
+    first = asyncio.create_task(_connect(kernel))
+    await _wait_sessions(sessions, 1)
+    await kernel.close()
+    second = asyncio.create_task(_connect(kernel))
+    await _wait_sessions(sessions, 2)
+    gate1.set()
+    with pytest.raises(KernelError, match="abandoned"):
+        await first
+    gate2.set()
+    assert await second == session_mod.SessionState.ACTIVE
+    assert kernel.session is not None
+    assert sessions[1].close_count == 0
+    assert events == [True]
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_connect_then_reconnect_ignores_orphan(setup: Any) -> None:
+    """Race (c): a cancelled attempt's session is orphaned; its callbacks change nothing."""
+    kernel, sessions, gates, events = setup
+    gate = threading.Event()
+    gates.append(gate)
+    first = asyncio.create_task(_connect(kernel))
+    await _wait_sessions(sessions, 1)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    await _connect(kernel)
+    gate.set()
+    orphan, current = sessions
+    for _ in range(400):
+        if orphan.close_count:
+            break
+        await asyncio.sleep(0.005)
+    assert orphan.close_count >= 1
+    orphan.on_disconnected(session_mod.SessionIOError("orphan (fake)"))
+    orphan.on_message({"seq": 0})
+    orphan.on_idle()
+    assert kernel.session is not None
+    assert current.close_count == 0
+    assert events == [True]
+    assert kernel.state.panel.connected
