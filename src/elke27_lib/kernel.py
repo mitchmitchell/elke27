@@ -1370,7 +1370,10 @@ class E27Kernel:
         self._try_send_next()
 
     def _is_owner(self, s: session_mod.Session) -> bool:
-        return s is self._session or s is self._connecting
+        # Called from the session's receiver thread; read both slots under the
+        # lock so a concurrent connect()/close() hand-over is seen atomically.
+        with self._owner_lock:
+            return s is self._session or s is self._connecting
 
     def _retire_connecting(self, s: session_mod.Session) -> None:
         with self._owner_lock:
