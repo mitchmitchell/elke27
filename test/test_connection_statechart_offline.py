@@ -341,8 +341,8 @@ async def test_o7a_hello_refusal_false_is_flagged(
 
 @pytest.mark.xfail(
     raises=AssertionError,
-    reason="#77: plan O7 pair invariant; a non-refusal HELLO failure still emits an "
-    "unflagged connected=False with no prior connected=True (needs its own issue)",
+    reason="#80: plan O7 pair invariant; a non-refusal HELLO failure still emits an "
+    "unflagged connected=False with no prior connected=True",
     strict=True,
 )
 @pytest.mark.asyncio
