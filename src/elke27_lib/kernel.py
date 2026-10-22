@@ -1000,15 +1000,6 @@ class E27Kernel:
             self._log.debug("E27 keepalive probe sent")
             try:
                 await future
-                rtt = max(0.0, self.now() - sent_at)
-                stats["replies"] = int(stats["replies"] or 0) + 1
-                stats["last_round_trip_s"] = rtt
-                self._log.debug(
-                    "E27 keepalive round-trip ok in %.3fs (replies=%d, missed=0)",
-                    rtt,
-                    stats["replies"],
-                )
-                return True
             except E27Timeout:
                 # Info, not warning: if this means the link is dead, the client
                 # logs the single "Panel connection lost" warning.
@@ -1032,6 +1023,17 @@ class E27Kernel:
                     exc_info=True,
                 )
                 return self._last_rx_at > sent_at
+            # Outside the try: a bug here should surface, not be logged as a
+            # failed keepalive check.
+            rtt = max(0.0, self.now() - sent_at)
+            stats["replies"] = int(stats["replies"] or 0) + 1
+            stats["last_round_trip_s"] = rtt
+            self._log.debug(
+                "E27 keepalive round-trip ok in %.3fs (replies=%d, missed=0)",
+                rtt,
+                stats["replies"],
+            )
+            return True
         finally:
             self._keepalive_inflight = False
 
