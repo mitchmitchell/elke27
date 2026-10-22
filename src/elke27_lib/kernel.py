@@ -749,13 +749,22 @@ class E27Kernel:
         # attempt was retired, so its callbacks are ignored, and the check below closes
         # it as soon as the attempt returns, so it is never installed and nothing
         # reaches the app. An ownership guard inside Session itself is future work.
+        displaced: session_mod.Session | None = None
         with self._owner_lock:
             superseded = self._session_gen != gen or self._close_requested_gen >= gen
             if self._connecting is s:
                 self._connecting = None
             if not superseded and s.state == session_mod.SessionState.ACTIVE:
-                # Install only once ACTIVE and still current.
+                # Install only once ACTIVE and still current. A concurrent connect()
+                # may have installed its own session while this one was awaiting
+                # the prior close; that session is no longer current, so close it
+                # rather than leave it logged in.
+                if self._session is not None and self._session is not s:
+                    displaced = self._session
                 self._session = s
+        if displaced is not None:
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(displaced.close)
         if superseded:
             with contextlib.suppress(Exception):
                 await asyncio.to_thread(s.close)

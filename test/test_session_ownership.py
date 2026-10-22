@@ -250,3 +250,38 @@ async def test_cancel_during_connect_then_reconnect_ignores_orphan(setup: Any) -
     assert current.close_count == 0
     assert events == [True]
     assert kernel.state.panel.connected
+
+
+@pytest.mark.asyncio
+async def test_concurrent_connects_leave_one_live_session(setup: Any) -> None:
+    """Connect B is stuck closing the lost prior session while connect A installs.
+
+    When B installs afterwards, A's session must be closed, not orphaned.
+    """
+    kernel, sessions, _gates, _events = setup
+    await _connect(kernel)
+    prior = sessions[0]
+    prior.on_disconnected(session_mod.SessionIOError("link lost (fake)"))
+    closing = threading.Event()
+    release = threading.Event()
+    real_close = prior.close
+
+    def _slow_close() -> None:
+        closing.set()
+        release.wait(5)
+        real_close()
+
+    prior.close = _slow_close  # type: ignore[method-assign]
+    task_b = asyncio.create_task(_connect(kernel))
+    for _ in range(400):
+        if closing.is_set():
+            break
+        await asyncio.sleep(0.005)
+    assert closing.is_set()
+    await _connect(kernel)  # A: installs while B is still inside the prior close
+    release.set()
+    await task_b
+    live = [s for s in sessions if s.close_count == 0]
+    assert len(live) == 1
+    assert kernel.session is live[0]
+    await kernel.close()
