@@ -10,7 +10,9 @@ Cases that need the session-ownership fix are marked xfail until it lands.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
+import subprocess
 import threading
 import time
 from collections.abc import Callable
@@ -21,7 +23,15 @@ import pytest
 from elke27_lib import linking
 from elke27_lib import session as session_mod
 from elke27_lib.events import ConnectionStateChanged, Event
+from elke27_lib.hello import SessionKeys
 from elke27_lib.kernel import E27Kernel, KernelError
+from test.helpers.reauth_panel import (
+    _authenticate,
+    _connected,
+    _drop_and_reconnect,
+    _FakePanel,
+)
+from test.helpers.reauth_panel import _FakeSession as _ReplyingSession
 
 KEYS = linking.E27LinkKeys("aa", "bb", "cc")
 IDENTITY = linking.E27Identity("mn", "sn", "fw", "hw", "os")
@@ -35,7 +45,7 @@ NEEDS_OWNERSHIP_FIX = pytest.mark.xfail(
 
 
 class _Fake:
-    """A controllable session. ``mode``: ok | oserror | io | proto | not_active."""
+    """A controllable session. ``mode``: ok | oserror | io | refuse | proto | not_active."""
 
     def __init__(self, registry: _Registry) -> None:
         self.registry = registry
@@ -66,6 +76,13 @@ class _Fake:
             raise ConnectionRefusedError("connect refused (fake)")
         if self.mode == "io":
             raise session_mod.SessionIOError("connect refused (fake)")
+        if self.mode == "refuse":
+            from elke27_lib.errors import E27HelloNoSession
+
+            refused = E27HelloNoSession(("session_id",))
+            if self.on_disconnected is not None:
+                self.on_disconnected(refused)
+            raise session_mod.SessionProtocolError(str(refused)) from refused
         if self.mode == "proto":
             err = session_mod.SessionProtocolError("hello failed (fake)")
             if self.on_disconnected is not None:
@@ -194,6 +211,22 @@ async def test_o1_transient_connect_failure_retries_without_delay(
     assert time.monotonic() - started < 1.0
 
 
+@pytest.mark.asyncio
+async def test_o1_both_attempts_are_logged(
+    reg: _Registry, caplog: pytest.LogCaptureFixture
+) -> None:
+    """O1: each of the two attempts leaves its own log line."""
+    from elke27_lib.client import Elke27Client, LinkKeys
+
+    reg.modes = ["oserror", "oserror"]
+    caplog.set_level(logging.DEBUG, logger="elke27_lib")
+    with pytest.raises(Exception):  # noqa: B017 - public error type varies by mapping
+        await Elke27Client().async_connect("198.51.100.1", 1, LinkKeys("aa", "bb", "cc"))
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("Connect failed (attempt 1/2)" in m for m in msgs)
+    assert any("Connect failed (attempt 2/2)" in m for m in msgs)
+
+
 # ------------------------------------------------------------------ O2
 
 
@@ -293,18 +326,34 @@ async def test_o6_not_active_session_is_never_installed(
 
 
 @pytest.mark.asyncio
-async def test_o7_hello_failure_never_reports_unflagged_loss(
+async def test_o7a_hello_refusal_false_is_flagged(
     reg: _Registry, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """O7: a failed HELLO never yields connected=True; any False it reports is not a
-    plain 'lost' event without a prior True unless flagged as a refusal. A protocol
-    failure (not a refusal) currently reports one unflagged False: documented below."""
+    """O7: a refused HELLO never yields connected=True, and its connected=False
+    (no prior True) is flagged as a refusal, so it is not a 'lost' event."""
+    kernel, events = _kernel(monkeypatch)
+    reg.modes = ["refuse"]
+    with pytest.raises(KernelError):
+        await _connect(kernel)
+    assert not any(e.connected for e in events)
+    assert events and all(e.hello_refused for e in events)
+
+
+@pytest.mark.xfail(
+    raises=AssertionError,
+    reason="#77: plan O7 pair invariant; a non-refusal HELLO failure still emits an "
+    "unflagged connected=False with no prior connected=True (needs its own issue)",
+    strict=True,
+)
+@pytest.mark.asyncio
+async def test_o7b_hello_protocol_failure_emits_no_unflagged_false(
+    reg: _Registry, monkeypatch: pytest.MonkeyPatch
+) -> None:
     kernel, events = _kernel(monkeypatch)
     reg.modes = ["proto"]
     with pytest.raises(KernelError):
         await _connect(kernel)
-    assert not any(e.connected for e in events)
-    assert len([e for e in events if not e.connected]) <= 1
+    assert _pairs_ok(events)
 
 
 @pytest.mark.asyncio
@@ -349,7 +398,7 @@ async def test_o9b_protocol_error_from_closed_session_ignored(
 
 
 _KEEPALIVE_SEAM = (
-    "needs an injectable keepalive clock/reply-delay seam; existing coverage: "
+    "#79: needs an injectable keepalive clock/reply-delay seam; existing coverage: "
     "test_dead_link_detection.py ({})"
 )
 
@@ -376,15 +425,71 @@ def test_o13_keepalive_two_misses() -> None: ...
 def test_o14_keepalive_traffic_rescue() -> None: ...
 
 
-@pytest.mark.skip(reason=_KEEPALIVE_SEAM.format("test_keepalive_restarts_on_fresh_event_loop"))
+@pytest.mark.skip(
+    reason=_KEEPALIVE_SEAM.format("indirect only: test_keepalive_restarts_on_fresh_event_loop")
+)
 def test_o15_keepalive_task_cleared_after_expiry() -> None: ...
 
 
-@pytest.mark.skip(
-    reason="session-level receiver race; existing coverage: "
-    "test_dead_link_detection.py::test_deliberate_close_logs_disconnect_at_debug"
-)
-def test_o16_session_close_vs_receiver_wake() -> None: ...
+class _WakeOnCloseSocket:
+    """recv blocks until the socket is closed, then fails like a real one."""
+
+    def __init__(self) -> None:
+        self.closed = threading.Event()
+
+    def settimeout(self, _t: float | None) -> None:
+        return None
+
+    def setsockopt(self, *_a: object) -> None:
+        return None
+
+    def connect(self, _addr: object) -> None:
+        return None
+
+    def recv(self, _n: int) -> bytes:
+        if self.closed.wait(0.05):
+            raise OSError("socket closed (fake)")
+        raise TimeoutError
+
+    def sendall(self, _data: bytes) -> None:
+        return None
+
+    def shutdown(self, _how: int) -> None:
+        self.closed.set()
+
+    def close(self) -> None:
+        self.closed.set()
+
+
+def test_o16_intentional_close_wakes_receiver_without_lost(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """O16: a real Session's receiver, woken by an intentional close (its blocked
+    recv fails), exits without reporting a disconnect."""
+    sock = _WakeOnCloseSocket()
+    monkeypatch.setattr(session_mod.socket, "socket", lambda *_a, **_k: sock)
+    monkeypatch.setattr(
+        session_mod,
+        "perform_hello",
+        lambda **_k: SessionKeys(
+            session_id=1, session_key_hex=bytes(range(16)).hex(), hmac_key_hex="00" * 32
+        ),
+    )
+    s = session_mod.Session(
+        session_mod.SessionConfig(host="198.51.100.1", auto_receive=False),
+        client_identity=linking.E27Identity("1", "2", "0", "0", "0"),
+        link_key_hex="00" * 16,
+    )
+    s.connect()
+    lost: list[Exception | None] = []
+    s.on_disconnected = lost.append
+    s.start_auto_receive()
+    time.sleep(0.05)
+    s.close()
+    time.sleep(0.3)  # let the woken receiver run to exit
+    assert sock.closed.is_set()
+    assert lost == []
+    assert s.state == session_mod.SessionState.DISCONNECTED
 
 
 # ------------------------------------------------------------------ O17
@@ -415,20 +520,74 @@ async def test_o17_link_loss_racing_close_emits_one_false(
 
 
 @pytest.mark.asyncio
-async def test_o18_wait_ready_times_out_without_bootstrap() -> None:
-    from elke27_lib.client import Elke27Client
+async def test_o18_connected_but_bootstrap_never_completes(reg: _Registry) -> None:
+    """O18: connected, but the panel never answers bootstrap: wait_ready returns
+    False at its timeout, the client stays not-ready, and nothing hangs."""
+    from elke27_lib.client import Elke27Client, LinkKeys
 
     client = Elke27Client()
+    await asyncio.wait_for(
+        client.async_connect("198.51.100.1", 1, LinkKeys("aa", "bb", "cc")), timeout=2.0
+    )
+    assert reg.live_count() == 1
+    assert reg.sessions[0].sent, "bootstrap requests were sent"
     started = time.monotonic()
-    assert await client.wait_ready(0.05) is False
+    assert await client.wait_ready(0.1) is False
     assert time.monotonic() - started < 1.0
+    assert client.ready is False
+    await asyncio.wait_for(client.async_disconnect(), timeout=2.0)
 
 
-@pytest.mark.skip(
-    reason="re-auth ordering is covered end-to-end by test_security_round1.py "
-    "(test_inflight_reauth_never_restores_pin, test_opt_in_reauth_*)"
-)
-def test_o19_command_before_reauth_reply() -> None: ...
+@pytest.fixture
+def replying_panel(monkeypatch: pytest.MonkeyPatch) -> _FakePanel:
+    fake = _FakePanel()
+
+    def _factory(*, cfg: object, client_identity: object, link_key_hex: str) -> Any:
+        del cfg, client_identity, link_key_hex
+        return _ReplyingSession(fake)
+
+    monkeypatch.setattr(session_mod, "Session", _factory)
+    return fake
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("auth", ["hold", "refuse"])
+async def test_o19_command_issued_before_reauth_reply(
+    replying_panel: _FakePanel, auth: str
+) -> None:
+    """O19: after a reconnect with opt-in re-auth, a command issued before the
+    re-auth reply never hangs. If the panel accepts, the command succeeds once
+    re-auth lands; if it refuses, the command gets a clear not-authorized error."""
+    panel = replying_panel
+    client, clock = await _connected(reauth=True, request_timeout_s=2.0)
+    assert await _authenticate(client) is True
+    authed = {"v": False}
+
+    def _status(msg: dict[str, Any]) -> dict[str, Any]:
+        code = 0 if authed["v"] else 11008  # panel: not authorized until re-auth
+        return {"seq": msg["seq"], "area": {"get_status": {"area_id": 1, "error_code": code}}}
+
+    panel.overrides[("area", "get_status")] = _status
+    panel.auth = auth
+    await _drop_and_reconnect(client, panel, clock)
+    if auth == "hold":
+        await _until(lambda: bool(panel.held))
+    started = time.monotonic()
+    task = asyncio.create_task(client.async_execute("area_get_status", area_id=1))
+    await asyncio.sleep(0.05)
+    if auth == "hold":
+        authed["v"] = True
+        panel.release_held()
+    result = await asyncio.wait_for(task, timeout=3.0)
+    assert time.monotonic() - started < 1.0
+    if auth == "hold":
+        assert result.ok
+        assert client.authenticated is True
+    else:
+        assert not result.ok
+        assert "not authorized" in str(result.error)
+        assert client.authenticated is False
+    await client.async_disconnect()
 
 
 # ------------------------------------------------------------------ O20
@@ -476,26 +635,61 @@ async def test_o21_callbacks_from_non_current_session_are_noops(
 # ------------------------------------------------------------------ O22
 
 
+# O22: expected TLC outcome per config. The Teardown and Keepalive specs have
+# terminal states (a run ends once its events are spent), which TLC reports as
+# "Deadlock reached" by default. That is not a bug in the modelled code, so those
+# specs run with -deadlock; Ownership runs with deadlock checking on.
+# FIXED=FALSE configs must still FAIL by invariant (1a/1b/1c/2) so a spec edit that
+# hides the bugs is caught. Keepalive: 3a/3e pass, 3c/3d fail by design (policy),
+# 3b (D=T tie) fails as a discrete-time model artefact.
+_TLC_EXPECT: dict[str, bool] = {
+    "Own_AtMostOneLiveWired_TRUE": True,
+    "Own_NoForeignCallbackEffect_TRUE": True,
+    "Own_NoLiveAfterClose_TRUE": True,
+    "Own_AtMostOneLiveWired_FALSE": False,
+    "Own_NoForeignCallbackEffect_FALSE": False,
+    "Own_NoLiveAfterClose_FALSE": False,
+    "Teardown_TRUE": True,
+    "Teardown_FALSE": False,
+    "KA_A_DltT": True,
+    "KA_B_DeqT": False,
+    "KA_C_DgtT": False,
+    "KA_D_DgtT_M2": False,
+    "KA_E_DgtT_traffic": True,
+}
+_TLC_INVARIANT_RC = 12  # TLC exit code for an invariant violation
+
+
+def _tlc_cmd() -> list[str]:
+    jar = os.environ.get("ELKE27_TLC_JAR")
+    return ["java", "-cp", jar, "tlc2.TLC"] if jar else ["tlc"]
+
+
 @pytest.mark.skipif(
     not os.environ.get("ELKE27_TLC_SPECS"),
-    reason="TLC model-check gate is optional; set ELKE27_TLC_SPECS to a spec dir to run",
+    reason="TLC model-check gate is optional; set ELKE27_TLC_SPECS (and ELKE27_TLC_JAR "
+    "or put tlc on PATH) to run",
 )
-def test_o22_tlc_regression_gate() -> None:
-    import subprocess
-
+@pytest.mark.parametrize("name", sorted(_TLC_EXPECT))
+def test_o22_tlc_regression_gate(name: str) -> None:
     spec_dir = os.environ["ELKE27_TLC_SPECS"]
-    for name in (
-        "Own_AtMostOneLiveWired_TRUE",
-        "Own_NoForeignCallbackEffect_TRUE",
-        "Own_NoLiveAfterClose_TRUE",
-        "Teardown_TRUE",
-    ):
-        module = "Ownership" if name.startswith("Own_") else "Teardown"
-        result = subprocess.run(  # noqa: S603 - fixed argv, test-only
-            ["tlc", "-config", f"{name}.cfg", f"{module}.tla"],
-            cwd=spec_dir,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert result.returncode == 0, name
+    if name.startswith("Own_"):
+        module, flags = "Ownership", []
+    elif name.startswith("Teardown"):
+        module, flags = "Teardown", ["-deadlock"]
+    else:
+        module, flags = "Keepalive", ["-deadlock"]
+    result = subprocess.run(
+        [*_tlc_cmd(), *flags, "-config", f"{name}.cfg", f"{module}.tla"],
+        cwd=spec_dir,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=600,
+    )
+    if _TLC_EXPECT[name]:
+        assert result.returncode == 0, f"{name}: rc={result.returncode}"
+        assert "No error has been found" in result.stdout
+    else:
+        assert result.returncode == _TLC_INVARIANT_RC, f"{name}: rc={result.returncode}"
+        assert "is violated" in result.stdout
