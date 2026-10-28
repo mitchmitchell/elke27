@@ -11,7 +11,7 @@ from typing import Any, cast
 
 import pytest
 
-from elke27_lib import Elke27PanelError, Elke27ProtocolError
+from elke27_lib import Elke27CodeRejectedError, Elke27PanelError, Elke27ProtocolError
 from elke27_lib import client as client_mod
 from elke27_lib import session as session_mod
 from elke27_lib.client import ArmMode, Elke27Client
@@ -123,7 +123,7 @@ async def test_arm_panel_error_code_surfaces_reason(code: int, reason: str) -> N
 @pytest.mark.asyncio
 async def test_disarm_panel_error_code_surfaces_reason() -> None:
     client, session = _make_client()
-    with pytest.raises(Elke27PanelError, match="invalid user code"):
+    with pytest.raises(Elke27CodeRejectedError, match="invalid user code"):
         await _reply(
             client,
             session,
@@ -185,7 +185,7 @@ def test_snapshot_area_ready_from_ready_status() -> None:
 async def test_arm_wrong_code_11004_reason() -> None:
     """The panel answers a wrong user code on arm with 11004."""
     client, session = _make_client()
-    with pytest.raises(Elke27PanelError) as exc_info:
+    with pytest.raises(Elke27CodeRejectedError) as exc_info:
         await _reply(
             client,
             session,
@@ -236,7 +236,7 @@ async def test_zone_bypass_11008_reaches_caller_as_not_authorized() -> None:
     """The 11008 reply resolves the pending request and maps to 'not authorized'."""
     client, session = _make_client()
     cast(Any, client)._connected = True
-    with pytest.raises(Elke27PanelError) as exc_info:
+    with pytest.raises(Elke27CodeRejectedError) as exc_info:
         await _reply(
             client,
             session,
