@@ -1,5 +1,9 @@
   Security Hardening, Barriers, Link Slots, Raw Pass-through (0.3.15)
 
+  - Panel user-code rejections (error codes 11004, 11008, and 11037) now raise
+    the new public ``Elke27CodeRejectedError``, a subclass of
+    ``Elke27PanelError`` with the same ``panel_error_code`` and ``reason``.
+    Other panel error codes still raise ``Elke27PanelError`` (#76).
   - Dev/CI only (no library change): repeat review findings are now checks.
     Ruff enables `SLF001` (private member access; legacy test files are listed
     in per-file-ignores and the list may only shrink) and `BLE001` (blind

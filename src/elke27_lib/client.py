@@ -94,6 +94,7 @@ from .errors import (
     Elke27LinkRequiredError,
     Elke27LinkSlotsFullError,
     Elke27PanelError,
+    panel_error_from_code,
     Elke27PermissionError,
     Elke27PinRequiredError,
     Elke27TimeoutError,
@@ -815,7 +816,7 @@ class Elke27Client:
             reason,
             panel_error_code,
         )
-        return Elke27PanelError(panel_error_code, reason)
+        return panel_error_from_code(panel_error_code, reason)
 
     def _request_max_transport_retries(self) -> int:
         return int(getattr(self._kernel, "_request_max_retries", 0))
@@ -939,7 +940,7 @@ class Elke27Client:
             code = int(PanelErrorCode.ELKERR_NOAUTH)
             reason = panel_error_reason(code)
             self._log.warning("Panel rejected the request: %s (error %s)", reason, code)
-            raise Elke27PanelError(code, reason) from None
+            raise panel_error_from_code(code, reason) from None
         if isinstance(err, E27PanelErrorResponse):
             reason = panel_error_reason(err.panel_error_code)
             self._log.warning(
@@ -948,7 +949,7 @@ class Elke27Client:
                 reason,
                 err.panel_error_code,
             )
-            raise Elke27PanelError(err.panel_error_code, reason) from None
+            raise panel_error_from_code(err.panel_error_code, reason) from None
         if isinstance(err, E27ProvisioningRequired):
             raise _link_required_from(err) from None
         if isinstance(err, PanelNotDisarmedError):
@@ -2852,7 +2853,7 @@ class Elke27Client:
                 error_code = self._extract_error_code(result.data, (domain, verb))
                 if error_code is not None:
                     reason = panel_error_reason(error_code)
-                    return _err(Elke27PanelError(error_code, reason))
+                    return _err(panel_error_from_code(error_code, reason))
                 outcome = "ok"
             elif result.error is not None:
                 outcome = type(result.error).__name__

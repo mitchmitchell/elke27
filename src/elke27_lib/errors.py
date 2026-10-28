@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING
 
+from .const import E27ErrorCode as PanelErrorCode
+
 if TYPE_CHECKING:
     from typing_extensions import override
 else:
@@ -738,6 +740,32 @@ class Elke27PanelError(Elke27ProtocolError):
         self.code = "panel_error"
         self.panel_error_code: int = panel_error_code
         self.reason: str = reason
+
+
+CODE_REJECTED_PANEL_ERROR_CODES: frozenset[int] = frozenset(
+    {
+        int(PanelErrorCode.ELKERR_INVALID_PARAM),
+        int(PanelErrorCode.ELKERR_NOAUTH),
+        int(PanelErrorCode.ELKERR_INVALID_PIN),
+    }
+)
+
+
+class Elke27CodeRejectedError(Elke27PanelError):
+    """The panel refused a command because the user code was wrong or not authorized.
+
+    Subclass of ``Elke27PanelError`` for panel error codes 11004, 11008, and 11037.
+    ``panel_error_code`` and ``reason`` are unchanged; use ``isinstance`` instead of
+    comparing error numbers in integrations.
+    """
+
+
+def panel_error_from_code(panel_error_code: int, reason: str) -> Elke27PanelError:
+    """Build the public panel error for a non-zero panel ``error_code``."""
+    code = int(panel_error_code)
+    if code in CODE_REJECTED_PANEL_ERROR_CODES:
+        return Elke27CodeRejectedError(code, reason)
+    return Elke27PanelError(code, reason)
 
 
 class E27PanelErrorResponse(E27Error):
