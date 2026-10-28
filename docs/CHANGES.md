@@ -1,9 +1,15 @@
+  Code-Rejected Error Type (0.3.16)
+
+  - When a command that carried a user code is refused with panel error 11004,
+    11008, or 11037, the library now raises the new public
+    ``Elke27CodeRejectedError`` (a subclass of ``Elke27PanelError`` with the
+    same ``panel_error_code`` and ``reason``). Panel 11037 is always mapped to
+    that type; 11004 and 11008 only when the request included a user code
+    (session auth failures without a code stay ``Elke27PanelError``). Other
+    panel error codes are unchanged (#76).
+
   Security Hardening, Barriers, Link Slots, Raw Pass-through (0.3.15)
 
-  - Panel user-code rejections (error codes 11004, 11008, and 11037) now raise
-    the new public ``Elke27CodeRejectedError``, a subclass of
-    ``Elke27PanelError`` with the same ``panel_error_code`` and ``reason``.
-    Other panel error codes still raise ``Elke27PanelError`` (#76).
   - Dev/CI only (no library change): repeat review findings are now checks.
     Ruff enables `SLF001` (private member access; legacy test files are listed
     in per-file-ignores and the list may only shrink) and `BLE001` (blind

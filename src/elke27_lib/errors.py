@@ -754,16 +754,24 @@ CODE_REJECTED_PANEL_ERROR_CODES: frozenset[int] = frozenset(
 class Elke27CodeRejectedError(Elke27PanelError):
     """The panel refused a command because the user code was wrong or not authorized.
 
-    Subclass of ``Elke27PanelError`` for panel error codes 11004, 11008, and 11037.
+    Subclass of ``Elke27PanelError`` when the request carried a user code and the
+    panel answered with 11004 or 11008, or for 11037 in any case.
     ``panel_error_code`` and ``reason`` are unchanged; use ``isinstance`` instead of
     comparing error numbers in integrations.
     """
 
 
-def panel_error_from_code(panel_error_code: int, reason: str) -> Elke27PanelError:
+def panel_error_from_code(
+    panel_error_code: int,
+    reason: str,
+    *,
+    user_code_sent: bool = False,
+) -> Elke27PanelError:
     """Build the public panel error for a non-zero panel ``error_code``."""
     code = int(panel_error_code)
-    if code in CODE_REJECTED_PANEL_ERROR_CODES:
+    if code == int(PanelErrorCode.ELKERR_INVALID_PIN):
+        return Elke27CodeRejectedError(code, reason)
+    if user_code_sent and code in CODE_REJECTED_PANEL_ERROR_CODES:
         return Elke27CodeRejectedError(code, reason)
     return Elke27PanelError(code, reason)
 
