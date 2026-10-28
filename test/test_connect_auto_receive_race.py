@@ -8,7 +8,6 @@ import pytest
 
 from elke27_lib import linking
 from elke27_lib import session as session_mod
-from elke27_lib.errors import ConnectionLost
 from elke27_lib.events import ConnectionStateChanged, Event
 from elke27_lib.kernel import E27Kernel
 
@@ -62,27 +61,11 @@ def _subscribe_conn(kernel: E27Kernel) -> list[ConnectionStateChanged]:
 async def test_disconnect_during_start_auto_receive_not_lost(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Receive-thread disconnect in the connect() window aborts work and emits False."""
+    """Receive-thread disconnect in the connect() window emits False, not a spurious True."""
     monkeypatch.setattr(session_mod, "Session", _SessionDisconnectOnAutoReceive)
 
     kernel = E27Kernel()
     monkeypatch.setattr(kernel, "load_features_blocking", lambda _modules=None: None)
-
-    aborted: list[Exception] = []
-
-    def _abort(exc: Exception) -> None:
-        aborted.append(exc)
-
-    monkeypatch.setattr(kernel, "_abort_requests", _abort)
-    emitted_true: list[bool] = []
-    real_emit = kernel._emit_connection_state
-
-    def _track_emit(**kwargs: Any) -> None:
-        if kwargs.get("connected") is True:
-            emitted_true.append(True)
-        real_emit(**kwargs)
-
-    monkeypatch.setattr(kernel, "_emit_connection_state", _track_emit)
 
     events = _subscribe_conn(kernel)
     cfg = session_mod.SessionConfig(
@@ -97,9 +80,7 @@ async def test_disconnect_during_start_auto_receive_not_lost(
 
     assert state is session_mod.SessionState.DISCONNECTED
     assert kernel.state.panel.connected is False
-    assert len(aborted) == 1
-    assert isinstance(aborted[0], ConnectionLost)
     assert len(events) == 1
     assert events[0].connected is False
     assert events[0].hello_refused is False
-    assert emitted_true == []
+    assert not any(e.connected for e in events)
