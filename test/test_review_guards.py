@@ -149,7 +149,7 @@ def _helper_modules() -> list[Path]:
 
 # Helper modules (exempt from SLF001 via test/helpers/*) that touch private members.
 # New helpers use the public API. Remove an entry when its module is clean.
-LEGACY_PRIVATE_HELPERS = {"test/helpers/internal.py"}
+LEGACY_PRIVATE_HELPERS = {"test/helpers/internal.py", "test/helpers/keepalive_seam.py"}
 
 
 def test_private_access_in_helpers_only_in_legacy_modules() -> None:

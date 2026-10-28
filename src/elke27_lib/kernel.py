@@ -32,7 +32,7 @@ import socket
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import Enum
 from typing import (
@@ -162,6 +162,18 @@ def _queued_request_is_keepalive(item: _QueuedRequest) -> bool:
     if item.domain == "system" and item.name == "r_u_alive":
         return True
     return item.expected_route == ("system", "r_u_alive")
+
+
+@dataclass(frozen=True, slots=True)
+class KeepaliveTestHooks:
+    """Optional hooks for offline keepalive/statechart tests (#79).
+
+    Production code leaves this unset. Tests may inject a controllable sleep and
+    a scheduler for keepalive reply timeouts so probes run without wall-clock waits.
+    """
+
+    sleep: Callable[[float], Awaitable[None]] | None = None
+    schedule_reply_timeout: Callable[[float, Callable[[], None]], None] | None = None
 
 
 def _queued_request_is_disarm(item: _QueuedRequest) -> bool:
@@ -394,9 +406,11 @@ class E27Kernel:
         outbound_min_interval_s: float = 0.05,
         outbound_max_burst: int = 1,
         filter_attribs_to_configured: bool = True,
+        keepalive_test_hooks: KeepaliveTestHooks | None = None,
     ) -> None:
         self._log = logger or logging.getLogger(__name__)
         self.now = now_monotonic
+        self._keepalive_test_hooks = keepalive_test_hooks
 
         # Kernel-owned components
         self._session = None
@@ -822,15 +836,26 @@ class E27Kernel:
         if self._keepalive_wake is not None:
             self._keepalive_wake.set()
 
+    async def _keepalive_async_wait(self, delay: float) -> None:
+        hooks = self._keepalive_test_hooks
+        if hooks is not None and hooks.sleep is not None:
+            await hooks.sleep(delay)
+            return
+        await asyncio.sleep(delay)
+
     async def _keepalive_sleep(self, delay: float) -> None:
         wake = self._keepalive_wake
         if wake is None or wake.is_set():
             if wake is not None:
                 wake.clear()
             else:
-                await asyncio.sleep(delay)
+                await self._keepalive_async_wait(delay)
             return
-        sleeper = asyncio.ensure_future(asyncio.sleep(delay))
+        hooks = self._keepalive_test_hooks
+        sleep_fn = hooks.sleep if hooks is not None else None
+        sleeper = asyncio.ensure_future(
+            sleep_fn(delay) if sleep_fn is not None else asyncio.sleep(delay)
+        )
         waker = asyncio.ensure_future(wake.wait())
         try:
             done, _ = await asyncio.wait({sleeper, waker}, return_when=asyncio.FIRST_COMPLETED)
@@ -864,7 +889,7 @@ class E27Kernel:
             session = self._session
             if session is None or session.state is not session_mod.SessionState.ACTIVE:
                 try:
-                    await asyncio.sleep(0.5)
+                    await self._keepalive_async_wait(0.5)
                 except asyncio.CancelledError:
                     return
                 continue
@@ -874,7 +899,7 @@ class E27Kernel:
                 or self._request_queue_normal
             ):
                 try:
-                    await asyncio.sleep(0.5)
+                    await self._keepalive_async_wait(0.5)
                 except asyncio.CancelledError:
                     return
                 continue
@@ -885,13 +910,13 @@ class E27Kernel:
                 and not outbound.is_idle()
             ):
                 try:
-                    await asyncio.sleep(0.5)
+                    await self._keepalive_async_wait(0.5)
                 except asyncio.CancelledError:
                     return
                 continue
             if self._keepalive_inflight:
                 try:
-                    await asyncio.sleep(0.5)
+                    await self._keepalive_async_wait(0.5)
                 except asyncio.CancelledError:
                     return
                 continue
@@ -1481,6 +1506,18 @@ class E27Kernel:
             return
         if self._active_timeout_handle is not None:
             self._active_timeout_handle.cancel()
+        active = self._active_request
+        hooks = self._keepalive_test_hooks
+        schedule = (
+            hooks.schedule_reply_timeout
+            if hooks is not None
+            and isinstance(active, _QueuedRequest)
+            and _queued_request_is_keepalive(active)
+            else None
+        )
+        if schedule is not None:
+            schedule(timeout_s, lambda: self._on_reply_timeout(seq))
+            return
         self._active_timeout_handle = self._loop.call_later(timeout_s, self._on_reply_timeout, seq)
 
     def _cancel_active_timeout(self) -> None:
