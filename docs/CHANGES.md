@@ -1,5 +1,10 @@
-  Code-Rejected Error Type (0.3.16)
+  Unreleased
 
+  - Connection events (#80): when HELLO fails for a reason other than a panel
+    refusal, the kernel no longer emits an unflagged `ConnectionStateChanged`
+    with `connected=False` if the session never reached `connected=True` (same
+    pair invariant as a TCP connect failure). Panel HELLO refusals still emit
+    `connected=False` with `hello_refused=True`.
   - When a command that carried a user code is refused with panel error 11004,
     11008, or 11037, the library now raises the new public
     ``Elke27CodeRejectedError`` (a subclass of ``Elke27PanelError`` with the
