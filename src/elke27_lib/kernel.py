@@ -1265,7 +1265,20 @@ class E27Kernel:
             "E27Kernel._on_session_disconnected: session reported disconnect err=%s",
             err,
         )
+        was_connected = self.state.panel.connected
         self.state.panel.connected = False
+        if not was_connected:
+            # Session setup failed before connect() completed (#80 / O7b). Only a
+            # panel HELLO refusal is surfaced as connected=False; other setup
+            # failures must not look like a link drop with no prior connect.
+            if isinstance(err, _HELLO_REFUSAL_ERRORS):
+                self._emit_connection_state(
+                    connected=False,
+                    reason=None,
+                    error_type=type(err).__name__ if err is not None else None,
+                    hello_refused=True,
+                )
+            return
         self.dispatcher.abort_paged_transfers()
         self._abort_requests(ConnectionLost("Session disconnected."))
         self._emit_connection_state(
