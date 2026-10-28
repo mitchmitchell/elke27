@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
@@ -14,7 +14,7 @@ from elke27_lib.client import ArmMode, Elke27Client
 from elke27_lib.const import E27ErrorCode
 from elke27_lib.errors import CODE_REJECTED_PANEL_ERROR_CODES, panel_error_from_code
 from test.helpers.fake_panel_replies import synthetic_success_reply
-from test.helpers.internal import get_kernel, get_private
+from test.helpers.internal import get_kernel, get_private, set_private
 
 
 class _FakeSession:
@@ -42,7 +42,7 @@ def _make_client() -> tuple[Elke27Client, _FakeSession]:
     kernel = get_kernel(client)
     kernel.load_features_blocking()
     session = _FakeSession()
-    cast(Any, kernel)._session = session
+    set_private(kernel, "_session", session)
     kernel.state.panel.session_id = 1
     return client, session
 
@@ -58,7 +58,7 @@ async def _reply(
     task = asyncio.ensure_future(call)
     on_message = get_private(get_kernel(client), "_on_message")
     seen = 0
-    client._event_loop = asyncio.get_running_loop()
+    set_private(client, "_event_loop", asyncio.get_running_loop())
     while not task.done():
         await asyncio.sleep(0)
         while seen < len(session.sent):
@@ -138,7 +138,7 @@ async def test_async_execute_code_rejected_on_noauth() -> None:
         )
     )
     on_message = get_private(get_kernel(client), "_on_message")
-    client._event_loop = asyncio.get_running_loop()
+    set_private(client, "_event_loop", asyncio.get_running_loop())
     while not task.done():
         await asyncio.sleep(0)
         if session.sent:

@@ -6,6 +6,7 @@ from typing import Any
 from .discovery import async_discover_host, normalize_panel_mac
 from .errors import (
     Elke27AuthError,
+    Elke27CodeRejectedError,
     Elke27CommandOutcomeUnknownError,
     Elke27ConnectionError,
     Elke27CryptoError,
@@ -14,7 +15,6 @@ from .errors import (
     Elke27InvalidArgument,
     Elke27LinkRequiredError,
     Elke27LinkSlotsFullError,
-    Elke27CodeRejectedError,
     Elke27PanelError,
     Elke27PermissionError,
     Elke27PinRequiredError,
@@ -87,6 +87,7 @@ __all__ = [
     "Elke27Error",
     "Elke27TransientError",
     "Elke27ConnectionError",
+    "Elke27CodeRejectedError",
     "Elke27CommandOutcomeUnknownError",
     "Elke27TimeoutError",
     "Elke27DisconnectedError",
@@ -96,7 +97,6 @@ __all__ = [
     "Elke27PinRequiredError",
     "Elke27PermissionError",
     "Elke27ProtocolError",
-    "Elke27CodeRejectedError",
     "Elke27PanelError",
     "Elke27CryptoError",
     "Elke27InvalidArgument",

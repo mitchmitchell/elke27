@@ -94,7 +94,6 @@ from .errors import (
     Elke27LinkRequiredError,
     Elke27LinkSlotsFullError,
     Elke27PanelError,
-    panel_error_from_code,
     Elke27PermissionError,
     Elke27PinRequiredError,
     Elke27TimeoutError,
@@ -107,6 +106,7 @@ from .errors import (
     PanelNotDisarmedError,
     PermissionDeniedError,
     ProtocolError,
+    panel_error_from_code,
 )
 from .errors import (
     Elke27ProtocolError as Elke27ProtocolErrorV2,
