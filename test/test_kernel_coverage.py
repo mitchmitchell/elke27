@@ -444,6 +444,7 @@ def test_on_idle_and_disconnect(monkeypatch: pytest.MonkeyPatch) -> None:
     kernel._on_session_disconnected(SessionIOError("x"))
 
     kernel._closed_explicitly = False
+    kernel.state.panel.connected = True
     monkeypatch.setattr(kernel, "_abort_requests", lambda *_a, **_k: called.__setitem__("abort", 1))
     monkeypatch.setattr(
         kernel.dispatcher, "abort_paged_transfers", lambda *_a, **_k: called.__setitem__("paged", 1)

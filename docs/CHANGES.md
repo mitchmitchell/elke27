@@ -1,3 +1,11 @@
+  Unreleased
+
+  - Connection events (#80): when HELLO fails for a reason other than a panel
+    refusal, the kernel no longer emits an unflagged `ConnectionStateChanged`
+    with `connected=False` if the session never reached `connected=True` (same
+    pair invariant as a TCP connect failure). Panel HELLO refusals still emit
+    `connected=False` with `hello_refused=True`.
+
   Security Hardening, Barriers, Link Slots, Raw Pass-through (0.3.15)
 
   - Dev/CI only (no library change): repeat review findings are now checks.
