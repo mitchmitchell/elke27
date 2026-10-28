@@ -1,5 +1,10 @@
   Unreleased
 
+  - Keepalive test seam (#79): ``E27Kernel`` accepts optional
+    ``KeepaliveTestHooks`` (injectable sleep and keepalive reply-timeout
+    scheduling) so offline connection statechart cases O10-O15 run
+    deterministically without wall-clock waits. Production keepalive timing is
+    unchanged when hooks are unset.
   - Connection events (#80): when HELLO fails for a reason other than a panel
     refusal, the kernel no longer emits an unflagged `ConnectionStateChanged`
     with `connected=False` if the session never reached `connected=True` (same
