@@ -6,6 +6,7 @@ from typing import Any
 from .discovery import async_discover_host, normalize_panel_mac
 from .errors import (
     Elke27AuthError,
+    Elke27CodeRejectedError,
     Elke27CommandOutcomeUnknownError,
     Elke27ConnectionError,
     Elke27CryptoError,
@@ -86,6 +87,7 @@ __all__ = [
     "Elke27Error",
     "Elke27TransientError",
     "Elke27ConnectionError",
+    "Elke27CodeRejectedError",
     "Elke27CommandOutcomeUnknownError",
     "Elke27TimeoutError",
     "Elke27DisconnectedError",

@@ -9,7 +9,7 @@ from typing import Any, cast
 
 import pytest
 
-from elke27_lib import Elke27PanelError
+from elke27_lib import Elke27CodeRejectedError, Elke27PanelError
 from elke27_lib import session as session_mod
 from elke27_lib.client import ArmMode, Elke27Client
 from elke27_lib.const import E27ErrorCode
@@ -95,7 +95,8 @@ async def test_async_execute_light_set_status_panel_error_is_public(
     )
 
     assert result.ok is False
-    assert isinstance(result.error, Elke27PanelError)
+    assert type(result.error) is Elke27PanelError
+    assert not isinstance(result.error, Elke27CodeRejectedError)
     err = result.error
     assert err.panel_error_code == E27ErrorCode.ELKERR_NOAUTH
     assert err.reason == "not authorized"
@@ -125,7 +126,8 @@ async def test_async_execute_paged_panel_error_is_public(caplog: pytest.LogCaptu
     )
 
     assert result.ok is False
-    assert isinstance(result.error, Elke27PanelError)
+    assert type(result.error) is Elke27PanelError
+    assert not isinstance(result.error, Elke27CodeRejectedError)
     assert result.error.panel_error_code == E27ErrorCode.ELKERR_NOAUTH
     assert result.error.reason == "not authorized"
     with pytest.raises(Elke27PanelError):

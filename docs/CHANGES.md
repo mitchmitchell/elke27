@@ -5,6 +5,13 @@
     with `connected=False` if the session never reached `connected=True` (same
     pair invariant as a TCP connect failure). Panel HELLO refusals still emit
     `connected=False` with `hello_refused=True`.
+  - When a command that carried a user code is refused with panel error 11004,
+    11008, or 11037, the library now raises the new public
+    ``Elke27CodeRejectedError`` (a subclass of ``Elke27PanelError`` with the
+    same ``panel_error_code`` and ``reason``). Panel 11037 is always mapped to
+    that type; 11004 and 11008 only when the request included a user code
+    (session auth failures without a code stay ``Elke27PanelError``). Other
+    panel error codes are unchanged (#76).
 
   Security Hardening, Barriers, Link Slots, Raw Pass-through (0.3.15)
 

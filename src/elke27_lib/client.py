@@ -106,6 +106,7 @@ from .errors import (
     PanelNotDisarmedError,
     PermissionDeniedError,
     ProtocolError,
+    panel_error_from_code,
 )
 from .errors import (
     Elke27ProtocolError as Elke27ProtocolErrorV2,
@@ -806,7 +807,11 @@ class Elke27Client:
             self._log.debug(message, attempt, exc)
 
     def _panel_error_for_async_execute(
-        self, command_key: str, panel_error_code: int
+        self,
+        command_key: str,
+        panel_error_code: int,
+        *,
+        user_code_sent: bool = False,
     ) -> Elke27PanelError:
         reason = panel_error_reason(panel_error_code)
         self._log.warning(
@@ -815,7 +820,18 @@ class Elke27Client:
             reason,
             panel_error_code,
         )
-        return Elke27PanelError(panel_error_code, reason)
+        return panel_error_from_code(panel_error_code, reason, user_code_sent=user_code_sent)
+
+    @staticmethod
+    def _payload_carried_user_code(payload: Mapping[str, Any]) -> bool:
+        pin = payload.get("pin")
+        if pin is None:
+            return False
+        if isinstance(pin, str):
+            return bool(pin)
+        if isinstance(pin, int) and not isinstance(pin, bool):
+            return pin > 0
+        return False
 
     def _request_max_transport_retries(self) -> int:
         return int(getattr(self._kernel, "_request_max_retries", 0))
@@ -939,7 +955,7 @@ class Elke27Client:
             code = int(PanelErrorCode.ELKERR_NOAUTH)
             reason = panel_error_reason(code)
             self._log.warning("Panel rejected the request: %s (error %s)", reason, code)
-            raise Elke27PanelError(code, reason) from None
+            raise panel_error_from_code(code, reason, user_code_sent=False) from None
         if isinstance(err, E27PanelErrorResponse):
             reason = panel_error_reason(err.panel_error_code)
             self._log.warning(
@@ -948,7 +964,9 @@ class Elke27Client:
                 reason,
                 err.panel_error_code,
             )
-            raise Elke27PanelError(err.panel_error_code, reason) from None
+            raise panel_error_from_code(
+                err.panel_error_code, reason, user_code_sent=False
+            ) from None
         if isinstance(err, E27ProvisioningRequired):
             raise _link_required_from(err) from None
         if isinstance(err, PanelNotDisarmedError):
@@ -2852,7 +2870,7 @@ class Elke27Client:
                 error_code = self._extract_error_code(result.data, (domain, verb))
                 if error_code is not None:
                     reason = panel_error_reason(error_code)
-                    return _err(Elke27PanelError(error_code, reason))
+                    return _err(panel_error_from_code(error_code, reason))
                 outcome = "ok"
             elif result.error is not None:
                 outcome = type(result.error).__name__
@@ -3271,7 +3289,13 @@ class Elke27Client:
                             panel_busy_attempt, skip_for_disarm=skip_busy_backoff
                         )
                         continue
-                    return _err(self._panel_error_for_async_execute(command_key, error_code))
+                    return _err(
+                        self._panel_error_for_async_execute(
+                            command_key,
+                            error_code,
+                            user_code_sent=self._payload_carried_user_code(payload),
+                        )
+                    )
 
                 response_payload = self._extract_response_payload(msg, expected_route)
                 status_refresh_ok = await self._status_refresh_after_successful_write(
@@ -3390,7 +3414,13 @@ class Elke27Client:
                             )
                         await self._sleep_transport_backoff(panel_busy_attempt)
                         continue
-                    return _err(self._panel_error_for_async_execute(command_key, error_code))
+                    return _err(
+                        self._panel_error_for_async_execute(
+                            command_key,
+                            error_code,
+                            user_code_sent=self._payload_carried_user_code(payload),
+                        )
+                    )
 
                 response_payload = self._extract_response_payload(msg, expected_route)
                 break
