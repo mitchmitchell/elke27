@@ -7,11 +7,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, cast
 
-from elke27_lib.errors import E27Timeout
 from elke27_lib.kernel import E27Kernel, KeepaliveTestHooks, _QueuedRequest, _RequestState
 from elke27_lib.outbound import OutboundPriority
 from elke27_lib.session import SessionState
-
 from test.helpers.internal import get_private, set_private
 
 
@@ -112,7 +110,6 @@ def _install_probe_send(
     kernel: E27Kernel,
     *,
     reply_delay_s: float | None,
-    rescue_rx: bool = False,
 ) -> None:
     timeout_s = float(get_private(kernel, "_keepalive_timeout_s"))
 
@@ -122,15 +119,36 @@ def _install_probe_send(
         if reply_delay_s is None:
             return seq
         seam.advance(reply_delay_s)
-        if rescue_rx:
-            set_private(kernel, "_last_rx_at", seam.clock.now() + 1000.0)
-            cast(Any, kernel)._pending_responses.fail(seq, E27Timeout("t"))
-            return seq
         if reply_delay_s < timeout_s:
             set_private(kernel, "_last_rx_at", seam.clock.now())
             cast(Any, kernel)._pending_responses.resolve(
                 seq, {"seq": seq, "system": {"r_u_alive": {}}}
             )
+        return seq
+
+    set_private(kernel, "_send_request_with_seq", _send)
+
+
+def _install_o14_late_rx_rescue_send(seam: KeepaliveSeam, kernel: E27Kernel) -> None:
+    """Probe reply times out (D > T) after send returns; unrelated rx lands after ``sent_at``."""
+    timeout_s = float(get_private(kernel, "_keepalive_timeout_s"))
+
+    def _send(seq: int, *_a: Any, **kw: Any) -> int:
+        cast(Any, kernel)._signal_sent_event(seq)
+        _arm_probe_timeout(kernel, seq, float(kw.get("timeout_s", timeout_s)))
+
+        async def _deliver_after_send() -> None:
+            await asyncio.sleep(0)
+            seam.advance(timeout_s + 0.01)
+            seam.advance(0.001)
+            cast(Any, kernel)._on_message(
+                {
+                    "seq": seq + 10_000,
+                    "area": {"get_status": {"area_id": 1, "error_code": 0}},
+                }
+            )
+
+        asyncio.create_task(_deliver_after_send())
         return seq
 
     set_private(kernel, "_send_request_with_seq", _send)
@@ -199,8 +217,7 @@ async def run_o13() -> None:
 async def run_o14() -> None:
     seam = kernel_with_keepalive_seam()
     kernel, fake = _probing_kernel(seam)
-    timeout_s = float(get_private(kernel, "_keepalive_timeout_s"))
-    _install_probe_send(seam, kernel, reply_delay_s=timeout_s + 0.01, rescue_rx=True)
+    _install_o14_late_rx_rescue_send(seam, kernel)
     assert await cast(Any, kernel)._send_keepalive_request() is True
     set_private(kernel, "_keepalive_missed", 1)
 
@@ -233,11 +250,7 @@ async def run_o15() -> None:
     cast(Any, kernel)._start_keepalive()
     second = get_private(kernel, "_keepalive_task")
     assert second is not None and second is not task and not second.done()
-    running = sum(
-        1
-        for t in [get_private(kernel, "_keepalive_task")]
-        if t is not None and not t.done()
-    )
-    assert running == 1
+    live_task = get_private(kernel, "_keepalive_task")
+    assert live_task is not None and not live_task.done()
     set_private(kernel, "_closing", True)
     cast(Any, kernel)._stop_keepalive()
