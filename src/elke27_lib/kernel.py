@@ -349,8 +349,6 @@ class E27Kernel:
     _pending_responses: PendingResponseManager
     _closing: bool
     _closed_explicitly: bool
-    # Session ownership (0.3.16): every connect() attempt gets a new generation.
-    # Only the owning session (installed or in-flight connect) may change kernel state.
     _session_gen: int
     _connecting: session_mod.Session | None
     _connecting_gen: int
@@ -680,10 +678,6 @@ class E27Kernel:
         self._keepalive_max_missed = int(cfg.keepalive_max_missed)
         cfg = replace(cfg, keepalive_enabled=False)
 
-        # Ownership: a kernel owns at most one live session. Close any earlier
-        # installed session first, and retire any in-flight attempt by bumping the
-        # generation. A session still reported connected gets its one connected=False;
-        # one already lost (its False was emitted) is closed quietly.
         if self._session is not None:
             if self.state.panel.connected:
                 await self.close()
@@ -693,7 +687,7 @@ class E27Kernel:
                     prior = self._session
                     self._session = None
                 if prior is not None:
-                    with contextlib.suppress(Exception):
+                    with contextlib.suppress(OSError):
                         await asyncio.to_thread(prior.close)
         self._closed_explicitly = False
         s = session_mod.Session(cfg=cfg, client_identity=client_identity, link_key_hex=link_key_hex)
@@ -705,12 +699,10 @@ class E27Kernel:
             self._connecting = s
             self._connecting_gen = gen
         if prior_connecting is not None:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(OSError):
                 await asyncio.to_thread(prior_connecting.close)
 
         # Wire callbacks before connecting so HELLO path can report, if needed.
-        # Each callback is bound to this session; the kernel ignores it once the
-        # session no longer owns the kernel.
         def _on_message_owned(msg: Mapping[str, Any]) -> None:
             if self._is_owner(s):
                 self._on_message(msg)
@@ -756,35 +748,24 @@ class E27Kernel:
             self._retire_connecting(s)
             raise KernelError(f"Session connect failed for {host}:{port}: {e}") from e
 
-        # An early close() (or a newer connect()) can land while this attempt is still
-        # inside Session.connect(). Session.close() is not synchronized with
-        # Session.connect(), so if it runs before the socket is assigned, the attempt
-        # can still finish connecting and start its receiver. That is safe here: the
-        # attempt was retired, so its callbacks are ignored, and the check below closes
-        # it as soon as the attempt returns, so it is never installed and nothing
-        # reaches the app. An ownership guard inside Session itself is future work.
         displaced: session_mod.Session | None = None
         with self._owner_lock:
             superseded = self._session_gen != gen or self._close_requested_gen >= gen
             if self._connecting is s:
                 self._connecting = None
             if not superseded and s.state == session_mod.SessionState.ACTIVE:
-                # Install only once ACTIVE and still current. A concurrent connect()
-                # may have installed its own session while this one was awaiting
-                # the prior close; that session is no longer current, so close it
-                # rather than leave it logged in.
                 if self._session is not None and self._session is not s:
                     displaced = self._session
                 self._session = s
         if displaced is not None:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(OSError):
                 await asyncio.to_thread(displaced.close)
         if superseded:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(OSError):
                 await asyncio.to_thread(s.close)
             raise KernelError("Session connect abandoned: kernel was closed or reconnected.")
         if s.state != session_mod.SessionState.ACTIVE:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(OSError):
                 await asyncio.to_thread(s.close)
             raise KernelError(
                 f"Session connect completed but session.state is {s.state!r}, not ACTIVE."
@@ -858,14 +839,13 @@ class E27Kernel:
             else KernelError("Kernel closed with no active session.")
         )
         if self._session is None:
-            # Close racing connect: retire the in-flight attempt so it is never installed.
             with self._owner_lock:
                 pending = self._connecting
                 if pending is not None:
                     self._close_requested_gen = self._connecting_gen
                     self._connecting = None
             if pending is not None:
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(OSError):
                     await asyncio.to_thread(pending.close)
             self._fail_all_pending_commands(close_exc)
             self._cancel_all_transport_retry_timers()
@@ -1386,8 +1366,6 @@ class E27Kernel:
         self._try_send_next()
 
     def _is_owner(self, s: session_mod.Session) -> bool:
-        # Called from the session's receiver thread; read both slots under the
-        # lock so a concurrent connect()/close() hand-over is seen atomically.
         with self._owner_lock:
             return s is self._session or s is self._connecting
 
@@ -1407,8 +1385,6 @@ class E27Kernel:
         if self._closed_explicitly and isinstance(err, session_mod.SessionIOError):
             return
         if session is not None and not self._is_owner(session):
-            # Ownership: a session that no longer owns the kernel (superseded,
-            # orphaned by cancel, or closed) must not change kernel state.
             return
         self._log.debug(
             "E27Kernel._on_session_disconnected: session reported disconnect err=%s",

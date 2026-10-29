@@ -112,7 +112,6 @@ async def test_close_racing_connect_never_installs_the_session(setup: Any) -> No
     with pytest.raises(KernelError):
         _ = kernel.session
     assert events == []
-    # The kernel is still usable afterwards.
     await _connect(kernel)
     assert kernel.session is not None
     assert events == [True]
@@ -183,7 +182,6 @@ async def test_superseded_mid_hello_callbacks_are_ignored(setup: Any) -> None:
     await _wait_sessions(sessions, 1)
     second = asyncio.create_task(_connect(kernel))
     await _wait_sessions(sessions, 2)
-    # The superseded attempt reports from its receiver thread mid-connect.
     t = threading.Thread(
         target=sessions[0].on_disconnected,
         args=(session_mod.SessionProtocolError("late (fake)"),),
@@ -271,14 +269,14 @@ async def test_concurrent_connects_leave_one_live_session(setup: Any) -> None:
         release.wait(5)
         real_close()
 
-    prior.close = _slow_close  # type: ignore[method-assign]
+    prior.close = _slow_close  # type: ignore[method-assign]  # test double swaps in a slow close
     task_b = asyncio.create_task(_connect(kernel))
     for _ in range(400):
         if closing.is_set():
             break
         await asyncio.sleep(0.005)
     assert closing.is_set()
-    await _connect(kernel)  # A: installs while B is still inside the prior close
+    await _connect(kernel)
     release.set()
     await task_b
     live = [s for s in sessions if s.close_count == 0]
