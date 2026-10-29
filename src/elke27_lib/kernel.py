@@ -987,7 +987,11 @@ class E27Kernel:
             # loops (notably 3.11) ``Event.wait()`` can yield even when the
             # event is already set, so ``now()`` after the wait may be later
             # than unrelated inbound traffic that should rescue the probe.
-            probe_sent_at = self._active_sent_at
+            probe_sent_at = (
+                self._active_sent_at
+                if self._active_seq == seq and self._active_sent_at is not None
+                else None
+            )
             queued_at = self.now()
             try:
                 # A HIGH-priority probe can wait behind one in-flight command
@@ -1002,6 +1006,12 @@ class E27Kernel:
                     seq,
                 )
                 return self._last_rx_at > queued_at
+            if probe_sent_at is None:
+                probe_sent_at = (
+                    self._active_sent_at
+                    if self._active_seq == seq and self._active_sent_at is not None
+                    else None
+                )
             sent_at = probe_sent_at if probe_sent_at is not None else self.now()
             try:
                 await future

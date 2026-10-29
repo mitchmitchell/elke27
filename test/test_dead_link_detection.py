@@ -258,6 +258,14 @@ async def test_probe_timeout_without_traffic_is_a_miss() -> None:
 
 
 @pytest.mark.asyncio
+async def test_forced_probe_queued_no_rescue_from_prior_command_reply() -> None:
+    """Reply to an in-flight command must not rescue a later forced probe timeout."""
+    from test.helpers import keepalive_seam
+
+    await keepalive_seam.run_forced_probe_no_rescue_from_prior_command_reply()
+
+
+@pytest.mark.asyncio
 async def test_forced_probe_is_high_priority_while_command_queued() -> None:
     kernel = _probing_kernel()
     kernel._loop = asyncio.get_running_loop()

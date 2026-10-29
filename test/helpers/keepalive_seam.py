@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, cast
 
+from elke27_lib.errors import E27Timeout
 from elke27_lib.kernel import E27Kernel, KeepaliveTestHooks, _QueuedRequest, _RequestState
 from elke27_lib.outbound import OutboundPriority
 from elke27_lib.session import SessionState
@@ -215,6 +216,46 @@ async def run_o13() -> None:
     await cast(Any, kernel)._keepalive_loop()
     assert probes["n"] == 2
     assert len(fake.disconnects) == 1
+
+
+async def run_forced_probe_no_rescue_from_prior_command_reply() -> None:
+    """Forced probe queued behind in-flight command; command rx must not rescue timeout."""
+    seam = kernel_with_keepalive_seam()
+    kernel, _ = _probing_kernel(seam)
+    timeout_s = float(get_private(kernel, "_keepalive_timeout_s"))
+    cmd_item = _QueuedRequest(
+        seq=50,
+        domain="area",
+        name="arm",
+        payload={},
+        pending=False,
+        opaque=None,
+        expected_route=("area", "arm"),
+        priority=OutboundPriority.NORMAL,
+        timeout_s=30.0,
+    )
+    set_private(kernel, "_request_state", _RequestState.IN_FLIGHT)
+    set_private(kernel, "_active_seq", 50)
+    set_private(kernel, "_active_request", cmd_item)
+    set_private(kernel, "_active_sent_at", 1000.0)
+    set_private(kernel, "_last_rx_at", 0.0)
+
+    def _send(probe_seq: int, *_a: Any, **_kw: Any) -> int:
+        async def _defer_probe() -> None:
+            await asyncio.sleep(0)
+            seam.clock.advance(2.0)
+            cast(Any, kernel)._on_message({"seq": 50, "area": {"arm": {"error_code": 0}}})
+            await asyncio.sleep(0)
+            _arm_probe_timeout(kernel, probe_seq, timeout_s)
+            cast(Any, kernel)._signal_sent_event(probe_seq)
+            await asyncio.sleep(0)
+            cast(Any, kernel)._pending_responses.fail(probe_seq, E27Timeout("probe timeout"))
+
+        asyncio.create_task(_defer_probe())
+        return probe_seq
+
+    set_private(kernel, "_send_request_with_seq", _send)
+    assert await cast(Any, kernel)._send_keepalive_request(force=True) is False
 
 
 async def run_o14() -> None:
