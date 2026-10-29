@@ -717,12 +717,20 @@ class E27Kernel:
             min_interval_s=self._outbound_min_interval_s,
             max_burst=self._outbound_max_burst,
         )
-        s.start_auto_receive()
 
         self.state.panel.session_id = (
             s.info.session_id if s.info is not None else self.state.panel.session_id
         )
+        # Mark connected before auto-receive so an immediate recv-thread disconnect
+        # is handled as a link loss (#50), not a pre-connect setup failure (#80).
         self.state.panel.connected = True
+        s.start_auto_receive()
+        if not self.state.panel.connected:
+            drop = ConnectionLost(
+                "Session disconnected during connect() before the connection was established."
+            )
+            raise KernelError(f"Session connect failed for {host}:{port}: {drop}") from drop
+
         self.state.table_info_by_domain.clear()
         self.state.table_info_known.clear()
         self.state.bootstrap_counts_ready = False
