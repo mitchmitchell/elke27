@@ -983,6 +983,11 @@ class E27Kernel:
             except Exception:  # noqa: BLE001
                 self._pending_responses.drop(seq)
                 return False
+            # Capture send time before waiting on the transport: on some event
+            # loops (notably 3.11) ``Event.wait()`` can yield even when the
+            # event is already set, so ``now()`` after the wait may be later
+            # than unrelated inbound traffic that should rescue the probe.
+            probe_sent_at = self._active_sent_at
             queued_at = self.now()
             try:
                 # A HIGH-priority probe can wait behind one in-flight command
@@ -997,7 +1002,7 @@ class E27Kernel:
                     seq,
                 )
                 return self._last_rx_at > queued_at
-            sent_at = self.now()
+            sent_at = probe_sent_at if probe_sent_at is not None else self.now()
             try:
                 await future
                 return True
