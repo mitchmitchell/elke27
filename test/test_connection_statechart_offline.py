@@ -194,9 +194,6 @@ def _has_session(kernel: E27Kernel) -> bool:
     return True
 
 
-# ------------------------------------------------------------------ O1
-
-
 @pytest.mark.asyncio
 async def test_o1_transient_connect_failure_retries_without_delay(
     reg: _Registry, monkeypatch: pytest.MonkeyPatch
@@ -229,9 +226,6 @@ async def test_o1_both_attempts_are_logged(
     assert any("Connect failed (attempt 2/2)" in m for m in msgs)
 
 
-# ------------------------------------------------------------------ O2
-
-
 @pytest.mark.asyncio
 async def test_o2_cancel_during_hello_then_success_closes_orphan(
     reg: _Registry, monkeypatch: pytest.MonkeyPatch
@@ -249,9 +243,6 @@ async def test_o2_cancel_during_hello_then_success_closes_orphan(
     assert reg.live_count() == 0
     assert not _has_session(kernel)
     assert [e for e in events if not e.connected] == []
-
-
-# ------------------------------------------------------------------ O3
 
 
 @NEEDS_OWNERSHIP_FIX
@@ -277,9 +268,6 @@ async def test_o3_orphan_hello_failure_does_not_touch_newer_session(
     assert [e.connected for e in events] == [True]
 
 
-# ------------------------------------------------------------------ O4
-
-
 @NEEDS_OWNERSHIP_FIX
 @pytest.mark.asyncio
 async def test_o4_second_connect_closes_first_session(
@@ -291,9 +279,6 @@ async def test_o4_second_connect_closes_first_session(
     assert reg.sessions[0].close_count >= 1
     assert reg.live_count() == 1
     assert _pairs_ok(events)
-
-
-# ------------------------------------------------------------------ O5 / O6
 
 
 @NEEDS_OWNERSHIP_FIX
@@ -322,9 +307,6 @@ async def test_o6_not_active_session_is_never_installed(
     assert not _has_session(kernel)
     assert reg.sessions[0].close_count >= 1
     assert events == []
-
-
-# ------------------------------------------------------------------ O7 / O8
 
 
 @pytest.mark.asyncio
@@ -364,9 +346,6 @@ async def test_o8_tcp_error_on_connect_emits_nothing(
     assert not _has_session(kernel)
 
 
-# ------------------------------------------------------------------ O9
-
-
 @pytest.mark.asyncio
 async def test_o9a_io_error_from_closed_session_ignored(
     reg: _Registry, monkeypatch: pytest.MonkeyPatch
@@ -388,9 +367,6 @@ async def test_o9b_protocol_error_from_closed_session_ignored(
     await kernel.close()
     reg.sessions[0].on_disconnected(session_mod.SessionProtocolError("late (fake)"))
     assert [e.connected for e in events] == [True, False]
-
-
-# ------------------------------------------------------------------ O10-O16
 
 
 @pytest.mark.asyncio
@@ -483,14 +459,14 @@ def test_o16_intentional_close_wakes_receiver_without_lost(
     s.on_disconnected = lost.append
     s.start_auto_receive()
     time.sleep(0.05)
+    receivers = [t for t in threading.enumerate() if t.name == "e27-recv"]
     s.close()
-    time.sleep(0.3)  # let the woken receiver run to exit
+    for t in receivers:
+        t.join(timeout=2.0)
+        assert not t.is_alive()
     assert sock.closed.is_set()
     assert lost == []
     assert s.state == session_mod.SessionState.DISCONNECTED
-
-
-# ------------------------------------------------------------------ O17
 
 
 @pytest.mark.asyncio
@@ -511,9 +487,6 @@ async def test_o17_link_loss_racing_close_emits_one_false(
     await kernel.close()
     await asyncio.to_thread(late.join)
     assert [e.connected for e in events] == [True, False]
-
-
-# ------------------------------------------------------------------ O18 / O19
 
 
 @pytest.mark.asyncio
@@ -561,7 +534,7 @@ async def test_o19_command_issued_before_reauth_reply(
     authed = {"v": False}
 
     def _status(msg: dict[str, Any]) -> dict[str, Any]:
-        code = 0 if authed["v"] else 11008  # panel: not authorized until re-auth
+        code = 0 if authed["v"] else 11008
         return {"seq": msg["seq"], "area": {"get_status": {"area_id": 1, "error_code": code}}}
 
     panel.overrides[("area", "get_status")] = _status
@@ -587,9 +560,6 @@ async def test_o19_command_issued_before_reauth_reply(
     await client.async_disconnect()
 
 
-# ------------------------------------------------------------------ O20
-
-
 @NEEDS_OWNERSHIP_FIX
 @pytest.mark.asyncio
 async def test_o20_close_during_connect_leaves_no_live_session(
@@ -609,9 +579,6 @@ async def test_o20_close_during_connect_leaves_no_live_session(
     assert not any(e.connected for e in events)
 
 
-# ------------------------------------------------------------------ O21
-
-
 @NEEDS_OWNERSHIP_FIX
 @pytest.mark.asyncio
 async def test_o21_callbacks_from_non_current_session_are_noops(
@@ -629,16 +596,6 @@ async def test_o21_callbacks_from_non_current_session_are_noops(
     assert kernel.state.panel.connected
 
 
-# ------------------------------------------------------------------ O22
-
-
-# O22: expected TLC outcome per config. The Teardown and Keepalive specs have
-# terminal states (a run ends once its events are spent), which TLC reports as
-# "Deadlock reached" by default. That is not a bug in the modelled code, so those
-# specs run with -deadlock; Ownership runs with deadlock checking on.
-# FIXED=FALSE configs must still FAIL by invariant (1a/1b/1c/2) so a spec edit that
-# hides the bugs is caught. Keepalive: 3a/3e pass, 3c/3d fail by design (policy),
-# 3b (D=T tie) fails as a discrete-time model artefact.
 _TLC_EXPECT: dict[str, bool] = {
     "Own_AtMostOneLiveWired_TRUE": True,
     "Own_NoForeignCallbackEffect_TRUE": True,
@@ -654,7 +611,7 @@ _TLC_EXPECT: dict[str, bool] = {
     "KA_D_DgtT_M2": False,
     "KA_E_DgtT_traffic": True,
 }
-_TLC_INVARIANT_RC = 12  # TLC exit code for an invariant violation
+_TLC_INVARIANT_RC = 12
 
 
 def _tlc_cmd() -> list[str]:

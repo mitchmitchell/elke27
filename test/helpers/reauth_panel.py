@@ -28,10 +28,8 @@ class _FakePanel:
 
     def __init__(self) -> None:
         self.sessions: list[_FakeSession] = []
-        # accept | refuse | silent | hold
         self.auth: str = "accept"
         self.held: list[tuple[_FakeSession, dict[str, Any]]] = []
-        # (domain, name) -> reply builder; overrides the default empty ack.
         self.overrides: dict[tuple[str, str], Callable[[dict[str, Any]], dict[str, Any]]] = {}
 
     @property
