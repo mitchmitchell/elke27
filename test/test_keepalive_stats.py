@@ -53,8 +53,6 @@ class _FakeSession:
         if self.answer and self.on_message is not None:
             self.on_message(dict(msg))
         elif self.rescue and self.on_message is not None:
-            # No reply to the probe, but some other (unsolicited) message
-            # arrives shortly after it was sent.
             handler = self.on_message
             asyncio.get_running_loop().call_later(0.01, handler, {"seq": 0})
 
@@ -162,7 +160,7 @@ async def test_unanswered_probe_rescued_by_later_traffic(
         stats = kernel.keepalive_stats
         assert made[0].disconnects == []
         await kernel.close()
-    assert stats["probes_sent"] >= 1
+    assert (stats["probes_sent"] or 0) >= 1
     assert stats["replies"] == 0
     assert stats["misses"] == 0
     assert stats["consecutive_missed"] == 0

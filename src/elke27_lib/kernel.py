@@ -1064,8 +1064,6 @@ class E27Kernel:
                     exc_info=True,
                 )
                 return self._last_rx_at > sent_at
-            # Outside the try: a bug here should surface, not be logged as a
-            # failed keepalive check.
             rtt = max(0.0, self.now() - sent_at)
             stats["replies"] = int(stats["replies"] or 0) + 1
             stats["last_round_trip_s"] = rtt
