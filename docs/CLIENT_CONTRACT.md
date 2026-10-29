@@ -201,11 +201,12 @@ the command still succeeds; `async_execute` sets `Result.status_refresh_ok` to
 - Caller cancellation after a confirmed send: `asyncio.CancelledError` still
   propagates (never replaced), with `Elke27CommandOutcomeUnknownError` as its
   `__cause__`. Cancellation before the send is a plain `CancelledError`.
-- Wrong or unauthorized user code (#76): when a command that sent a user code is
-  refused for that reason, the library raises `Elke27CodeRejectedError` (subclass
-  of `Elke27PanelError`, with the same `panel_error_code` and `reason`). Other
-  panel refusals stay `Elke27PanelError`. Prefer
-  `isinstance(..., Elke27CodeRejectedError)` over matching panel error numbers.
+- Wrong or unauthorized user code (#76): panel error 11037 always raises
+  `Elke27CodeRejectedError` (subclass of `Elke27PanelError`, with the same
+  `panel_error_code` and `reason`). 11004 and 11008 raise that type only when
+  the request included a user code; session auth failures without a code stay
+  `Elke27PanelError`. Prefer `isinstance(..., Elke27CodeRejectedError)` over
+  matching panel error numbers.
 
 ## Command transport retries (#12)
 
