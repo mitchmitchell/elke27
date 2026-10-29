@@ -6,7 +6,7 @@ No sockets, no panel, no credentials (dummy values only).
 
 O10-O15 use ``test.helpers.keepalive_seam`` (#79). Cases that need the session-ownership
 fix are marked xfail until it lands.
-
+"""
 
 from __future__ import annotations
 
@@ -26,6 +26,7 @@ from elke27_lib import session as session_mod
 from elke27_lib.events import ConnectionStateChanged, Event
 from elke27_lib.hello import SessionKeys
 from elke27_lib.kernel import E27Kernel, KernelError
+from test.helpers import keepalive_seam
 from test.helpers.reauth_panel import (
     _authenticate,
     _connected,
@@ -191,6 +192,15 @@ def _has_session(kernel: E27Kernel) -> bool:
     except KernelError:
         return False
     return True
+
+
+def _ownership_fix_pending() -> bool:
+    """True until #78 lands generation-tagged session ownership on the kernel."""
+    import inspect
+
+    import elke27_lib.kernel as kernel_mod
+
+    return "_is_owner" not in inspect.getsource(kernel_mod.E27Kernel)
 
 
 # ------------------------------------------------------------------ O1
@@ -387,12 +397,11 @@ async def test_o9b_protocol_error_from_closed_session_ignored(
     await kernel.close()
     reg.sessions[0].on_disconnected(session_mod.SessionProtocolError("late (fake)"))
     assert [e.connected for e in events] == [True, False]
+    if _ownership_fix_pending():
+        pytest.fail("needs post-0.2.1 session ownership (#78)")
 
 
 # ------------------------------------------------------------------ O10-O16
-
-
-from test.helpers import keepalive_seam
 
 
 @pytest.mark.asyncio
@@ -429,6 +438,7 @@ async def test_o14_keepalive_traffic_rescue() -> None:
 async def test_o15_keepalive_task_cleared_after_expiry() -> None:
     """O15: after expiry the keepalive task is done before the next start (no double loop)."""
     await keepalive_seam.run_o15()
+
 
 class _WakeOnCloseSocket:
     """recv blocks until the socket is closed, then fails like a real one."""
@@ -513,6 +523,8 @@ async def test_o17_link_loss_racing_close_emits_one_false(
     await kernel.close()
     await asyncio.to_thread(late.join)
     assert [e.connected for e in events] == [True, False]
+    if _ownership_fix_pending():
+        pytest.fail("needs post-0.2.1 session ownership (#78)")
 
 
 # ------------------------------------------------------------------ O18 / O19
