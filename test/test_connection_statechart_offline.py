@@ -410,6 +410,7 @@ class _WakeOnCloseSocket:
 
     def __init__(self) -> None:
         self.closed = threading.Event()
+        self.blocked = threading.Event()
 
     def settimeout(self, _t: float | None) -> None:
         return None
@@ -421,7 +422,8 @@ class _WakeOnCloseSocket:
         return None
 
     def recv(self, _n: int) -> bytes:
-        if self.closed.wait(0.05):
+        self.blocked.set()
+        if self.closed.wait(5.0):
             raise OSError("socket closed (fake)")
         raise TimeoutError
 
@@ -450,20 +452,25 @@ def test_o16_intentional_close_wakes_receiver_without_lost(
         ),
     )
     s = session_mod.Session(
-        session_mod.SessionConfig(host="198.51.100.1", auto_receive=False),
+        session_mod.SessionConfig(
+            host="198.51.100.1", auto_receive=True, auto_receive_thread_fallback=True
+        ),
         client_identity=linking.E27Identity("1", "2", "0", "0", "0"),
         link_key_hex="00" * 16,
     )
     s.connect()
     lost: list[Exception | None] = []
     s.on_disconnected = lost.append
+    s.on_message = lambda _m: None
     s.start_auto_receive()
-    time.sleep(0.05)
     receivers = [t for t in threading.enumerate() if t.name == "e27-recv"]
+    assert len(receivers) == 1
+    receiver = receivers[0]
+    assert receiver.is_alive()
+    assert sock.blocked.wait(2.0)
     s.close()
-    for t in receivers:
-        t.join(timeout=2.0)
-        assert not t.is_alive()
+    receiver.join(timeout=2.0)
+    assert not receiver.is_alive()
     assert sock.closed.is_set()
     assert lost == []
     assert s.state == session_mod.SessionState.DISCONNECTED
