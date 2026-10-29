@@ -194,15 +194,6 @@ def _has_session(kernel: E27Kernel) -> bool:
     return True
 
 
-def _ownership_fix_pending() -> bool:
-    """True until #78 lands generation-tagged session ownership on the kernel."""
-    import inspect
-
-    import elke27_lib.kernel as kernel_mod
-
-    return "_is_owner" not in inspect.getsource(kernel_mod.E27Kernel)
-
-
 # ------------------------------------------------------------------ O1
 
 
@@ -397,8 +388,6 @@ async def test_o9b_protocol_error_from_closed_session_ignored(
     await kernel.close()
     reg.sessions[0].on_disconnected(session_mod.SessionProtocolError("late (fake)"))
     assert [e.connected for e in events] == [True, False]
-    if _ownership_fix_pending():
-        pytest.fail("needs post-0.2.1 session ownership (#78)")
 
 
 # ------------------------------------------------------------------ O10-O16
@@ -523,8 +512,6 @@ async def test_o17_link_loss_racing_close_emits_one_false(
     await kernel.close()
     await asyncio.to_thread(late.join)
     assert [e.connected for e in events] == [True, False]
-    if _ownership_fix_pending():
-        pytest.fail("needs post-0.2.1 session ownership (#78)")
 
 
 # ------------------------------------------------------------------ O18 / O19
