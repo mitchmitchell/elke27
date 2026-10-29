@@ -7,7 +7,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, cast
 
-from elke27_lib.errors import E27Timeout
 from elke27_lib.kernel import E27Kernel, KeepaliveTestHooks, _QueuedRequest, _RequestState
 from elke27_lib.outbound import OutboundPriority
 from elke27_lib.session import SessionState
@@ -218,44 +217,76 @@ async def run_o13() -> None:
     assert len(fake.disconnects) == 1
 
 
-async def run_forced_probe_no_rescue_from_prior_command_reply() -> None:
-    """Forced probe queued behind in-flight command; command rx must not rescue timeout."""
-    seam = kernel_with_keepalive_seam()
+class RecordingSession:
+    """Fake transport that records outbound frames and delivers replies on demand."""
+
+    def __init__(self) -> None:
+        self.state = SessionState.ACTIVE
+        self.disconnects: list[Exception | None] = []
+        self.sent: list[tuple[dict[str, Any], Callable[[float], None] | None]] = []
+        self.on_message: Callable[[dict[str, Any]], None] | None = None
+
+    def handle_disconnect(self, err: Exception | None) -> None:
+        self.disconnects.append(err)
+
+    def send_json(
+        self,
+        obj: dict[str, Any],
+        *,
+        priority: OutboundPriority = OutboundPriority.NORMAL,
+        on_sent: Callable[[float], None] | None = None,
+        on_fail: Callable[[BaseException], None] | None = None,
+    ) -> None:
+        del priority, on_fail
+        self.sent.append((obj, on_sent))
+
+    def confirm_sent(self, index: int) -> int:
+        obj, on_sent = self.sent[index]
+        if on_sent is not None:
+            on_sent(0.0)
+        return int(obj["seq"])
+
+    def deliver(self, msg: dict[str, Any]) -> None:
+        assert self.on_message is not None
+        self.on_message(msg)
+
+
+def attach_recording_session(seam: KeepaliveSeam) -> RecordingSession:
     kernel, _ = _probing_kernel(seam)
-    timeout_s = float(get_private(kernel, "_keepalive_timeout_s"))
-    cmd_item = _QueuedRequest(
-        seq=50,
-        domain="area",
-        name="arm",
-        payload={},
-        pending=False,
-        opaque=None,
-        expected_route=("area", "arm"),
-        priority=OutboundPriority.NORMAL,
-        timeout_s=30.0,
-    )
-    set_private(kernel, "_request_state", _RequestState.IN_FLIGHT)
-    set_private(kernel, "_active_seq", 50)
-    set_private(kernel, "_active_request", cmd_item)
-    set_private(kernel, "_active_sent_at", 1000.0)
-    set_private(kernel, "_last_rx_at", 0.0)
+    session = RecordingSession()
+    cast(Any, session)._outbound = type("O", (), {"is_idle": lambda self: True})()
+    session.on_message = cast(Any, kernel)._on_message
+    set_private(kernel, "_session", session)
+    return session
 
-    def _send(probe_seq: int, *_a: Any, **_kw: Any) -> int:
-        async def _defer_probe() -> None:
-            await asyncio.sleep(0)
-            seam.clock.advance(2.0)
-            cast(Any, kernel)._on_message({"seq": 50, "area": {"arm": {"error_code": 0}}})
-            await asyncio.sleep(0)
-            _arm_probe_timeout(kernel, probe_seq, timeout_s)
-            cast(Any, kernel)._signal_sent_event(probe_seq)
-            await asyncio.sleep(0)
-            cast(Any, kernel)._pending_responses.fail(probe_seq, E27Timeout("probe timeout"))
 
-        asyncio.create_task(_defer_probe())
-        return probe_seq
+async def run_forced_probe_no_rescue_from_prior_command_reply() -> None:
+    """Forced probe queued behind an in-flight command; the command's reply must not rescue it."""
+    seam = kernel_with_keepalive_seam()
+    kernel = seam.kernel
+    session = attach_recording_session(seam)
+    kernel.register_request(("area", "arm"), lambda: {})
 
-    set_private(kernel, "_send_request_with_seq", _send)
-    assert await cast(Any, kernel)._send_keepalive_request(force=True) is False
+    cmd_seq = kernel.request(("area", "arm"))
+    assert len(session.sent) == 1
+    assert session.confirm_sent(0) == cmd_seq
+
+    probe = asyncio.create_task(cast(Any, kernel)._send_keepalive_request(force=True))
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert len(session.sent) == 1
+
+    seam.clock.advance(2.0)
+    session.deliver({"seq": cmd_seq, "area": {"arm": {"error_code": 0}}})
+    assert len(session.sent) == 2
+    probe_seq = session.confirm_sent(1)
+    assert session.sent[1][0]["system"] == {"r_u_alive": {}}
+    for _ in range(3):
+        await asyncio.sleep(0)
+
+    seam.advance(float(get_private(kernel, "_keepalive_timeout_s")))
+    assert await asyncio.wait_for(probe, timeout=2.0) is False
+    assert probe_seq != cmd_seq
 
 
 async def run_o14() -> None:

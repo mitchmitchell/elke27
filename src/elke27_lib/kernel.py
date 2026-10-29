@@ -939,6 +939,11 @@ class E27Kernel:
                 session.handle_disconnect(session_mod.SessionProtocolError("Keepalive timed out"))
                 return
 
+    def _probe_sent_at(self, seq: int) -> float | None:
+        if self._active_seq != seq:
+            return None
+        return self._active_sent_at
+
     async def _send_keepalive_request(self, *, force: bool = False) -> bool:
         self._set_loop_if_needed()
         if self._loop is None:
@@ -983,15 +988,7 @@ class E27Kernel:
             except Exception:  # noqa: BLE001
                 self._pending_responses.drop(seq)
                 return False
-            # Capture send time before waiting on the transport: on some event
-            # loops (notably 3.11) ``Event.wait()`` can yield even when the
-            # event is already set, so ``now()`` after the wait may be later
-            # than unrelated inbound traffic that should rescue the probe.
-            probe_sent_at = (
-                self._active_sent_at
-                if self._active_seq == seq and self._active_sent_at is not None
-                else None
-            )
+            probe_sent_at = self._probe_sent_at(seq)
             queued_at = self.now()
             try:
                 # A HIGH-priority probe can wait behind one in-flight command
@@ -1007,11 +1004,7 @@ class E27Kernel:
                 )
                 return self._last_rx_at > queued_at
             if probe_sent_at is None:
-                probe_sent_at = (
-                    self._active_sent_at
-                    if self._active_seq == seq and self._active_sent_at is not None
-                    else None
-                )
+                probe_sent_at = self._probe_sent_at(seq)
             sent_at = probe_sent_at if probe_sent_at is not None else self.now()
             try:
                 await future
