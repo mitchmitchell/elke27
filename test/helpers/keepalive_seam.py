@@ -139,8 +139,6 @@ def _install_o14_late_rx_rescue_send(seam: KeepaliveSeam, kernel: E27Kernel) -> 
 
         async def _deliver_after_send() -> None:
             await asyncio.sleep(0)
-            # Advance past D > T without firing reply timeouts yet: deliver
-            # rescue traffic before the probe timeout fails the pending future.
             seam.clock.advance(timeout_s + 0.01)
             seam.clock.advance(0.001)
             cast(Any, kernel)._on_message(
