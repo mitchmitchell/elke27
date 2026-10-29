@@ -215,6 +215,11 @@ async def run_o13() -> None:
     assert len(fake.disconnects) == 1
 
 
+class IdleOutbound:
+    def is_idle(self) -> bool:
+        return True
+
+
 class RecordingSession:
     """Fake transport that records outbound frames and delivers replies on demand."""
 
@@ -223,6 +228,7 @@ class RecordingSession:
         self.disconnects: list[Exception | None] = []
         self.sent: list[tuple[dict[str, Any], Callable[[float], None] | None]] = []
         self.on_message: Callable[[dict[str, Any]], None] | None = None
+        self._outbound = IdleOutbound()
 
     def handle_disconnect(self, err: Exception | None) -> None:
         self.disconnects.append(err)
@@ -252,7 +258,6 @@ class RecordingSession:
 def attach_recording_session(seam: KeepaliveSeam) -> RecordingSession:
     kernel, _ = _probing_kernel(seam)
     session = RecordingSession()
-    cast(Any, session)._outbound = type("O", (), {"is_idle": lambda self: True})()
     session.on_message = cast(Any, kernel)._on_message
     set_private(kernel, "_session", session)
     return session

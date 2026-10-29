@@ -14,6 +14,7 @@ from elke27_lib.errors import E27Timeout
 from elke27_lib.kernel import E27Kernel
 from elke27_lib.outbound import OutboundPriority
 from elke27_lib.session import Session, SessionConfig, SessionProtocolError, SessionState
+from test.helpers.keepalive_seam import IdleOutbound
 
 
 def test_session_config_defaults_detect_quickly() -> None:
@@ -317,3 +318,7 @@ def test_close_resets_closing_flag_when_it_raises() -> None:
     with pytest.raises(RuntimeError):
         s.close()
     assert s._closing is False
+
+
+def test_idle_outbound_reports_idle() -> None:
+    assert IdleOutbound().is_idle() is True
