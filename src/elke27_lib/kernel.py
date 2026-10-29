@@ -939,6 +939,11 @@ class E27Kernel:
                 session.handle_disconnect(session_mod.SessionProtocolError("Keepalive timed out"))
                 return
 
+    def _probe_sent_at(self, seq: int) -> float | None:
+        if self._active_seq != seq:
+            return None
+        return self._active_sent_at
+
     async def _send_keepalive_request(self, *, force: bool = False) -> bool:
         self._set_loop_if_needed()
         if self._loop is None:
@@ -983,6 +988,7 @@ class E27Kernel:
             except Exception:  # noqa: BLE001
                 self._pending_responses.drop(seq)
                 return False
+            probe_sent_at = self._probe_sent_at(seq)
             queued_at = self.now()
             try:
                 # A HIGH-priority probe can wait behind one in-flight command
@@ -997,7 +1003,9 @@ class E27Kernel:
                     seq,
                 )
                 return self._last_rx_at > queued_at
-            sent_at = self.now()
+            if probe_sent_at is None:
+                probe_sent_at = self._probe_sent_at(seq)
+            sent_at = probe_sent_at if probe_sent_at is not None else self.now()
             try:
                 await future
                 return True
