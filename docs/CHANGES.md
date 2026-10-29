@@ -9,8 +9,10 @@
     ``start_auto_receive()`` so a disconnect reported by the receive thread
     during connect setup runs the normal link-loss path (abort in-flight work
     and emit ``connected=False``) instead of the pre-connect early return; if
-    the session drops in that window, ``connect()`` raises ``KernelError`` and
-    does not emit ``connected=True`` on a dead session.
+    the session drops in that window, ``connect()`` raises (wrapped like other
+    transport connect failures so ``async_connect`` surfaces
+    ``Elke27ConnectionError``) and does not emit ``connected=True`` on a dead
+    session.
   - Connection events (#80): when HELLO fails for a reason other than a panel
     refusal, the kernel no longer emits an unflagged `ConnectionStateChanged`
     with `connected=False` if the session never reached `connected=True` (same

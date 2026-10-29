@@ -726,9 +726,10 @@ class E27Kernel:
         self.state.panel.connected = True
         s.start_auto_receive()
         if not self.state.panel.connected:
-            raise KernelError(
+            drop = ConnectionLost(
                 "Session disconnected during connect() before the connection was established."
             )
+            raise KernelError(f"Session connect failed for {host}:{port}: {drop}") from drop
 
         self.state.table_info_by_domain.clear()
         self.state.table_info_known.clear()

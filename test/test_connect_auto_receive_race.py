@@ -9,7 +9,7 @@ import pytest
 from elke27_lib import linking
 from elke27_lib import session as session_mod
 from elke27_lib.client import Elke27Client, Elke27DisconnectedError, LinkKeys
-from elke27_lib.errors import Elke27ProtocolError
+from elke27_lib.errors import Elke27ConnectionError
 from elke27_lib.events import ConnectionStateChanged, Event
 from elke27_lib.kernel import E27Kernel, KernelError
 
@@ -95,7 +95,7 @@ async def test_disconnect_during_start_auto_receive_not_lost(
         auto_receive_thread_fallback=True,
     )
 
-    with pytest.raises(KernelError, match="disconnected during connect"):
+    with pytest.raises(KernelError, match="Session connect failed"):
         await kernel.connect(KEYS, session_config=cfg, client_identity=IDENTITY)
 
     assert kernel.state.panel.connected is False
@@ -113,7 +113,7 @@ async def test_async_connect_race_does_not_leave_client_connected(
     _patch_session_race(monkeypatch)
 
     client = Elke27Client()
-    with pytest.raises(Elke27ProtocolError):
+    with pytest.raises(Elke27ConnectionError):
         await client.async_connect("198.51.100.1", 1, LINK_KEYS)
 
     assert client.state.panel.connected is False
