@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import TypeAlias
 
 from elke27_lib.types import CsmSnapshot
 
@@ -221,6 +222,9 @@ class BarrierState:
     last_update_at: float | None = None
 
 
+BarrierStateMap: TypeAlias = dict[int, BarrierState]
+
+
 @dataclass(slots=True)
 class LockState:
     lock_id: int
@@ -325,7 +329,7 @@ class PanelState:
     zone_def_flags_by_name: dict[str, dict[str, object]] = field(default_factory=dict)
     outputs: dict[int, OutputState] = field(default_factory=dict)
     lights: dict[int, LightState] = field(default_factory=dict)
-    barriers: dict[int, BarrierState] = field(default_factory=dict)
+    barriers: BarrierStateMap = field(default_factory=dict)
     locks: dict[int, LockState] = field(default_factory=dict)
     tstats: dict[int, TstatState] = field(default_factory=dict)
     users: dict[int, UserState] = field(default_factory=dict)

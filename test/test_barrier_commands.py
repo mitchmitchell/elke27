@@ -132,6 +132,44 @@ async def test_set_barrier_unknown_inventory_allows_send() -> None:
     assert len(calls) == 1
 
 
+@pytest.mark.asyncio
+async def test_set_barrier_rejects_id_missing_from_complete_inventory() -> None:
+    client, kernel, calls = _client()
+    kernel.state.inventory.configured_barriers = {2}
+    kernel.state.inventory.configured_barriers_complete = True
+    client.async_execute = _executor(calls, Result(ok=True, data={}, error=None))  # type: ignore[method-assign]
+    await client.async_set_barrier(2, open=False)
+    assert calls == [("barrier_set_status", {"barrier_id": 2, "status": "close"})]
+    with pytest.raises(Elke27InvalidArgument, match="not configured"):
+        await client.async_set_barrier(1, open=True)
+    assert len(calls) == 1
+
+
+def test_kernel_barrier_state_map_and_inventory_are_concrete() -> None:
+    kernel = E27Kernel()
+    inv = kernel.state.inventory
+    assert inv.configured_barriers == set()
+    assert inv.configured_barriers_complete is False
+    inv.configured_barriers = {4}
+    inv.configured_barriers_complete = True
+
+    barrier = kernel.state.get_or_create_barrier(4)
+    assert isinstance(barrier, KernelBarrierState)
+    assert kernel.state.barriers[4] is barrier
+
+
+def test_client_barriers_property_exposes_kernel_barrier_state() -> None:
+    kernel = E27Kernel()
+    kernel.state.barriers[2] = KernelBarrierState(
+        barrier_id=2, name="Driveway", status="OPEN", fields={"rssi": -55}
+    )
+    kernel.state.table_info_by_domain["barrier"] = {"table_elements": 2}
+    client = Elke27Client(kernel=kernel)
+    exposed = client.barriers[2]
+    assert isinstance(exposed, KernelBarrierState)
+    assert (exposed.name, exposed.status, exposed.fields.get("rssi")) == ("Driveway", "OPEN", -55)
+
+
 def test_barrier_set_status_is_send_once() -> None:
     assert "barrier_set_status" in _SEND_ONCE_COMMANDS
     assert ("barrier", "set_status") in E27Kernel()._disable_retries_for_routes
