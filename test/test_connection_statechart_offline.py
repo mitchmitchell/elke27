@@ -378,11 +378,11 @@ async def test_o9a_io_error_from_closed_session_ignored(
     assert [e.connected for e in events] == [True, False]
 
 
-@NEEDS_OWNERSHIP_FIX
 @pytest.mark.asyncio
 async def test_o9b_protocol_error_from_closed_session_ignored(
     reg: _Registry, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """O9b: a late protocol error after explicit close must not emit a 2nd False (#83)."""
     kernel, events = _kernel(monkeypatch)
     await _connect(kernel)
     await kernel.close()
@@ -493,12 +493,11 @@ def test_o16_intentional_close_wakes_receiver_without_lost(
 # ------------------------------------------------------------------ O17
 
 
-@NEEDS_OWNERSHIP_FIX
 @pytest.mark.asyncio
 async def test_o17_link_loss_racing_close_emits_one_false(
     reg: _Registry, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A receiver-thread loss that lands just after close() must not add a 2nd False."""
+    """O17: a receiver-thread loss just after close() must not add a 2nd False (#83)."""
     kernel, events = _kernel(monkeypatch)
     await _connect(kernel)
     s = reg.sessions[0]
