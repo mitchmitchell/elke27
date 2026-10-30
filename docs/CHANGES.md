@@ -1,5 +1,15 @@
   Unreleased
 
+  - Barrier typing (#87): ``PanelState.barriers`` is now an explicit
+    ``BarrierStateMap`` (``dict[int, BarrierState]``), with public API
+    regression tests for complete-inventory rejection, kernel barrier map
+    storage, and ``client.barriers`` exposing kernel ``BarrierState``
+    instances. Behavior unchanged.
+  - Keepalive rescue (#88): a keepalive probe is rescued only by traffic
+    received after that probe's own send time. A forced probe queued behind an
+    in-flight command no longer uses the command's earlier send time, which
+    fixes ``test_o14_keepalive_traffic_rescue`` on Python 3.11.
+
   - Keepalive test seam (#79): ``E27Kernel`` accepts optional
     ``KeepaliveTestHooks`` (injectable sleep and keepalive reply-timeout
     scheduling) so offline connection statechart cases O10-O15 run
