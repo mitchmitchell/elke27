@@ -30,6 +30,7 @@ class _FakePanel:
         self.sessions: list[_FakeSession] = []
         self.auth: str = "accept"
         self.held: list[tuple[_FakeSession, dict[str, Any]]] = []
+        self.held_event = asyncio.Event()
         self.overrides: dict[tuple[str, str], Callable[[dict[str, Any]], dict[str, Any]]] = {}
 
     @property
@@ -61,6 +62,7 @@ class _FakePanel:
             reply = {"seq": seq, "authenticate": {"error_code": code}}
             if self.auth == "hold":
                 self.held.append((session, reply))
+                self.held_event.set()
                 return
             loop.call_soon(session.on_message, reply)
             return

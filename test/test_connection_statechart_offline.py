@@ -26,6 +26,7 @@ from elke27_lib import session as session_mod
 from elke27_lib.events import ConnectionStateChanged, Event
 from elke27_lib.hello import SessionKeys
 from elke27_lib.kernel import E27Kernel, KernelError
+from elke27_lib.pending import PendingResponseManager
 from test.helpers import keepalive_seam
 from test.helpers.reauth_panel import (
     _authenticate,
@@ -64,6 +65,7 @@ class _Fake:
         self.sent: list[dict[str, Any]] = []
         self.close_count = 0
         self.connect_started = threading.Event()
+        self.closed = threading.Event()
         registry.sessions.append(self)
 
     @property
@@ -72,6 +74,7 @@ class _Fake:
 
     def connect(self) -> session_mod.SessionInfo:
         self.connect_started.set()
+        self.registry.connect_started.set()
         if self.gate is not None:
             self.gate.wait(5)
         if self.mode == "oserror":
@@ -118,6 +121,7 @@ class _Fake:
     def close(self) -> None:
         self.close_count += 1
         self.state = session_mod.SessionState.DISCONNECTED
+        self.closed.set()
 
 
 class _Registry:
@@ -125,6 +129,7 @@ class _Registry:
         self.sessions: list[_Fake] = []
         self.modes: list[str] = []
         self.gates: list[threading.Event | None] = []
+        self.connect_started = threading.Event()
 
     def next_mode(self) -> str:
         return self.modes.pop(0) if self.modes else "ok"
@@ -165,12 +170,9 @@ async def _connect(kernel: E27Kernel) -> session_mod.SessionState:
     return await kernel.connect(KEYS, session_config=CFG, client_identity=IDENTITY)
 
 
-async def _until(cond: Callable[[], bool], timeout_s: float = 2.0) -> None:
-    deadline = time.monotonic() + timeout_s
-    while not cond():
-        if time.monotonic() > deadline:
-            raise AssertionError("condition not met in time")
-        await asyncio.sleep(0.005)
+async def _wait(event: threading.Event, timeout_s: float = 2.0) -> None:
+    if not await asyncio.to_thread(event.wait, timeout_s):
+        raise AssertionError("event not set in time")
 
 
 def _pairs_ok(events: list[ConnectionStateChanged]) -> bool:
@@ -234,12 +236,12 @@ async def test_o2_cancel_during_hello_then_success_closes_orphan(
     gate = threading.Event()
     reg.gates = [gate]
     task = asyncio.create_task(_connect(kernel))
-    await _until(lambda: bool(reg.sessions) and reg.sessions[0].connect_started.is_set())
+    await _wait(reg.connect_started)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
     gate.set()
-    await _until(lambda: reg.sessions[0].close_count >= 1)
+    await _wait(reg.sessions[0].closed)
     assert reg.live_count() == 0
     assert not _has_session(kernel)
     assert [e for e in events if not e.connected] == []
@@ -255,15 +257,15 @@ async def test_o3_orphan_hello_failure_does_not_touch_newer_session(
     reg.modes = ["proto", "ok"]
     reg.gates = [gate, None]
     task = asyncio.create_task(_connect(kernel))
-    await _until(lambda: bool(reg.sessions) and reg.sessions[0].connect_started.is_set())
+    await _wait(reg.connect_started)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
     await _connect(kernel)
     assert kernel.state.panel.connected
     gate.set()
-    await _until(lambda: reg.sessions[0].close_count >= 1)
-    await asyncio.sleep(0.05)
+    await _wait(reg.sessions[0].closed)
+    await asyncio.sleep(0)
     assert kernel.state.panel.connected
     assert [e.connected for e in events] == [True]
 
@@ -484,9 +486,17 @@ async def test_o17_link_loss_racing_close_emits_one_false(
     kernel, events = _kernel(monkeypatch)
     await _connect(kernel)
     s = reg.sessions[0]
+    closing = threading.Event()
+    real_close = s.close
+
+    def _close() -> None:
+        closing.set()
+        real_close()
+
+    s.close = _close
     late = threading.Thread(
         target=lambda: (
-            time.sleep(0.02),
+            closing.wait(2.0),
             s.on_disconnected(session_mod.SessionProtocolError("racing loss (fake)")),
         )
     )
@@ -530,7 +540,7 @@ def replying_panel(monkeypatch: pytest.MonkeyPatch) -> _FakePanel:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("auth", ["hold", "refuse"])
 async def test_o19_command_issued_before_reauth_reply(
-    replying_panel: _FakePanel, auth: str
+    replying_panel: _FakePanel, auth: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """O19: after a reconnect with opt-in re-auth, a command issued before the
     re-auth reply never hangs. If the panel accepts, the command succeeds once
@@ -540,6 +550,17 @@ async def test_o19_command_issued_before_reauth_reply(
     assert await _authenticate(client) is True
     authed = {"v": False}
 
+    status_pending = asyncio.Event()
+    real_create = PendingResponseManager.create
+
+    def _create(self: PendingResponseManager, seq: int, **kwargs: Any) -> Any:
+        future = real_create(self, seq, **kwargs)
+        if kwargs.get("command_key") == "area_get_status":
+            status_pending.set()
+        return future
+
+    monkeypatch.setattr(PendingResponseManager, "create", _create)
+
     def _status(msg: dict[str, Any]) -> dict[str, Any]:
         code = 0 if authed["v"] else 11008
         return {"seq": msg["seq"], "area": {"get_status": {"area_id": 1, "error_code": code}}}
@@ -548,10 +569,10 @@ async def test_o19_command_issued_before_reauth_reply(
     panel.auth = auth
     await _drop_and_reconnect(client, panel, clock)
     if auth == "hold":
-        await _until(lambda: bool(panel.held))
+        await asyncio.wait_for(panel.held_event.wait(), timeout=2.0)
     started = time.monotonic()
     task = asyncio.create_task(client.async_execute("area_get_status", area_id=1))
-    await asyncio.sleep(0.05)
+    await asyncio.wait_for(status_pending.wait(), timeout=2.0)
     if auth == "hold":
         authed["v"] = True
         panel.release_held()
@@ -576,7 +597,7 @@ async def test_o20_close_during_connect_leaves_no_live_session(
     gate = threading.Event()
     reg.gates = [gate]
     task = asyncio.create_task(_connect(kernel))
-    await _until(lambda: bool(reg.sessions) and reg.sessions[0].connect_started.is_set())
+    await _wait(reg.connect_started)
     await kernel.close()
     gate.set()
     with pytest.raises(KernelError):
