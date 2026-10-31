@@ -118,6 +118,13 @@ The library exposes read-only accessors for:
     pending exit-delay state. Stay→away without a full status payload leaves
     `arming` false; HA should run skip/entry logic only after a fresh full
     `get_status`, not on partial broadcasts alone.
+  - `entry_delay` is `True` while armed with `ee_timer` > 0 and a non-empty
+    `alarm_zone` (the tripped entry zone). HA should map state in the order
+    `alarm_active` → TRIGGERED, `entry_delay` → PENDING, `arming` → ARMING.
+    Being armed no longer clears `ee_timer` / `alarm_zone`; a payload that
+    touches the ee fields clears only the ones it omits (#92).
+  - `alarm_active` is set from `alarm_state` (when not `NO_ALARM_ACTIVE`) or
+    from a non-empty documented `alarms` / `alrm_snd` field.
 - zones
 - outputs
 - lights

@@ -230,6 +230,15 @@ class AreaState:
             return False
         return True
 
+    @property
+    def entry_delay(self) -> bool:
+        """True during an entry delay: armed, ee_timer running, and a tripped alarm_zone."""
+        if self.arm_mode in (None, ArmMode.DISARMED):
+            return False
+        if self.ee_timer is None or self.ee_timer <= 0:
+            return False
+        return bool(self.alarm_zone)
+
 
 @dataclass(frozen=True, slots=True)
 class ZoneState:
