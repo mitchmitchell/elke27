@@ -158,6 +158,24 @@ class _QueuedRequest:
     deadline_at: float = 0.0
 
 
+@dataclass(slots=True)
+class KeepaliveStats:
+    """Keepalive counters since the kernel was created. Counts and timings only.
+
+    ``misses`` counts every failed keepalive check, including checks where the
+    probe never left (send error, send-wait timeout, session not active), so it
+    can exceed ``probes_sent - replies - rescued``.
+    """
+
+    probes_sent: int = 0
+    replies: int = 0
+    rescued: int = 0
+    misses: int = 0
+    consecutive_missed: int = 0
+    last_round_trip_s: float | None = None
+    max_round_trip_s: float | None = None
+
+
 def _queued_request_is_keepalive(item: _QueuedRequest) -> bool:
     if item.domain == "system" and item.name == "r_u_alive":
         return True
@@ -365,6 +383,7 @@ class E27Kernel:
     _keepalive_timeout_s: float
     _keepalive_max_missed: int
     _keepalive_missed: int
+    _keepalive_stats: KeepaliveStats
     _last_exchange_at: float
     _last_rx_at: float
     _keepalive_inflight: bool
@@ -486,6 +505,7 @@ class E27Kernel:
         # Max wait for a probe to leave the outbound queue (covers one in-flight
         # command's reply timeout).
         self._keepalive_send_wait_s = 30.0
+        self._keepalive_stats = KeepaliveStats()
         self._keepalive_missed = 0
         now = self.now()
         self._last_exchange_at = now
@@ -817,6 +837,12 @@ class E27Kernel:
         # Fresh event per keepalive run: an Event created under an earlier
         # (possibly closed) event loop must not be reused after reconnect.
         self._keepalive_wake = asyncio.Event()
+        self._log.debug(
+            "E27 keepalive armed (interval=%.1fs, timeout=%.1fs, max_missed=%d)",
+            self._keepalive_interval_s,
+            self._keepalive_timeout_s,
+            self._keepalive_max_missed,
+        )
         self._keepalive_task = self._loop.create_task(self._keepalive_loop())
 
     def _stop_keepalive(self) -> None:
@@ -874,6 +900,15 @@ class E27Kernel:
         wake.clear()
         if sleeper in done:
             sleeper.result()
+
+    @property
+    def keepalive_stats(self) -> KeepaliveStats:
+        """A copy of the keepalive counters; see ``KeepaliveStats``.
+
+        ``rescued`` counts probes with no reply where other traffic arrived after
+        the probe, so the link was kept.
+        """
+        return replace(self._keepalive_stats, consecutive_missed=self._keepalive_missed)
 
     async def _keepalive_loop(self) -> None:
         if self._keepalive_wake is None:
@@ -935,6 +970,12 @@ class E27Kernel:
                 self._keepalive_missed = 0
                 continue
             self._keepalive_missed += 1
+            self._keepalive_stats.misses += 1
+            self._log.debug(
+                "E27 keepalive missed (missed=%d of %d)",
+                self._keepalive_missed,
+                self._keepalive_max_missed,
+            )
             if self._keepalive_missed >= self._keepalive_max_missed:
                 session.handle_disconnect(session_mod.SessionProtocolError("Keepalive timed out"))
                 return
@@ -1006,9 +1047,11 @@ class E27Kernel:
             if probe_sent_at is None:
                 probe_sent_at = self._probe_sent_at(seq)
             sent_at = probe_sent_at if probe_sent_at is not None else self.now()
+            stats = self._keepalive_stats
+            stats.probes_sent += 1
+            self._log.debug("E27 keepalive probe sent")
             try:
                 await future
-                return True
             except E27Timeout:
                 # Info, not warning: if this means the link is dead, the client
                 # logs the single "Panel connection lost" warning.
@@ -1018,7 +1061,11 @@ class E27Kernel:
                         seq,
                         self.state.panel.session_id,
                     )
-                return self._last_rx_at > sent_at
+                rescued = self._last_rx_at > sent_at
+                if rescued:
+                    stats.rescued += 1
+                    self._log.debug("E27 keepalive reply missing; later traffic kept the link")
+                return rescued
             except Exception as exc:  # noqa: BLE001
                 self._log.warning(
                     "E27 keepalive check failed: seq=%s session_id=%s error=%s",
@@ -1028,6 +1075,19 @@ class E27Kernel:
                     exc_info=True,
                 )
                 return self._last_rx_at > sent_at
+            rtt = max(0.0, self.now() - sent_at)
+            stats.replies += 1
+            stats.last_round_trip_s = rtt
+            if stats.max_round_trip_s is None or rtt > stats.max_round_trip_s:
+                stats.max_round_trip_s = rtt
+            self._log.debug(
+                "E27 keepalive round-trip ok in %.3fs (replies=%d, max=%.3fs, timeout=%.1fs)",
+                rtt,
+                stats.replies,
+                stats.max_round_trip_s,
+                self._keepalive_timeout_s,
+            )
+            return True
         finally:
             self._keepalive_inflight = False
 

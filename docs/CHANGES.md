@@ -9,6 +9,16 @@
     received after that probe's own send time. A forced probe queued behind an
     in-flight command no longer uses the command's earlier send time, which
     fixes ``test_o14_keepalive_traffic_rescue`` on Python 3.11.
+  - Keepalive observability (#81): new public read-only
+    ``E27Kernel.keepalive_stats`` returns a copy of the new ``KeepaliveStats``
+    dataclass (``probes_sent``, ``replies``, ``rescued``, ``misses``,
+    ``consecutive_missed``, ``last_round_trip_s``, ``max_round_trip_s``),
+    counted since the kernel was created. New DEBUG lines: ``E27 keepalive
+    armed`` (interval, timeout, max_missed), ``E27 keepalive probe sent``,
+    ``E27 keepalive round-trip ok`` (with ``replies``, ``max=`` and
+    ``timeout``), ``E27 keepalive missed`` and a rescued-by-later-traffic
+    line; counts and timings only, no identifiers. Keepalive timing and the
+    miss budget (``keepalive_max_missed = 1``) are unchanged.
 
   - Keepalive test seam (#79): ``E27Kernel`` accepts optional
     ``KeepaliveTestHooks`` (injectable sleep and keepalive reply-timeout
