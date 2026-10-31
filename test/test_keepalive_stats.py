@@ -15,7 +15,7 @@ import pytest
 
 from elke27_lib import linking
 from elke27_lib import session as session_mod
-from elke27_lib.kernel import E27Kernel
+from elke27_lib.kernel import E27Kernel, KeepaliveStats
 
 KEYS = linking.E27LinkKeys("aa", "bb", "cc")
 IDENTITY = linking.E27Identity("mn", "sn", "fw", "hw", "os")
@@ -100,14 +100,11 @@ async def _wait(cond: Any) -> None:
 
 
 def test_stats_start_at_zero() -> None:
-    assert E27Kernel().keepalive_stats == {
-        "probes_sent": 0,
-        "replies": 0,
-        "rescued": 0,
-        "misses": 0,
-        "last_round_trip_s": None,
-        "consecutive_missed": 0,
-    }
+    assert E27Kernel().keepalive_stats == KeepaliveStats()
+
+
+def test_default_miss_budget_is_one() -> None:
+    assert session_mod.SessionConfig(host="198.51.100.1", port=1).keepalive_max_missed == 1
 
 
 @pytest.mark.asyncio
@@ -117,17 +114,21 @@ async def test_round_trips_log_debug_and_count(
     kernel, _made = _kernel(monkeypatch, answer=True)
     with caplog.at_level(logging.DEBUG, logger="elke27_lib.kernel"):
         await kernel.connect(KEYS, session_config=_cfg(), client_identity=IDENTITY)
-        await _wait(lambda: (kernel.keepalive_stats["replies"] or 0) >= 2)
+        await _wait(lambda: kernel.keepalive_stats.replies >= 2)
         await kernel.close()
     stats = kernel.keepalive_stats
-    assert stats["misses"] == 0
-    assert stats["consecutive_missed"] == 0
-    assert isinstance(stats["last_round_trip_s"], float)
+    assert stats.misses == 0
+    assert stats.consecutive_missed == 0
+    assert isinstance(stats.last_round_trip_s, float)
+    assert stats.max_round_trip_s is not None
+    assert stats.max_round_trip_s >= stats.last_round_trip_s
     ok = [r for r in caplog.records if "keepalive round-trip ok" in r.getMessage()]
     sent = [r for r in caplog.records if "keepalive probe sent" in r.getMessage()]
     assert len(ok) >= 2 and len(sent) >= 2
-    assert "missed=0" in ok[-1].getMessage()
-    for r in ok + sent:
+    armed = [r for r in caplog.records if "keepalive armed" in r.getMessage()]
+    assert "max_missed=1" in armed[0].getMessage()
+    assert "timeout=" in ok[-1].getMessage()
+    for r in ok + sent + armed:
         assert r.levelno == logging.DEBUG
         assert not _NO_IDS.search(r.getMessage())
 
@@ -141,9 +142,9 @@ async def test_unanswered_probe_counts_miss_and_logs(
         await kernel.connect(KEYS, session_config=_cfg(), client_identity=IDENTITY)
         await _wait(lambda: bool(made[0].disconnects))
     stats = kernel.keepalive_stats
-    assert stats["probes_sent"] == 1
-    assert stats["replies"] == 0
-    assert stats["misses"] == 1
+    assert stats.probes_sent == 1
+    assert stats.replies == 0
+    assert stats.misses == 1
     msgs = [r.getMessage() for r in caplog.records]
     assert any("keepalive missed (missed=1 of 1)" in m for m in msgs)
     await kernel.close()
@@ -156,14 +157,14 @@ async def test_unanswered_probe_rescued_by_later_traffic(
     kernel, made = _kernel(monkeypatch, answer=False, rescue=True)
     with caplog.at_level(logging.DEBUG, logger="elke27_lib.kernel"):
         await kernel.connect(KEYS, session_config=_cfg(), client_identity=IDENTITY)
-        await _wait(lambda: (kernel.keepalive_stats["rescued"] or 0) >= 1)
+        await _wait(lambda: kernel.keepalive_stats.rescued >= 1)
         stats = kernel.keepalive_stats
         assert made[0].disconnects == []
         await kernel.close()
-    assert (stats["probes_sent"] or 0) >= 1
-    assert stats["replies"] == 0
-    assert stats["misses"] == 0
-    assert stats["consecutive_missed"] == 0
+    assert stats.probes_sent >= 1
+    assert stats.replies == 0
+    assert stats.misses == 0
+    assert stats.consecutive_missed == 0
     rescued = [r for r in caplog.records if "later traffic kept the link" in r.getMessage()]
     assert rescued
     for r in rescued:
