@@ -74,6 +74,15 @@ a breaking change.
     status read). Reconnect / snapshot reset clears
     pending exit-delay state. Stay→away changes without a full `get_status`
     show `arming` false; use a fresh full status read before skip/entry logic.
+    `entry_delay` is `True` when the area is armed (away/stay/night), `ee_timer`
+    > 0, and `alarm_zone` is non-empty (the Dealer API `area_get_status` note:
+    `ee_timer` is the exit timer when `alarm_zone` is empty, otherwise the entry
+    timer). The armed state alone never clears `ee_timer` or `alarm_zone`; they
+    clear only when a status payload that touches them omits them (#92).
+    `alarm_active` is `True` when `alarm_state` is present and not
+    `NO_ALARM_ACTIVE`, or when the documented `alarms` or `alrm_snd` field is
+    non-empty. The undocumented `entry_delay_active` / `exit_delay_active`
+    payload keys are no longer read.
 - `zones`
 - `outputs`
 - `lights`

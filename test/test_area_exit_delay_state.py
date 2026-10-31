@@ -49,7 +49,7 @@ def _base_status_payload(**overrides: object) -> dict[str, object]:
         "arm_state": "DISARMED",
         "ready_status": "RDY_AWAY",
         "alarm_zone": "",
-        "alarms": [],
+        "alarms": "",
         "alarm_mem": [],
         "zones_bypassed": 0,
         "arm_cmd_state": "ARMED_AWAY",
@@ -59,7 +59,7 @@ def _base_status_payload(**overrides: object) -> dict[str, object]:
         "xzn_id": 0,
         "xzn_time": 0,
         "ee_timer": 45,
-        "alrm_snd": False,
+        "alrm_snd": "",
         "auto_arm_timer": 0,
         "error_code": E27ErrorCode.ELKERR_NONE,
     }
@@ -92,7 +92,7 @@ def test_exit_delay_payload_updates_internal_and_public_snapshot() -> None:
     assert snapshot_area.arming is True
 
 
-def test_fully_armed_payload_clears_exit_delay_pending_fields() -> None:
+def test_fully_armed_payload_keeps_reported_ee_fields() -> None:
     state = PanelState()
     handler = _status_handler(state)
     msg = {
@@ -107,14 +107,14 @@ def test_fully_armed_payload_clears_exit_delay_pending_fields() -> None:
     assert handler(msg, make_ctx()) is True
     area = state.areas[1]
     assert area.arm_state == "ARMED_STAY"
-    assert area.arm_cmd_state is None
-    assert area.ee_timer is None
+    assert area.arm_cmd_state == "ARMED_STAY"
+    assert area.ee_timer == 0
 
     snapshot_area = _snapshot_for(area)
     assert snapshot_area.arm_mode is ArmMode.ARMED_STAY
-    assert snapshot_area.arm_cmd_mode is None
-    assert snapshot_area.ee_timer is None
+    assert snapshot_area.ee_timer == 0
     assert snapshot_area.arming is False
+    assert snapshot_area.entry_delay is False
 
 
 def test_missing_alarm_zone_makes_arming_false() -> None:
@@ -823,3 +823,110 @@ def test_disconnect_snapshot_reset_clears_exit_delay_pending() -> None:
     assert public_area.arming is False
     assert public_area.arm_cmd_mode is None
     assert public_area.ee_timer is None
+
+
+def test_entry_delay_payload_kept_while_armed() -> None:
+    state = PanelState()
+    handler = _status_handler(state)
+    msg = {
+        "area": {
+            "get_status": _base_status_payload(
+                arm_state="ARMED_AWAY",
+                arm_cmd_state="ARMED_AWAY",
+                ee_timer=20,
+                alarm_zone="Front Door",
+            )
+        }
+    }
+    assert handler(msg, make_ctx()) is True
+    area = state.areas[1]
+    assert area.ee_timer == 20
+    assert area.alarm_zone == "Front Door"
+
+    snapshot_area = _snapshot_for(area)
+    assert snapshot_area.entry_delay is True
+    assert snapshot_area.arming is False
+    assert snapshot_area.alarm_active is False
+
+
+def test_exit_delay_is_not_entry_delay() -> None:
+    state = PanelState()
+    handler = _status_handler(state)
+    assert handler({"area": {"get_status": _base_status_payload()}}, make_ctx()) is True
+    snapshot_area = _snapshot_for(state.areas[1])
+    assert snapshot_area.arming is True
+    assert snapshot_area.entry_delay is False
+
+
+def test_entry_delay_turns_off_on_disarm() -> None:
+    state = PanelState()
+    handler = _status_handler(state)
+    on = _base_status_payload(
+        arm_state="ARMED_AWAY", arm_cmd_state="ARMED_AWAY", ee_timer=20, alarm_zone="Front Door"
+    )
+    assert handler({"area": {"get_status": on}}, make_ctx()) is True
+    assert _snapshot_for(state.areas[1]).entry_delay is True
+
+    off = _base_status_payload(
+        arm_state="DISARMED", arm_cmd_state="DISARMED", ee_timer=0, alarm_zone=""
+    )
+    assert handler({"area": {"get_status": off}}, make_ctx()) is True
+    snapshot_area = _snapshot_for(state.areas[1])
+    assert snapshot_area.entry_delay is False
+    assert snapshot_area.arming is False
+
+
+def test_entry_delay_off_when_timer_absent_from_payload() -> None:
+    state = PanelState()
+    handler = _status_handler(state)
+    on = _base_status_payload(
+        arm_state="ARMED_AWAY", arm_cmd_state="ARMED_AWAY", ee_timer=20, alarm_zone="Front Door"
+    )
+    assert handler({"area": {"get_status": on}}, make_ctx()) is True
+    partial = {"area_id": 1, "arm_state": "ARMED_AWAY", "alarm_zone": "Front Door"}
+    assert handler({"area": {"get_status": partial}}, make_ctx()) is True
+    area = state.areas[1]
+    assert area.ee_timer is None
+    assert _snapshot_for(area).entry_delay is False
+
+
+def test_unrelated_payload_keeps_entry_delay() -> None:
+    state = PanelState()
+    handler = _status_handler(state)
+    on = _base_status_payload(
+        arm_state="ARMED_AWAY", arm_cmd_state="ARMED_AWAY", ee_timer=20, alarm_zone="Front Door"
+    )
+    assert handler({"area": {"get_status": on}}, make_ctx()) is True
+    assert handler({"area": {"get_status": {"area_id": 1, "Chime": True}}}, make_ctx()) is True
+    assert _snapshot_for(state.areas[1]).entry_delay is True
+
+
+@pytest.mark.parametrize(
+    ("alarms", "alrm_snd", "expected"),
+    [("BURG", "BURG", True), ("BURG", "", True), ("", "BURG", True), ("", "", False)],
+)
+def test_documented_alarm_fields_map_to_alarm_active(
+    alarms: str, alrm_snd: str, expected: bool
+) -> None:
+    state = PanelState()
+    handler = _status_handler(state)
+    payload = _base_status_payload(
+        arm_state="ARMED_AWAY",
+        arm_cmd_state="ARMED_AWAY",
+        ee_timer=0,
+        alarm_zone="Front Door",
+        alarms=alarms,
+        alrm_snd=alrm_snd,
+    )
+    assert handler({"area": {"get_status": payload}}, make_ctx()) is True
+    area = state.areas[1]
+    assert area.alarms == alarms
+    assert area.alrm_snd == alrm_snd
+    assert _snapshot_for(area).alarm_active is expected
+
+
+def test_alarm_state_still_sets_alarm_active() -> None:
+    area = AreaState(area_id=1, arm_state="ARMED_AWAY", alarm_state="BURGLAR_ALARM")
+    assert _snapshot_for(area).alarm_active is True
+    cleared = AreaState(area_id=1, arm_state="ARMED_AWAY", alarm_state="NO_ALARM_ACTIVE")
+    assert _snapshot_for(cleared).alarm_active is False
