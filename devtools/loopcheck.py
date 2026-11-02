@@ -16,7 +16,9 @@ A finding on a line is suppressed only by ``# noqa: ELKnnn -- <reason>`` with a
 reason of at least three words. ELK003 and ELK005 cannot be suppressed.
 
 Usage: ``python devtools/loopcheck.py [--config pyproject.toml] PATH...``. Prints
-``path:line:col ELKnnn message`` per finding and exits 1 when there is any.
+``path:line:col ELKnnn message`` per finding and exits 1 when there is any. A file
+that does not parse is reported as one ELK000 finding. A path that does not exist is
+a usage error (exit 2).
 """
 
 from __future__ import annotations
@@ -136,7 +138,7 @@ NOQA_RE = re.compile(
     r"#\s*noqa(?P<colon>:\s*(?P<codes>[A-Za-z]+[0-9]+(?:[\s,]+[A-Za-z]+[0-9]+)*))?"
 )
 IGNORE_RE = re.compile(r"#\s*(?:type|pyright):\s*ignore(?:\[[^\]]*\])?")
-UNSUPPRESSIBLE = {"ELK003", "ELK005"}
+UNSUPPRESSIBLE = {"ELK000", "ELK003", "ELK005"}
 
 
 @dataclass(frozen=True, order=True)
@@ -483,7 +485,10 @@ def _imports_core(imports: _Imports, core: set[str]) -> str | None:
 def check_source(source: str, path: Path, config: Config) -> list[Finding]:
     """Check one module's source text and return its findings."""
     display = config.display(path)
-    tree = ast.parse(source, filename=str(path))
+    try:
+        tree = ast.parse(source, filename=str(path))
+    except SyntaxError as e:
+        return [Finding(display, e.lineno or 1, e.offset or 1, "ELK000", f"syntax error: {e.msg}")]
     imports = _Imports()
     imports.visit(tree)
     comments = _scan_comments(source)
@@ -582,6 +587,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, default=Path("pyproject.toml"))
     parser.add_argument("paths", nargs="+", type=Path)
     args = parser.parse_args(argv)
+    missing = [str(p) for p in args.paths if not p.exists()]
+    if missing:
+        parser.error(f"no such path: {', '.join(missing)}")
     config = Config.load(args.config)
     findings = check_paths(args.paths, config)
     for f in findings:

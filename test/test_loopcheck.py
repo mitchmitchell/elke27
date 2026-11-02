@@ -130,3 +130,33 @@ def test_cli_exits_zero_when_clean(tmp_path: Path) -> None:
 
 def test_not_wired_into_lint() -> None:
     assert "loopcheck" not in (ROOT / "devtools" / "lint.py").read_text(encoding="utf-8")
+
+
+def test_syntax_error_is_one_elk000_finding_not_a_traceback(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = tmp_path / "pyproject.toml"
+    cfg.write_text("", encoding="utf-8")
+    (tmp_path / "broken_loop.py").write_text("x = 1\ndef f(:\n", encoding="utf-8")
+    assert loopcheck.main(["--config", str(cfg), str(tmp_path)]) == 1
+    out = capsys.readouterr().out.strip()
+    assert out.startswith("broken_loop.py:2:")
+    assert " ELK000 syntax error: " in out
+    assert len(out.splitlines()) == 1
+
+
+def test_nonexistent_path_is_a_usage_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = tmp_path / "pyproject.toml"
+    cfg.write_text("", encoding="utf-8")
+    missing = tmp_path / "nope"
+    with pytest.raises(SystemExit) as exc:
+        loopcheck.main(["--config", str(cfg), str(missing)])
+    assert exc.value.code == 2
+    assert f"no such path: {missing}" in capsys.readouterr().err
+
+
+def test_hub_is_a_configured_loop_module() -> None:
+    config = loopcheck.Config.load(ROOT / "pyproject.toml")
+    assert config.is_loop(ROOT / "src" / "elke27_lib" / "hub.py")

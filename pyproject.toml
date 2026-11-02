@@ -260,7 +260,11 @@ reportUnreachable = false
 
 [tool.elke27.loopcheck]
 # Rules: grokbots/architecture/Elk/2026-11-02-elk-filename-rules-no-blocking-in-loop-modules.md
-loop_modules = ["src/elke27_lib/client.py", "src/elke27_lib/discovery.py"]
+loop_modules = [
+    "src/elke27_lib/client.py",
+    "src/elke27_lib/discovery.py",
+    "src/elke27_lib/hub.py",
+]
 loop_paths = [
     "src/elke27_lib/__init__.py",
     "src/elke27_lib/features",
