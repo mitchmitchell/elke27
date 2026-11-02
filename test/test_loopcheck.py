@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import sys
 from pathlib import Path
@@ -160,3 +161,25 @@ def test_nonexistent_path_is_a_usage_error(
 def test_hub_is_a_configured_loop_module() -> None:
     config = loopcheck.Config.load(ROOT / "pyproject.toml")
     assert config.is_loop(ROOT / "src" / "elke27_lib" / "hub.py")
+
+
+def test_each_import_is_recorded_once() -> None:
+    imports = loopcheck.ImportTable()
+    imports.visit(ast.parse("from . import client\nfrom .hub import Elke27Hub\n"))
+    assert [(name, relative) for _, name, relative in imports.imports] == [
+        ("client", True),
+        ("hub", True),
+    ]
+
+
+def test_builtin_open_and_io_open_are_elk105(tmp_path: Path) -> None:
+    target = tmp_path / "f_loop.py"
+    target.write_text(
+        "import io\n\n\ndef f():\n    open('a')\n    io.open('b')\n",
+        encoding="utf-8",
+    )
+    findings = loopcheck.check_paths([target], loopcheck.Config(root=tmp_path))
+    assert [(f.code, f.line, f.message) for f in findings] == [
+        ("ELK105", 5, "blocking file I/O open"),
+        ("ELK105", 6, "blocking file I/O io.open"),
+    ]

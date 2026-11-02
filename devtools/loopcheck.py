@@ -105,7 +105,6 @@ PROCESS_CALLS = {
     "os.waitid",
 }
 FILE_CALLS = {
-    "open",
     "io.open",
     "os.read",
     "os.write",
@@ -265,7 +264,7 @@ def _dotted(node: ast.AST) -> str | None:
     return None
 
 
-class _Imports(ast.NodeVisitor):
+class ImportTable(ast.NodeVisitor):
     """Alias map from local names to qualified names, plus the import list."""
 
     def __init__(self) -> None:
@@ -289,15 +288,13 @@ class _Imports(ast.NodeVisitor):
             self.imports.append(
                 (node, qualified if not relative else module or alias.name, relative)
             )
-            if relative and not module:
-                self.imports.append((node, alias.name, True))
             self.aliases[alias.asname or alias.name] = qualified
 
 
 class _Checker:
     """Walks one module and collects ELK findings."""
 
-    def __init__(self, tree: ast.Module, imports: _Imports) -> None:
+    def __init__(self, tree: ast.Module, imports: ImportTable) -> None:
         self.tree = tree
         self.aliases = imports.aliases
         self.found: list[tuple[int, int, str, str]] = []
@@ -393,9 +390,7 @@ class _Checker:
             self.add(call, "ELK103", f"blocking HTTP call {qualified}")
         elif qualified in PROCESS_CALLS:
             self.add(call, "ELK104", f"blocking process call {qualified}")
-        elif (qualified in FILE_CALLS and qualified != "open") or self.is_builtin(
-            call.func, "open"
-        ):
+        elif qualified in FILE_CALLS or self.is_builtin(call.func, "open"):
             self.add(call, "ELK105", f"blocking file I/O {qualified or 'open'}")
         elif method in PATH_IO_METHODS:
             self.add(call, "ELK105", f"blocking file I/O .{method}()")
@@ -469,7 +464,7 @@ def _is_threadsafe_call(checker: _Checker, node: ast.AST | None) -> bool:
     )
 
 
-def _imports_core(imports: _Imports, core: set[str]) -> str | None:
+def _imports_core(imports: ImportTable, core: set[str]) -> str | None:
     for _, name, relative in imports.imports:
         head = name.split(".")[0]
         if not relative and head in ELK001_STDLIB:
@@ -489,7 +484,7 @@ def check_source(source: str, path: Path, config: Config) -> list[Finding]:
         tree = ast.parse(source, filename=str(path))
     except SyntaxError as e:
         return [Finding(display, e.lineno or 1, e.offset or 1, "ELK000", f"syntax error: {e.msg}")]
-    imports = _Imports()
+    imports = ImportTable()
     imports.visit(tree)
     comments = _scan_comments(source)
     raw: list[tuple[int, int, str, str]] = []
