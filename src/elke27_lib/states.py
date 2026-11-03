@@ -75,7 +75,7 @@ class AreaState:
     chime: bool | None = None
     entry_delay_active: bool | None = None
     exit_delay_active: bool | None = None
-    trouble: bool | None = None
+    trouble_status: str | None = None
 
     # Common counts (if reported)
     num_not_ready_zones: int | None = None
