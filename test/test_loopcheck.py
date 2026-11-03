@@ -105,7 +105,9 @@ def test_loop_path_directory_scopes_every_file(tmp_path: Path) -> None:
 
 def test_reasoned_noqa_cannot_silence_elk003(tmp_path: Path) -> None:
     target = tmp_path / "a_loop.py"
-    target.write_text("x = 1  # type: ignore\n", encoding="utf-8")
+    target.write_text(
+        "x = 1  # noqa: ELK003 -- reason given here  # type: ignore\n", encoding="utf-8"
+    )
     findings = loopcheck.check_paths([target], loopcheck.Config(root=tmp_path))
     assert [f.code for f in findings] == ["ELK003"]
 
@@ -183,3 +185,34 @@ def test_builtin_open_and_io_open_are_elk105(tmp_path: Path) -> None:
         ("ELK105", 5, "blocking file I/O open"),
         ("ELK105", 6, "blocking file I/O io.open"),
     ]
+
+
+def _lock_and_queue_findings(tmp_path: Path, body: str) -> list[tuple[str, int]]:
+    target = tmp_path / "w_loop.py"
+    target.write_text(
+        "import threading\nfrom queue import Queue\n\n\ndef f():\n"
+        "    lock = threading.Lock()\n    q = Queue()\n" + body,
+        encoding="utf-8",
+    )
+    findings = loopcheck.check_paths([target], loopcheck.Config(root=tmp_path))
+    assert [(f.code, f.line) for f in findings if f.code == "ELK002"] == [("ELK002", 2)]
+    return [(f.code, f.line) for f in findings if f.code != "ELK002"]
+
+
+def test_timeout_keyword_makes_acquire_and_queue_calls_nonblocking(tmp_path: Path) -> None:
+    body = "    lock.acquire(timeout=1)\n    q.get(timeout=1)\n    q.put(1, timeout=1)\n"
+    assert _lock_and_queue_findings(tmp_path, body) == []
+
+
+def test_single_positional_blocking_true_is_still_blocking(tmp_path: Path) -> None:
+    body = "    lock.acquire(True)\n    q.get(True)\n    q.put(1, True)\n"
+    assert _lock_and_queue_findings(tmp_path, body) == [
+        ("ELK106", 8),
+        ("ELK108", 9),
+        ("ELK108", 10),
+    ]
+
+
+def test_positional_timeout_makes_acquire_nonblocking(tmp_path: Path) -> None:
+    body = "    lock.acquire(True, 1)\n    q.get(True, 1)\n    q.put(1, True, 1)\n"
+    assert _lock_and_queue_findings(tmp_path, body) == []

@@ -259,7 +259,6 @@ reportUnreachable = false
 # reportUnknownArgumentType = false
 
 [tool.elke27.loopcheck]
-# Rules: grokbots/architecture/Elk/2026-11-02-elk-filename-rules-no-blocking-in-loop-modules.md
 loop_modules = [
     "src/elke27_lib/client.py",
     "src/elke27_lib/discovery.py",
