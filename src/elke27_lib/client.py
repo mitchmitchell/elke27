@@ -297,6 +297,7 @@ def _area_alarm_memory(alarm_mem: str | None, arm_state: str | None) -> bool | N
         return None
     return alarm_mem.strip() != ""
 
+
 _PANEL_ERROR_REASONS: dict[int, str] = {
     PanelErrorCode.ELKERR_UNRECOGNIZED_CMD: "command not recognized",
     # The panel answers a wrong user code on area.set_arm_state with 11004.
