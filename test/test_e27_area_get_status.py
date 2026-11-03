@@ -90,7 +90,7 @@ def test_area_get_status_ignores_undocumented_trouble_bool() -> None:
     payload = _doc_restored()
     payload["trouble"] = True
     assert handler({"seq": 1, "area": {"get_status": payload}}, _Ctx()) is True
-    assert not hasattr(state.areas[1], "trouble")
+    assert state.areas[1].trouble_status == ""
 
 
 def test_area_get_status_error_code_emits_api_error() -> None:

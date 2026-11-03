@@ -823,3 +823,12 @@ def test_disconnect_snapshot_reset_clears_exit_delay_pending() -> None:
     assert public_area.arming is False
     assert public_area.arm_cmd_mode is None
     assert public_area.ee_timer is None
+
+
+@pytest.mark.parametrize("troubles", ["FIRE TROUBLE", "CO TROUBLE", ""])
+def test_v2_area_exposes_documented_troubles(troubles: str) -> None:
+    """The V2 area built from a documented get_status reply carries ``troubles`` (#102)."""
+    state = PanelState()
+    payload = _base_status_payload(troubles=troubles, arm_cmd_state="DISARMED", ee_timer=0)
+    assert _status_handler(state)({"seq": 1, "area": {"get_status": payload}}, make_ctx()) is True
+    assert _snapshot_for(state.areas[1]).trouble_status == troubles
