@@ -287,7 +287,6 @@ _ARM_STATE_TO_MODE: Mapping[str, ArmMode] = {
     "ARMED_NIGHT": ArmMode.ARMED_NIGHT,
 }
 _NON_ARM_STATES: frozenset[str] = frozenset({"ALARM_MEM"})
-_WARNED_ARM_STATES: set[str] = set()
 
 
 def _area_alarm_memory(alarm_mem: str | None, arm_state: str | None) -> bool | None:
@@ -503,6 +502,7 @@ class Elke27Client:
         # construction. The Home Assistant integration must never set this.
         self._raw_passthrough_enabled: bool = bool(enable_raw_passthrough)
         self._connection_lost_logged = False
+        self._warned_arm_states: set[str] = set()
         self._connect_failures_warning_logged = False
         self._feature_modules: Sequence[str] | None = features
         self._v2_config: ClientConfig | None = config
@@ -1012,31 +1012,37 @@ class Elke27Client:
             raise Elke27ProtocolErrorV2("Protocol error.") from None
         raise Elke27ProtocolErrorV2("Operation failed.") from None
 
-    @staticmethod
-    def _arm_mode_from_string(value: str | None) -> ArmMode | None:
-        return Elke27Client.arm_mode_from_panel_string(value)
+    def _arm_mode_from_string(self, value: str | None) -> ArmMode | None:
+        """
+        Map a panel arm string to an ArmMode, warning once per client for unknown values.
+
+        The warning goes to this client's logger (``logger=``/``config.logger_name``).
+        """
+        mode = Elke27Client.arm_mode_from_panel_string(value)
+        if mode is not None or not isinstance(value, str):
+            return mode
+        key = value.strip().upper()
+        if key in _NON_ARM_STATES or key in self._warned_arm_states:
+            return None
+        self._warned_arm_states.add(key)
+        self._log.warning("Unknown area arm state %r; reporting arm mode as unknown", value)
+        return None
 
     @staticmethod
     def arm_mode_from_panel_string(value: str | None) -> ArmMode | None:
         """
         Map a panel ``arm_state``/``arm_cmd_state`` string to an ArmMode.
 
-        Values are the Dealer API ``area_get_status`` list. ``ALARM_MEM`` is an
-        alarm-memory indicator, not an arm mode, so it maps to None (see
-        ``AreaState.alarm_memory``). Any other unknown value logs once at warning
-        and maps to None; it is never treated as disarmed
+        Values are the documented ``area.get_status`` arm_state list. ``ALARM_MEM``
+        is an alarm-memory indicator, not an arm mode, so it maps to None (see
+        ``AreaState.alarm_memory``). Any other unknown value maps to None and is
+        never treated as disarmed; this function does not log, and the client
+        warns once per connection-owning client when it sees one
         (https://github.com/mitchmitchell/elke27/issues/100).
         """
         if not isinstance(value, str):
             return None
-        key = value.strip().upper()
-        mode = _ARM_STATE_TO_MODE.get(key)
-        if mode is not None or key in _NON_ARM_STATES:
-            return mode
-        if key not in _WARNED_ARM_STATES:
-            _WARNED_ARM_STATES.add(key)
-            _LOGGER.warning("Unknown area arm state %r; reporting arm mode as unknown", value)
-        return None
+        return _ARM_STATE_TO_MODE.get(value.strip().upper())
 
     def _build_panel_info(self) -> PanelInfo:
         panel = self._kernel.state.panel

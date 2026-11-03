@@ -80,15 +80,40 @@ async def test_vacation_exit_delay_ended_is_not_arming() -> None:
     assert area.arming is False
 
 
+async def _areas_from_one_client(
+    client: Elke27Client, *payloads: dict[str, object]
+) -> list[AreaState]:
+    areas: list[AreaState] = []
+    for payload in payloads:
+        await feed_panel_message(client, {"seq": 0, "area": {"get_status": payload}})
+        areas.append(client.snapshot.areas[1])
+    return areas
+
+
+@pytest.mark.parametrize("run", [1, 2])
 @pytest.mark.asyncio
-async def test_unknown_arm_state_is_none_and_warns_once(caplog: pytest.LogCaptureFixture) -> None:
-    with caplog.at_level(logging.WARNING, logger=client_mod.__name__):
-        first = await _area_after(_doc_status("ARMED_SOMETHING_NEW"))
-        second = await _area_after(_doc_status("ARMED_SOMETHING_NEW"))
-    assert first.arm_mode is None
-    assert second.arm_mode is None
-    warnings = [r for r in caplog.records if "ARMED_SOMETHING_NEW" in r.getMessage()]
+async def test_unknown_arm_state_is_none_and_warns_once(
+    run: int, caplog: pytest.LogCaptureFixture
+) -> None:
+    logger = logging.getLogger(f"test.elke27.arm_state.{run}")
+    client = Elke27Client(logger=logger)
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        areas = await _areas_from_one_client(
+            client, _doc_status("ARMED_SOMETHING_NEW"), _doc_status("ARMED_SOMETHING_NEW")
+        )
+    assert [a.arm_mode for a in areas] == [None, None]
+    warnings = [
+        r
+        for r in caplog.records
+        if r.name == logger.name and "ARMED_SOMETHING_NEW" in r.getMessage()
+    ]
     assert len(warnings) == 1
+
+
+def test_public_arm_mode_mapping_does_not_log(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.DEBUG):
+        assert Elke27Client.arm_mode_from_panel_string("ARMED_SOMETHING_NEW") is None
+    assert not caplog.records
 
 
 @pytest.mark.asyncio
