@@ -1,10 +1,10 @@
 # zone.get_avail field matrix
 
-Draft for Architect row-by-row review (audit #99). Code @ main `21e5d66`. Doc: `grokbots/architecture/Elk/elk-api/DealerAPI_UL_CHM-pdf.md`. Code read sites are grep hits on the field name in `src/elke27_lib/handlers/zone.py`; `none` means no handler reads it.
+Draft for Architect row-by-row review (audit #99). Code @ main `21e5d66`. Rows with decision `unreviewed` are not yet checked; their read sites are module-wide grep hints only.
 
 
 
-| doc field | doc location (file:line) | code read site | decision | test that proves it | status |
-|---|---|---|---|---|---|
-| `available` | elk-api/DealerAPI_UL_CHM-pdf.md:3239 | none | missing | none | open |
-| `error_code` | elk-api/DealerAPI_UL_CHM-pdf.md:3239 | src/elke27_lib/handlers/zone.py:116, src/elke27_lib/handlers/zone.py:245, src/elke27_lib/handlers/zone.py:354 | read: generic error_code path | none | open |
+| field | code read site | decision | test that proves it | status |
+|---|---|---|---|---|
+| `available` | none found by grep | unreviewed | none | open |
+| `error_code` | grep hint (module-wide, unconfirmed): src/elke27_lib/handlers/zone.py:116, src/elke27_lib/handlers/zone.py:245, src/elke27_lib/handlers/zone.py:354 | unreviewed | none | open |

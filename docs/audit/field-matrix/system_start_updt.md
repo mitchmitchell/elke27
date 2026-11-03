@@ -1,11 +1,11 @@
 # system.start_updt field matrix
 
-Draft for Architect row-by-row review (audit #99). Code @ main `21e5d66`. Doc: `grokbots/architecture/Elk/elk-api/DealerAPI_UL_CHM-pdf.md`. Code read sites are grep hits on the field name in `src/elke27_lib/handlers/system.py`; `none` means no handler reads it.
+Draft for Architect row-by-row review (audit #99). Code @ main `21e5d66`. Rows with decision `unreviewed` are not yet checked; their read sites are module-wide grep hints only.
 
 
 
-| doc field | doc location (file:line) | code read site | decision | test that proves it | status |
-|---|---|---|---|---|---|
-| `device_id` | elk-api/DealerAPI_UL_CHM-pdf.md:2480 | none | missing | none | open |
-| `ft` | elk-api/DealerAPI_UL_CHM-pdf.md:2480 | none | missing | none | open |
-| `error_code` | elk-api/DealerAPI_UL_CHM-pdf.md:2480 | src/elke27_lib/handlers/system.py:67 | read: generic error_code path | none | open |
+| field | code read site | decision | test that proves it | status |
+|---|---|---|---|---|
+| `device_id` | none found by grep | unreviewed | none | open |
+| `ft` | none found by grep | unreviewed | none | open |
+| `error_code` | grep hint (module-wide, unconfirmed): src/elke27_lib/handlers/system.py:67 | unreviewed | none | open |
