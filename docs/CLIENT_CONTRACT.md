@@ -64,7 +64,8 @@ a breaking change.
 - `table_info`
 - `areas`
   - Each area snapshot includes `arm_mode` (current `arm_state`), optional
-    `arm_cmd_mode` (`arm_cmd_state` while arming), optional `ee_timer` (exit
+    `arm_cmd_mode` (last reported `arm_cmd_state`; it stays set after arming
+    completes), optional `ee_timer` (exit
     delay seconds when reported), optional `alarm_zone`, and `arming` (`True`
     only when all four exit-delay fields are coherent, `alarm_zone == ""`
     exactly, `ee_timer` > 0, disarmed, and pending away/stay). Partial status
@@ -80,8 +81,9 @@ a breaking change.
     timer). The armed state alone never clears `ee_timer` or `alarm_zone`; they
     clear only when a status payload that touches them omits them (#92).
     `alarm_active` is `True` when `alarm_state` is present and not
-    `NO_ALARM_ACTIVE`, or when the documented `alarms` or `alrm_snd` field is
-    non-empty. The undocumented `entry_delay_active` / `exit_delay_active`
+    `NO_ALARM_ACTIVE`, or when the documented `alarms` or `alrm_snd` string
+    (Dealer API `area_get_status` examples) is non-empty and not a
+    trouble-only value (`FIRE TROUBLE`, `CO TROUBLE`; see #98). The undocumented `entry_delay_active` / `exit_delay_active`
     payload keys are no longer read.
 - `zones`
 - `outputs`
