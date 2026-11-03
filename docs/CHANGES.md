@@ -1,5 +1,13 @@
   Unreleased
 
+  - Arm state mapping (#100, S1): ``arm_state`` strings are matched exactly
+    against the Dealer API ``area_get_status`` list. ``ARMED_VACATION`` is the
+    new ``ArmMode.ARMED_VACATION`` (it was ``None``, which HA showed as
+    disarmed); ``ARMED_STAY_INST`` is ``ARMED_STAY``. ``ALARM_MEM`` is not an arm
+    mode and gives ``arm_mode=None``; it and the documented ``alarm_mem`` field
+    set the new ``AreaState.alarm_memory``. Any other value logs one warning
+    and stays ``None``; it is never treated as disarmed. Bare substrings such
+    as ``"stay"`` or ``"away"`` no longer match.
   - Barrier typing (#87): ``PanelState.barriers`` is now an explicit
     ``BarrierStateMap`` (``dict[int, BarrierState]``), with public API
     regression tests for complete-inventory rejection, kernel barrier map

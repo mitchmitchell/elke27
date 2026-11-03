@@ -122,6 +122,7 @@ class ArmMode(str, Enum):
     ARMED_STAY = "armed_stay"
     ARMED_AWAY = "armed_away"
     ARMED_NIGHT = "armed_night"
+    ARMED_VACATION = "armed_vacation"
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,6 +217,7 @@ class AreaState:
     alarm_active: bool | None = None
     chime: bool | None = None
     ready_status: str | None = None
+    alarm_memory: bool | None = None
 
     @property
     def arming(self) -> bool:

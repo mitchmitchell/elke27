@@ -276,6 +276,29 @@ _CLIENT_EXCEPTIONS = (
 
 # area.set_arm_state accepts only these arm states (generators/area.py). The E27
 # has Away and Stay arming; it has no Night mode.
+_LOGGER = logging.getLogger(__name__)
+
+_ARM_STATE_TO_MODE: Mapping[str, ArmMode] = {
+    "DISARMED": ArmMode.DISARMED,
+    "ARMED_STAY": ArmMode.ARMED_STAY,
+    "ARMED_STAY_INST": ArmMode.ARMED_STAY,
+    "ARMED_AWAY": ArmMode.ARMED_AWAY,
+    "ARMED_VACATION": ArmMode.ARMED_VACATION,
+    "ARMED_NIGHT": ArmMode.ARMED_NIGHT,
+}
+_NON_ARM_STATES: frozenset[str] = frozenset({"ALARM_MEM"})
+_WARNED_ARM_STATES: set[str] = set()
+
+
+def _area_alarm_memory(alarm_mem: str | None, arm_state: str | None) -> bool | None:
+    """True when the panel reports an unacknowledged alarm (``alarm_mem`` or ``ALARM_MEM``)."""
+    if isinstance(arm_state, str) and arm_state.strip().upper() == "ALARM_MEM":
+        return True
+    if alarm_mem is None:
+        return None
+    return alarm_mem.strip() != ""
+
+
 _SUPPORTED_ARM_MODES: frozenset[ArmMode] = frozenset({ArmMode.ARMED_AWAY, ArmMode.ARMED_STAY})
 
 _PANEL_ERROR_REASONS: dict[int, str] = {
@@ -991,17 +1014,24 @@ class Elke27Client:
 
     @staticmethod
     def _arm_mode_from_string(value: str | None) -> ArmMode | None:
+        """
+        Map a panel ``arm_state``/``arm_cmd_state`` string to an ArmMode.
+
+        Values are the Dealer API ``area_get_status`` list. ``ALARM_MEM`` is an
+        alarm-memory indicator, not an arm mode, so it maps to None (see
+        ``AreaState.alarm_memory``). Any other unknown value logs once at warning
+        and maps to None; it is never treated as disarmed
+        (https://github.com/mitchmitchell/elke27/issues/100).
+        """
         if not isinstance(value, str):
             return None
-        lowered = value.lower()
-        if "disarm" in lowered:
-            return ArmMode.DISARMED
-        if "stay" in lowered:
-            return ArmMode.ARMED_STAY
-        if "away" in lowered:
-            return ArmMode.ARMED_AWAY
-        if "night" in lowered:
-            return ArmMode.ARMED_NIGHT
+        key = value.strip().upper()
+        mode = _ARM_STATE_TO_MODE.get(key)
+        if mode is not None or key in _NON_ARM_STATES:
+            return mode
+        if key not in _WARNED_ARM_STATES:
+            _WARNED_ARM_STATES.add(key)
+            _LOGGER.warning("Unknown area arm state %r; reporting arm mode as unknown", value)
         return None
 
     def _build_panel_info(self) -> PanelInfo:
@@ -1041,6 +1071,7 @@ class Elke27Client:
                 and str(area.alarm_state).lower() != "no_alarm_active",
                 chime=area.chime,
                 ready_status=area.ready_status,
+                alarm_memory=_area_alarm_memory(area.alarm_mem, arm_value),
             )
         return types_mod.MappingProxyType(out)
 
