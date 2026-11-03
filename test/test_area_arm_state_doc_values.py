@@ -13,7 +13,7 @@ from test.helpers.internal import feed_panel_message
 
 
 def _doc_status(arm_state: str, **fields: object) -> dict[str, object]:
-    """DealerAPI_UL_CHM-pdf.md:205-210 response, with arm_state replaced."""
+    """A documented ``area.get_status`` response, with arm_state and any given fields replaced."""
     payload: dict[str, object] = {
         "area_id": 1,
         "arm_state": arm_state,
