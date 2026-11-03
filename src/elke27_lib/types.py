@@ -216,6 +216,7 @@ class AreaState:
     alarm_active: bool | None = None
     chime: bool | None = None
     ready_status: str | None = None
+    trouble_status: str | None = None
 
     @property
     def arming(self) -> bool:

@@ -1041,6 +1041,7 @@ class Elke27Client:
                 and str(area.alarm_state).lower() != "no_alarm_active",
                 chime=area.chime,
                 ready_status=area.ready_status,
+                trouble_status=area.trouble_status,
             )
         return types_mod.MappingProxyType(out)
 
