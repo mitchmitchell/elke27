@@ -1,7 +1,7 @@
   Unreleased
 
   - Arm state mapping (#100, S1): ``arm_state`` strings are matched exactly
-    against the Dealer API ``area_get_status`` list. ``ARMED_VACATION`` is the
+    against the documented ``area_get_status`` values. ``ARMED_VACATION`` is the
     new ``ArmMode.ARMED_VACATION`` (it was ``None``, which HA showed as
     disarmed); ``ARMED_STAY_INST`` is ``ARMED_STAY``. ``ALARM_MEM`` is not an arm
     mode and gives ``arm_mode=None``; it and the documented ``alarm_mem`` field
