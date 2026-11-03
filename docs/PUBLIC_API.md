@@ -105,6 +105,8 @@ async def main():
 - Snapshots include a monotonic version field and updated_at timestamp.
 - Event queue is bounded; when full, the oldest event is dropped to make room.
 - Subscriber callbacks are invoked synchronously and must not block.
+- `Elke27Client.arm_mode_from_panel_string(value)` maps a Dealer API `arm_state`
+  string to an `ArmMode`; unknown values and `ALARM_MEM` give `None` (#100).
 - Diagnostic helpers such as `redact_for_diagnostics` remove likely secrets
   from structured data before logging.
 

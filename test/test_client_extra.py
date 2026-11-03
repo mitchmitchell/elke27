@@ -159,7 +159,7 @@ def test_arm_mode_and_block_count_helpers() -> None:
     assert client._arm_mode_from_string("DISARMED") is ArmMode.DISARMED
     assert client._arm_mode_from_string("ARMED_STAY") is ArmMode.ARMED_STAY
     assert client._arm_mode_from_string("ARMED_AWAY") is ArmMode.ARMED_AWAY
-    assert client._arm_mode_from_string("ARMED_VACATION") is ArmMode.ARMED_VACATION
+    assert client.arm_mode_from_panel_string("ARMED_VACATION") is ArmMode.ARMED_VACATION
     assert client._arm_mode_from_string("foo") is None
     assert client._arm_mode_from_string(None) is None
     assert client._coerce_block_count("2") == 2

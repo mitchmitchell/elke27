@@ -207,7 +207,7 @@ PRIVATE_ACCESS_CEILING: dict[str, int] = {
     "test/test_barrier_commands.py": 9,
     "test/test_bootstrap_readiness.py": 2,
     "test/test_client_execute_coverage.py": 149,
-    "test/test_client_extra.py": 192,
+    "test/test_client_extra.py": 191,
     "test/test_client_more.py": 116,
     "test/test_command_outcome_unknown.py": 11,
     "test/test_command_result.py": 1,

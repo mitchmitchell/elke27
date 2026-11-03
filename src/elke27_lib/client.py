@@ -1014,6 +1014,10 @@ class Elke27Client:
 
     @staticmethod
     def _arm_mode_from_string(value: str | None) -> ArmMode | None:
+        return Elke27Client.arm_mode_from_panel_string(value)
+
+    @staticmethod
+    def arm_mode_from_panel_string(value: str | None) -> ArmMode | None:
         """
         Map a panel ``arm_state``/``arm_cmd_state`` string to an ArmMode.
 
