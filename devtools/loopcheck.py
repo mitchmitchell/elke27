@@ -1,7 +1,5 @@
 """Report blocking calls in event-loop modules (ELK001-005, ELK101-110).
 
-Design: grokbots/architecture/Elk/2026-11-02-elk-filename-rules-no-blocking-in-loop-modules.md.
-
 A file is a *loop* file when its name ends in ``_loop.py``, when it is listed in
 ``loop_modules``, or when it sits under a directory in ``loop_paths``. A file is a
 *thread* file when its name ends in ``_thread.py``. Loop files carry the full ban in
