@@ -9,7 +9,7 @@ import pytest
 from elke27_lib import client as client_mod
 from elke27_lib.client import Elke27Client
 from elke27_lib.types import AreaState, ArmMode
-from test.helpers.internal import feed_panel_message
+from test.helpers.fake_session import connect_with_fake_panel
 
 
 def _doc_status(arm_state: str, **fields: object) -> dict[str, object]:
@@ -37,9 +37,10 @@ def _doc_status(arm_state: str, **fields: object) -> dict[str, object]:
     return payload
 
 
-async def _area_after(payload: dict[str, object]) -> AreaState:
+async def _area_after(monkeypatch: pytest.MonkeyPatch, payload: dict[str, object]) -> AreaState:
     client = Elke27Client()
-    await feed_panel_message(client, {"seq": 0, "area": {"get_status": payload}})
+    panel = await connect_with_fake_panel(monkeypatch, client)
+    await panel.deliver({"seq": 0, "area": {"get_status": payload}})
     return client.snapshot.areas[1]
 
 
@@ -55,37 +56,46 @@ async def _area_after(payload: dict[str, object]) -> AreaState:
     ],
 )
 @pytest.mark.asyncio
-async def test_doc_arm_state_maps_to_arm_mode(arm_state: str, expected: ArmMode | None) -> None:
-    assert (await _area_after(_doc_status(arm_state))).arm_mode is expected
+async def test_doc_arm_state_maps_to_arm_mode(
+    monkeypatch: pytest.MonkeyPatch, arm_state: str, expected: ArmMode | None
+) -> None:
+    assert (await _area_after(monkeypatch, _doc_status(arm_state))).arm_mode is expected
 
 
 @pytest.mark.asyncio
-async def test_vacation_is_not_disarmed_or_away() -> None:
-    area = await _area_after(_doc_status("ARMED_VACATION"))
+async def test_vacation_is_not_disarmed_or_away(monkeypatch: pytest.MonkeyPatch) -> None:
+    area = await _area_after(monkeypatch, _doc_status("ARMED_VACATION"))
     assert area.arm_mode is ArmMode.ARMED_VACATION
     assert area.arming is False
 
 
 @pytest.mark.parametrize("arm_cmd_state", ["ARMED_AWAY", "ARMED_STAY", "ARMED_VACATION"])
 @pytest.mark.asyncio
-async def test_exit_delay_is_arming_for_each_commanded_mode(arm_cmd_state: str) -> None:
-    area = await _area_after(_doc_status("DISARMED", arm_cmd_state=arm_cmd_state, ee_timer=30))
+async def test_exit_delay_is_arming_for_each_commanded_mode(
+    monkeypatch: pytest.MonkeyPatch, arm_cmd_state: str
+) -> None:
+    area = await _area_after(
+        monkeypatch, _doc_status("DISARMED", arm_cmd_state=arm_cmd_state, ee_timer=30)
+    )
     assert area.arm_mode is ArmMode.DISARMED
     assert area.arming is True
 
 
 @pytest.mark.asyncio
-async def test_vacation_exit_delay_ended_is_not_arming() -> None:
-    area = await _area_after(_doc_status("DISARMED", arm_cmd_state="ARMED_VACATION", ee_timer=0))
+async def test_vacation_exit_delay_ended_is_not_arming(monkeypatch: pytest.MonkeyPatch) -> None:
+    area = await _area_after(
+        monkeypatch, _doc_status("DISARMED", arm_cmd_state="ARMED_VACATION", ee_timer=0)
+    )
     assert area.arming is False
 
 
 async def _areas_from_one_client(
-    client: Elke27Client, *payloads: dict[str, object]
+    monkeypatch: pytest.MonkeyPatch, client: Elke27Client, *payloads: dict[str, object]
 ) -> list[AreaState]:
+    panel = await connect_with_fake_panel(monkeypatch, client)
     areas: list[AreaState] = []
     for payload in payloads:
-        await feed_panel_message(client, {"seq": 0, "area": {"get_status": payload}})
+        await panel.deliver({"seq": 0, "area": {"get_status": payload}})
         areas.append(client.snapshot.areas[1])
     return areas
 
@@ -93,13 +103,16 @@ async def _areas_from_one_client(
 @pytest.mark.parametrize("run", [1, 2])
 @pytest.mark.asyncio
 async def test_unknown_arm_state_is_none_and_warns_once(
-    run: int, caplog: pytest.LogCaptureFixture
+    monkeypatch: pytest.MonkeyPatch, run: int, caplog: pytest.LogCaptureFixture
 ) -> None:
     logger = logging.getLogger(f"test.elke27.arm_state.{run}")
     client = Elke27Client(logger=logger)
     with caplog.at_level(logging.WARNING, logger=logger.name):
         areas = await _areas_from_one_client(
-            client, _doc_status("ARMED_SOMETHING_NEW"), _doc_status("ARMED_SOMETHING_NEW")
+            monkeypatch,
+            client,
+            _doc_status("ARMED_SOMETHING_NEW"),
+            _doc_status("ARMED_SOMETHING_NEW"),
         )
     assert [a.arm_mode for a in areas] == [None, None]
     warnings = [
@@ -117,9 +130,11 @@ def test_public_arm_mode_mapping_does_not_log(caplog: pytest.LogCaptureFixture) 
 
 
 @pytest.mark.asyncio
-async def test_alarm_mem_arm_state_does_not_warn(caplog: pytest.LogCaptureFixture) -> None:
+async def test_alarm_mem_arm_state_does_not_warn(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     with caplog.at_level(logging.WARNING, logger=client_mod.__name__):
-        area = await _area_after(_doc_status("ALARM_MEM"))
+        area = await _area_after(monkeypatch, _doc_status("ALARM_MEM"))
     assert area.alarm_memory is True
     assert not [r for r in caplog.records if "ALARM_MEM" in r.getMessage()]
 
@@ -129,6 +144,8 @@ async def test_alarm_mem_arm_state_does_not_warn(caplog: pytest.LogCaptureFixtur
     [("", False), ("WATER", True), ("BURG", True)],
 )
 @pytest.mark.asyncio
-async def test_alarm_mem_field_sets_alarm_memory(alarm_mem: str, expected: bool) -> None:
-    area = await _area_after(_doc_status("DISARMED", alarm_mem=alarm_mem))
+async def test_alarm_mem_field_sets_alarm_memory(
+    monkeypatch: pytest.MonkeyPatch, alarm_mem: str, expected: bool
+) -> None:
+    area = await _area_after(monkeypatch, _doc_status("DISARMED", alarm_mem=alarm_mem))
     assert area.alarm_memory is expected
