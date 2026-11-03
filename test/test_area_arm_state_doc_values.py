@@ -66,6 +66,20 @@ async def test_vacation_is_not_disarmed_or_away() -> None:
     assert area.arming is False
 
 
+@pytest.mark.parametrize("arm_cmd_state", ["ARMED_AWAY", "ARMED_STAY", "ARMED_VACATION"])
+@pytest.mark.asyncio
+async def test_exit_delay_is_arming_for_each_commanded_mode(arm_cmd_state: str) -> None:
+    area = await _area_after(_doc_status("DISARMED", arm_cmd_state=arm_cmd_state, ee_timer=30))
+    assert area.arm_mode is ArmMode.DISARMED
+    assert area.arming is True
+
+
+@pytest.mark.asyncio
+async def test_vacation_exit_delay_ended_is_not_arming() -> None:
+    area = await _area_after(_doc_status("DISARMED", arm_cmd_state="ARMED_VACATION", ee_timer=0))
+    assert area.arming is False
+
+
 @pytest.mark.asyncio
 async def test_unknown_arm_state_is_none_and_warns_once(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.WARNING, logger=client_mod.__name__):

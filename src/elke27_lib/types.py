@@ -224,7 +224,7 @@ class AreaState:
         """True only during an active exit delay (disarmed, pending arm, timer running)."""
         if self.arm_mode is not ArmMode.DISARMED:
             return False
-        if self.arm_cmd_mode not in (ArmMode.ARMED_AWAY, ArmMode.ARMED_STAY):
+        if self.arm_cmd_mode not in (ArmMode.ARMED_AWAY, ArmMode.ARMED_STAY, ArmMode.ARMED_VACATION):
             return False
         if self.ee_timer is None or self.ee_timer <= 0:
             return False
