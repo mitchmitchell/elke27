@@ -58,6 +58,8 @@ def test_reported_alarm_sets_alarm_active(fields: dict[str, object]) -> None:
         {"alarms": [], "alrm_snd": False},
         {"alarms": "FIRE TROUBLE"},
         {"alarms": "CO TROUBLE"},
+        {"alarms": "FIRE TROUBLE", "alrm_snd": "FIRE TROUBLE"},
+        {"alarms": "", "alrm_snd": "CO TROUBLE"},
     ],
 )
 def test_no_alarm_leaves_alarm_active_false(fields: dict[str, object]) -> None:

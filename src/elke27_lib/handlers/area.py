@@ -157,8 +157,12 @@ def area_alarm_active(area: AreaState) -> bool:
         if name and name not in _TROUBLE_ONLY_ALARMS:
             return True
     sound = area.alrm_snd
-    if sound is True or (isinstance(sound, str) and sound.strip()):
+    if sound is True:
         return True
+    if isinstance(sound, str):
+        name = sound.strip().upper()
+        if name and name not in _TROUBLE_ONLY_ALARMS:
+            return True
     return area.alarm_state is not None and str(area.alarm_state).lower() not in {
         "no_alarm_active",
         "none",
