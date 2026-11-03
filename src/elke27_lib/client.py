@@ -291,7 +291,7 @@ _NON_ARM_STATES: frozenset[str] = frozenset({"ALARM_MEM"})
 
 def _area_alarm_memory(alarm_mem: str | None, arm_state: str | None) -> bool | None:
     """True when the panel reports an unacknowledged alarm (``alarm_mem`` or ``ALARM_MEM``)."""
-    if isinstance(arm_state, str) and arm_state.strip().upper() == "ALARM_MEM":
+    if arm_state is not None and arm_state.strip().upper() in _NON_ARM_STATES:
         return True
     if alarm_mem is None:
         return None
@@ -1017,7 +1017,7 @@ class Elke27Client:
         The warning goes to this client's logger (``logger=``/``config.logger_name``).
         """
         mode = Elke27Client.arm_mode_from_panel_string(value)
-        if mode is not None or not isinstance(value, str):
+        if mode is not None or value is None:
             return mode
         key = value.strip().upper()
         if key in _NON_ARM_STATES or key in self._warned_arm_states:

@@ -156,9 +156,9 @@ def test_raise_v2_command_error_mapping() -> None:
 
 def test_arm_mode_and_block_count_helpers() -> None:
     client = Elke27Client(kernel=E27Kernel())
-    assert client._arm_mode_from_string("DISARMED") is ArmMode.DISARMED
-    assert client._arm_mode_from_string("ARMED_STAY") is ArmMode.ARMED_STAY
-    assert client._arm_mode_from_string("ARMED_AWAY") is ArmMode.ARMED_AWAY
+    assert Elke27Client.arm_mode_from_panel_string("DISARMED") is ArmMode.DISARMED
+    assert Elke27Client.arm_mode_from_panel_string("ARMED_STAY") is ArmMode.ARMED_STAY
+    assert Elke27Client.arm_mode_from_panel_string("ARMED_AWAY") is ArmMode.ARMED_AWAY
     assert client.arm_mode_from_panel_string("ARMED_VACATION") is ArmMode.ARMED_VACATION
     assert client._arm_mode_from_string("foo") is None
     assert client._arm_mode_from_string(None) is None
