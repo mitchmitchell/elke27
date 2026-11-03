@@ -59,6 +59,8 @@ class AreaState:
     armed_state: str | None = None
     alarm_state: str | None = None
     alarm_event: str | None = None
+    alarms: str | list[str] | None = None
+    alrm_snd: str | bool | None = None
     arm_state: str | None = None
     arm_cmd_state: str | None = None
     ee_timer: int | None = None

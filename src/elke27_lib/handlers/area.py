@@ -83,6 +83,8 @@ _EXPECTED_TYPES: dict[str, type | tuple[type, ...]] = {
     "armed_state": str,
     "alarm_state": str,
     "alarm_event": str,
+    "alarms": (str, list),
+    "alrm_snd": (str, bool),
     "ready_status": str,
     "alarm_zone": str,
     # bools
@@ -114,6 +116,8 @@ _FIELD_MAP: dict[str, str] = {
     "armed_state": "armed_state",
     "alarm_state": "alarm_state",
     "alarm_event": "alarm_event",
+    "alarms": "alarms",
+    "alrm_snd": "alrm_snd",
     "ready_status": "ready_status",
     "alarm_zone": "alarm_zone",
     "ready": "ready",
@@ -132,6 +136,34 @@ _FIELD_MAP: dict[str, str] = {
     # response field; stored on state as last_error_code
     "error_code": "last_error_code",
 }
+
+
+_TROUBLE_ONLY_ALARMS = frozenset({"FIRE TROUBLE", "CO TROUBLE"})
+
+
+def area_alarm_active(area: AreaState) -> bool:
+    """Return True when the panel reports an alarm in effect for the area.
+
+    The panel reports alarms in area.get_status as ``alarms`` (highest-priority
+    alarm in effect, a string or a list of strings) and ``alrm_snd`` (alarm
+    sound being produced, a string or a bool); empty means none. ``FIRE
+    TROUBLE`` and ``CO TROUBLE`` are supervisory troubles, not alarms. The
+    legacy ``alarm_state`` field is still honoured.
+    """
+    raw = area.alarms
+    entries = [raw] if isinstance(raw, str) else list(raw or [])
+    for entry in entries:
+        name = str(entry).strip().upper()
+        if name and name not in _TROUBLE_ONLY_ALARMS:
+            return True
+    sound = area.alrm_snd
+    if sound is True or (isinstance(sound, str) and sound.strip()):
+        return True
+    return area.alarm_state is not None and str(area.alarm_state).lower() not in {
+        "no_alarm_active",
+        "none",
+        "",
+    }
 
 
 def _is_disarmed_arm_state(value: str | None) -> bool:
