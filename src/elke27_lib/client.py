@@ -276,7 +276,7 @@ _CLIENT_EXCEPTIONS = (
 
 # area.set_arm_state accepts only these arm states (generators/area.py). The E27
 # has Away and Stay arming; it has no Night mode.
-_LOGGER = logging.getLogger(__name__)
+_SUPPORTED_ARM_MODES: frozenset[ArmMode] = frozenset({ArmMode.ARMED_AWAY, ArmMode.ARMED_STAY})
 
 _ARM_STATE_TO_MODE: Mapping[str, ArmMode] = {
     "DISARMED": ArmMode.DISARMED,
@@ -296,9 +296,6 @@ def _area_alarm_memory(alarm_mem: str | None, arm_state: str | None) -> bool | N
     if alarm_mem is None:
         return None
     return alarm_mem.strip() != ""
-
-
-_SUPPORTED_ARM_MODES: frozenset[ArmMode] = frozenset({ArmMode.ARMED_AWAY, ArmMode.ARMED_STAY})
 
 _PANEL_ERROR_REASONS: dict[int, str] = {
     PanelErrorCode.ELKERR_UNRECOGNIZED_CMD: "command not recognized",
