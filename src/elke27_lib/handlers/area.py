@@ -85,6 +85,8 @@ _EXPECTED_TYPES: dict[str, type | tuple[type, ...]] = {
     "alarm_event": str,
     "ready_status": str,
     "alarm_zone": str,
+    "alarms": str,
+    "alrm_snd": str,
     # bools
     "ready": bool,
     "stay": bool,
@@ -92,8 +94,6 @@ _EXPECTED_TYPES: dict[str, type | tuple[type, ...]] = {
     "bypass": bool,
     "chime": bool,
     "Chime": bool,
-    "entry_delay_active": bool,
-    "exit_delay_active": bool,
     "trouble": bool,
     # ints
     "num_not_ready_zones": int,
@@ -116,14 +116,14 @@ _FIELD_MAP: dict[str, str] = {
     "alarm_event": "alarm_event",
     "ready_status": "ready_status",
     "alarm_zone": "alarm_zone",
+    "alarms": "alarms",
+    "alrm_snd": "alrm_snd",
     "ready": "ready",
     "stay": "stay",
     "away": "away",
     "bypass": "bypass",
     "chime": "chime",
     "Chime": "chime",
-    "entry_delay_active": "entry_delay_active",
-    "exit_delay_active": "exit_delay_active",
     "trouble": "trouble",
     "num_not_ready_zones": "num_not_ready_zones",
     "num_bypassed_zones": "num_bypassed_zones",
@@ -132,12 +132,6 @@ _FIELD_MAP: dict[str, str] = {
     # response field; stored on state as last_error_code
     "error_code": "last_error_code",
 }
-
-
-def _is_disarmed_arm_state(value: str | None) -> bool:
-    if value is None:
-        return False
-    return value.upper() == "DISARMED"
 
 
 _EXIT_DELAY_PAYLOAD_KEYS: tuple[str, ...] = (
@@ -196,14 +190,15 @@ def apply_area_exit_delay_clearing_rules(
     prev_payload_complete: bool,
 ) -> None:
     """
-    Keep exit-delay fields coherent across partial area status/arm payloads.
+    Keep entry/exit-delay (ee) fields coherent across partial area status/arm payloads.
+
+    A field is cleared only when the payload omits it or carries the wrong type; the
+    armed state alone never clears ee_timer or alarm_zone, because entry delay runs
+    while armed (https://github.com/mitchmitchell/elke27/issues/92).
 
     Shared by get_status, set_status, and set_arm_state reconcile paths (PR #29).
     """
     if not _payload_touches_exit_delay(payload):
-        if area.arm_state is not None and not _is_disarmed_arm_state(area.arm_state):
-            _clear_area_exit_delay_pending(area, changed)
-            area.exit_delay_payload_complete = False
         return
 
     applied_keys = {
@@ -237,9 +232,6 @@ def apply_area_exit_delay_clearing_rules(
     for key in _EXIT_DELAY_PENDING_CLEAR_KEYS:
         if not _exit_delay_field_valid_in_payload(payload, key):
             _clear_exit_delay_field(area, _FIELD_MAP[key], changed)
-
-    if area.arm_state is not None and not _is_disarmed_arm_state(area.arm_state):
-        _clear_area_exit_delay_pending(area, changed)
 
     area.exit_delay_payload_complete = applied_keys == set(_EXIT_DELAY_PAYLOAD_KEYS)
 

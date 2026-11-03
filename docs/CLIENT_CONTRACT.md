@@ -64,7 +64,8 @@ a breaking change.
 - `table_info`
 - `areas`
   - Each area snapshot includes `arm_mode` (current `arm_state`), optional
-    `arm_cmd_mode` (`arm_cmd_state` while arming), optional `ee_timer` (exit
+    `arm_cmd_mode` (last reported `arm_cmd_state`; it stays set after arming
+    completes), optional `ee_timer` (exit
     delay seconds when reported), optional `alarm_zone`, and `arming` (`True`
     only when all four exit-delay fields are coherent, `alarm_zone == ""`
     exactly, `ee_timer` > 0, disarmed, and pending away/stay). Partial status
@@ -74,6 +75,16 @@ a breaking change.
     status read). Reconnect / snapshot reset clears
     pending exit-delay state. Stay→away changes without a full `get_status`
     show `arming` false; use a fresh full status read before skip/entry logic.
+    `entry_delay` is `True` when the area is armed (away/stay/night), `ee_timer`
+    > 0, and `alarm_zone` is non-empty (the documented `area_get_status` behaviour:
+    `ee_timer` is the exit timer when `alarm_zone` is empty, otherwise the entry
+    timer). The armed state alone never clears `ee_timer` or `alarm_zone`; they
+    clear only when a status payload that touches them omits them (#92).
+    `alarm_active` is `True` when `alarm_state` is present and not
+    `NO_ALARM_ACTIVE`, or when the documented `alarms` or `alrm_snd` string
+    (documented `area_get_status` replies) is non-empty and not a
+    trouble-only value (`FIRE TROUBLE`, `CO TROUBLE`; see #98). The undocumented `entry_delay_active` / `exit_delay_active`
+    payload keys are no longer read.
 - `zones`
 - `outputs`
 - `lights`

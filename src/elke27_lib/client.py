@@ -313,6 +313,12 @@ def panel_error_reason(panel_error_code: int) -> str:
     return name.removeprefix("ELKERR_").replace("_", " ").lower()
 
 
+def _area_alarm_active(alarm_state: str | None, alarms: str | None, alrm_snd: str | None) -> bool:
+    if alarm_state is not None and alarm_state.lower() != "no_alarm_active":
+        return True
+    return bool(alarms) or bool(alrm_snd)
+
+
 def _area_ready(ready: bool | None, ready_status: str | None) -> bool | None:
     """Return the area ready flag, deriving it from ``ready_status`` when needed.
 
@@ -1037,8 +1043,7 @@ class Elke27Client:
                 ee_timer=area.ee_timer,
                 alarm_zone=area.alarm_zone,
                 ready=_area_ready(area.ready, area.ready_status),
-                alarm_active=area.alarm_state is not None
-                and str(area.alarm_state).lower() != "no_alarm_active",
+                alarm_active=_area_alarm_active(area.alarm_state, area.alarms, area.alrm_snd),
                 chime=area.chime,
                 ready_status=area.ready_status,
             )

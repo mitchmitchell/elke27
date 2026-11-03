@@ -1,5 +1,12 @@
   Unreleased
 
+  - Entry delay and alarms (#92): ``AreaState`` gains ``entry_delay`` (armed,
+    ``ee_timer`` > 0, non-empty ``alarm_zone``). Being armed no longer clears
+    ``ee_timer`` / ``alarm_zone``; only fields absent from a payload that
+    touches them are cleared. The documented ``alarms`` / ``alrm_snd`` fields
+    are now stored and set ``alarm_active``; ``alarm_state`` still does. The
+    undocumented ``entry_delay_active`` / ``exit_delay_active`` keys are no
+    longer read. Pending confirmation by a TEST panel capture.
   - Barrier typing (#87): ``PanelState.barriers`` is now an explicit
     ``BarrierStateMap`` (``dict[int, BarrierState]``), with public API
     regression tests for complete-inventory rejection, kernel barrier map
