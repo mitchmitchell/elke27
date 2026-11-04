@@ -149,7 +149,11 @@ from .events import (
     ZoneTableInfoUpdated,
 )
 from .generators.registry import COMMANDS, CommandSpec, MergeStrategy
-from .handlers.area import clear_all_area_exit_delay_pending, make_area_configured_merge
+from .handlers.area import (
+    area_alarm_active,
+    clear_all_area_exit_delay_pending,
+    make_area_configured_merge,
+)
 from .handlers.zone import make_zone_configured_merge
 from .kernel import (
     DiscoverResult,
@@ -1075,8 +1079,7 @@ class Elke27Client:
                 ee_timer=area.ee_timer,
                 alarm_zone=area.alarm_zone,
                 ready=_area_ready(area.ready, area.ready_status),
-                alarm_active=area.alarm_state is not None
-                and str(area.alarm_state).lower() != "no_alarm_active",
+                alarm_active=area_alarm_active(area),
                 chime=area.chime,
                 ready_status=area.ready_status,
                 alarm_memory=_area_alarm_memory(area.alarm_mem, arm_value),
