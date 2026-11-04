@@ -8,6 +8,9 @@
     set the new ``AreaState.alarm_memory``. Any other value logs one warning
     and stays ``None``; it is never treated as disarmed. Bare substrings such
     as ``"stay"`` or ``"away"`` no longer match.
+  - Area troubles (#102, S2): ``area.get_status`` now reads the documented
+    ``troubles`` string into the new ``AreaState.trouble_status`` (state and V2
+    snapshot). The undocumented ``trouble`` bool key is no longer read.
   - Barrier typing (#87): ``PanelState.barriers`` is now an explicit
     ``BarrierStateMap`` (``dict[int, BarrierState]``), with public API
     regression tests for complete-inventory rejection, kernel barrier map

@@ -1080,6 +1080,7 @@ class Elke27Client:
                 chime=area.chime,
                 ready_status=area.ready_status,
                 alarm_memory=_area_alarm_memory(area.alarm_mem, arm_value),
+                trouble_status=area.trouble_status,
             )
         return types_mod.MappingProxyType(out)
 
