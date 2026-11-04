@@ -282,6 +282,26 @@ _CLIENT_EXCEPTIONS = (
 # has Away and Stay arming; it has no Night mode.
 _SUPPORTED_ARM_MODES: frozenset[ArmMode] = frozenset({ArmMode.ARMED_AWAY, ArmMode.ARMED_STAY})
 
+_ARM_STATE_TO_MODE: Mapping[str, ArmMode] = {
+    "DISARMED": ArmMode.DISARMED,
+    "ARMED_STAY": ArmMode.ARMED_STAY,
+    "ARMED_STAY_INST": ArmMode.ARMED_STAY,
+    "ARMED_AWAY": ArmMode.ARMED_AWAY,
+    "ARMED_VACATION": ArmMode.ARMED_VACATION,
+    "ARMED_NIGHT": ArmMode.ARMED_NIGHT,
+}
+_NON_ARM_STATES: frozenset[str] = frozenset({"ALARM_MEM"})
+
+
+def _area_alarm_memory(alarm_mem: str | None, arm_state: str | None) -> bool | None:
+    """True when the panel reports an unacknowledged alarm (``alarm_mem`` or ``ALARM_MEM``)."""
+    if arm_state is not None and arm_state.strip().upper() in _NON_ARM_STATES:
+        return True
+    if alarm_mem is None:
+        return None
+    return alarm_mem.strip() != ""
+
+
 _PANEL_ERROR_REASONS: dict[int, str] = {
     PanelErrorCode.ELKERR_UNRECOGNIZED_CMD: "command not recognized",
     # The panel answers a wrong user code on area.set_arm_state with 11004.
@@ -484,6 +504,7 @@ class Elke27Client:
         # construction. The Home Assistant integration must never set this.
         self._raw_passthrough_enabled: bool = bool(enable_raw_passthrough)
         self._connection_lost_logged = False
+        self._warned_arm_states: set[str] = set()
         self._connect_failures_warning_logged = False
         self._feature_modules: Sequence[str] | None = features
         self._v2_config: ClientConfig | None = config
@@ -993,20 +1014,37 @@ class Elke27Client:
             raise Elke27ProtocolErrorV2("Protocol error.") from None
         raise Elke27ProtocolErrorV2("Operation failed.") from None
 
+    def _arm_mode_from_string(self, value: str | None) -> ArmMode | None:
+        """
+        Map a panel arm string to an ArmMode, warning once per client for unknown values.
+
+        The warning goes to this client's logger (``logger=``/``config.logger_name``).
+        """
+        mode = Elke27Client.arm_mode_from_panel_string(value)
+        if mode is not None or value is None:
+            return mode
+        key = value.strip().upper()
+        if key in _NON_ARM_STATES or key in self._warned_arm_states:
+            return None
+        self._warned_arm_states.add(key)
+        self._log.warning("Unknown area arm state %r; reporting arm mode as unknown", value)
+        return None
+
     @staticmethod
-    def _arm_mode_from_string(value: str | None) -> ArmMode | None:
+    def arm_mode_from_panel_string(value: str | None) -> ArmMode | None:
+        """
+        Map a panel ``arm_state``/``arm_cmd_state`` string to an ArmMode.
+
+        Values are the documented ``area.get_status`` arm_state list. ``ALARM_MEM``
+        is an alarm-memory indicator, not an arm mode, so it maps to None (see
+        ``AreaState.alarm_memory``). Any other unknown value maps to None and is
+        never treated as disarmed; this function does not log, and the client
+        warns once per connection-owning client when it sees one
+        (https://github.com/mitchmitchell/elke27/issues/100).
+        """
         if not isinstance(value, str):
             return None
-        lowered = value.lower()
-        if "disarm" in lowered:
-            return ArmMode.DISARMED
-        if "stay" in lowered:
-            return ArmMode.ARMED_STAY
-        if "away" in lowered:
-            return ArmMode.ARMED_AWAY
-        if "night" in lowered:
-            return ArmMode.ARMED_NIGHT
-        return None
+        return _ARM_STATE_TO_MODE.get(value.strip().upper())
 
     def _build_panel_info(self) -> PanelInfo:
         panel = self._kernel.state.panel
@@ -1044,6 +1082,8 @@ class Elke27Client:
                 alarm_active=area_alarm_active(area),
                 chime=area.chime,
                 ready_status=area.ready_status,
+                alarm_memory=_area_alarm_memory(area.alarm_mem, arm_value),
+                trouble_status=area.trouble_status,
             )
         return types_mod.MappingProxyType(out)
 

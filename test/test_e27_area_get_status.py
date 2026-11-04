@@ -23,29 +23,74 @@ class _EmitSpy:
 _Ctx = make_ctx
 
 
+def _doc_water_alarm() -> dict[str, object]:
+    """Documented reply shape: WATER alarm active."""
+    return {
+        "area_id": 1,
+        "arm_state": "DISARMED",
+        "arm_cmd_state": "DISARMED",
+        "ready_status": "RDY_NOT",
+        "ee_timer": 0,
+        "Chime": False,
+        "alarms": "WATER",
+        "alarm_mem": "",
+        "alrm_snd": "WATER",
+        "troubles": "",
+        "alarm_zone": "Bathroom water",
+        "zones_bypassed": 0,
+        "xzn_time": 0,
+        "xzn_id": 0,
+        "auto_arm_timer": 0,
+        "chime_count": 0,
+        "error_code": 0,
+    }
+
+
+def _doc_restored() -> dict[str, object]:
+    """Documented reply shape: WATER alarm acknowledged and restored."""
+    payload = _doc_water_alarm()
+    payload.update(ready_status="RDY_AWAY", alarms="", alrm_snd="", alarm_zone="")
+    return payload
+
+
 def test_area_get_status_updates_state_and_emits_event() -> None:
     state = PanelState()
     emit = _EmitSpy()
     handler = make_area_get_status_handler(state, emit, now=lambda: 123.0)
 
-    msg = {
-        "area": {
-            "get_status": {
-                "area_id": 1,
-                "arm_state": "armed",
-                "ready_status": "ready",
-                "alarm_state": "none",
-                "error_code": E27ErrorCode.ELKERR_NONE,
-            }
-        }
-    }
-
-    assert handler(msg, _Ctx()) is True
+    assert handler({"seq": 1, "area": {"get_status": _doc_water_alarm()}}, _Ctx()) is True
     area = state.areas[1]
-    assert area.arm_state == "armed"
-    assert area.ready_status == "ready"
-    assert area.alarm_state == "none"
+    assert area.arm_state == "DISARMED"
+    assert area.arm_cmd_state == "DISARMED"
+    assert area.ready_status == "RDY_NOT"
+    assert area.alarm_zone == "Bathroom water"
+    assert area.chime is False
+    assert area.alarm_state is None
     assert any(isinstance(e, AreaStatusUpdated) for e in emit.events)
+
+
+@pytest.mark.parametrize(
+    ("troubles", "expected"),
+    [("", ""), ("FIRE TROUBLE", "FIRE TROUBLE"), ("CO TROUBLE", "CO TROUBLE")],
+)
+def test_area_get_status_reads_documented_troubles(troubles: str, expected: str) -> None:
+    """The documented string ``troubles`` field is read (#102)."""
+    state = PanelState()
+    handler = make_area_get_status_handler(state, _EmitSpy(), now=lambda: 123.0)
+    payload = _doc_restored()
+    payload["troubles"] = troubles
+    assert handler({"seq": 1, "area": {"get_status": payload}}, _Ctx()) is True
+    assert state.areas[1].trouble_status == expected
+
+
+def test_area_get_status_ignores_undocumented_trouble_bool() -> None:
+    """The invented ``trouble`` bool key is not a documented field and is not read (#102)."""
+    state = PanelState()
+    handler = make_area_get_status_handler(state, _EmitSpy(), now=lambda: 123.0)
+    payload = _doc_restored()
+    payload["trouble"] = True
+    assert handler({"seq": 1, "area": {"get_status": payload}}, _Ctx()) is True
+    assert state.areas[1].trouble_status == ""
 
 
 def test_area_get_status_error_code_emits_api_error() -> None:
@@ -66,17 +111,7 @@ def test_area_get_status_no_changes_logs_debug_not_warning(
     state = PanelState()
     emit = _EmitSpy()
     handler = make_area_get_status_handler(state, emit, now=lambda: 123.0)
-    msg = {
-        "area": {
-            "get_status": {
-                "area_id": 1,
-                "arm_state": "disarmed",
-                "ready_status": "ready",
-                "alarm_state": "none",
-                "error_code": E27ErrorCode.ELKERR_NONE,
-            }
-        }
-    }
+    msg = {"seq": 1, "area": {"get_status": _doc_restored()}}
     assert handler(msg, _Ctx()) is True
 
     caplog.set_level(logging.DEBUG, logger="elke27_lib.handlers.area")

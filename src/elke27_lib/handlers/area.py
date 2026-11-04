@@ -87,6 +87,8 @@ _EXPECTED_TYPES: dict[str, type | tuple[type, ...]] = {
     "alrm_snd": (str, bool),
     "ready_status": str,
     "alarm_zone": str,
+    "alarm_mem": str,
+    "troubles": str,
     # bools
     "ready": bool,
     "stay": bool,
@@ -96,7 +98,6 @@ _EXPECTED_TYPES: dict[str, type | tuple[type, ...]] = {
     "Chime": bool,
     "entry_delay_active": bool,
     "exit_delay_active": bool,
-    "trouble": bool,
     # ints
     "num_not_ready_zones": int,
     "num_bypassed_zones": int,
@@ -120,6 +121,7 @@ _FIELD_MAP: dict[str, str] = {
     "alrm_snd": "alrm_snd",
     "ready_status": "ready_status",
     "alarm_zone": "alarm_zone",
+    "alarm_mem": "alarm_mem",
     "ready": "ready",
     "stay": "stay",
     "away": "away",
@@ -128,7 +130,7 @@ _FIELD_MAP: dict[str, str] = {
     "Chime": "chime",
     "entry_delay_active": "entry_delay_active",
     "exit_delay_active": "exit_delay_active",
-    "trouble": "trouble",
+    "troubles": "trouble_status",
     "num_not_ready_zones": "num_not_ready_zones",
     "num_bypassed_zones": "num_bypassed_zones",
     "zones_bypassed": "num_bypassed_zones",
