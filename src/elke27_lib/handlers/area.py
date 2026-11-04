@@ -85,6 +85,7 @@ _EXPECTED_TYPES: dict[str, type | tuple[type, ...]] = {
     "alarm_event": str,
     "ready_status": str,
     "alarm_zone": str,
+    "alarm_mem": str,
     "troubles": str,
     # bools
     "ready": bool,
@@ -116,6 +117,7 @@ _FIELD_MAP: dict[str, str] = {
     "alarm_event": "alarm_event",
     "ready_status": "ready_status",
     "alarm_zone": "alarm_zone",
+    "alarm_mem": "alarm_mem",
     "ready": "ready",
     "stay": "stay",
     "away": "away",

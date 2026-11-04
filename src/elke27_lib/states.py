@@ -63,6 +63,7 @@ class AreaState:
     arm_cmd_state: str | None = None
     ee_timer: int | None = None
     alarm_zone: str | None = None
+    alarm_mem: str | None = None
     ready_status: str | None = None
     # True when the last exit-delay reconcile applied all four payload fields.
     exit_delay_payload_complete: bool = False

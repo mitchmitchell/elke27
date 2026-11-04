@@ -1,5 +1,13 @@
   Unreleased
 
+  - Arm state mapping (#100, S1): ``arm_state`` strings are matched exactly
+    against the documented ``area_get_status`` values. ``ARMED_VACATION`` is the
+    new ``ArmMode.ARMED_VACATION`` (it was ``None``, which HA showed as
+    disarmed); ``ARMED_STAY_INST`` is ``ARMED_STAY``. ``ALARM_MEM`` is not an arm
+    mode and gives ``arm_mode=None``; it and the documented ``alarm_mem`` field
+    set the new ``AreaState.alarm_memory``. Any other value logs one warning
+    and stays ``None``; it is never treated as disarmed. Bare substrings such
+    as ``"stay"`` or ``"away"`` no longer match.
   - Area troubles (#102, S2): ``area.get_status`` now reads the documented
     ``troubles`` string into the new ``AreaState.trouble_status`` (state and V2
     snapshot). The undocumented ``trouble`` bool key is no longer read.
