@@ -122,6 +122,7 @@ class ArmMode(str, Enum):
     ARMED_STAY = "armed_stay"
     ARMED_AWAY = "armed_away"
     ARMED_NIGHT = "armed_night"
+    ARMED_VACATION = "armed_vacation"
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,13 +217,19 @@ class AreaState:
     alarm_active: bool | None = None
     chime: bool | None = None
     ready_status: str | None = None
+    alarm_memory: bool | None = None
+    trouble_status: str | None = None
 
     @property
     def arming(self) -> bool:
         """True only during an active exit delay (disarmed, pending arm, timer running)."""
         if self.arm_mode is not ArmMode.DISARMED:
             return False
-        if self.arm_cmd_mode not in (ArmMode.ARMED_AWAY, ArmMode.ARMED_STAY):
+        if self.arm_cmd_mode not in (
+            ArmMode.ARMED_AWAY,
+            ArmMode.ARMED_STAY,
+            ArmMode.ARMED_VACATION,
+        ):
             return False
         if self.ee_timer is None or self.ee_timer <= 0:
             return False
