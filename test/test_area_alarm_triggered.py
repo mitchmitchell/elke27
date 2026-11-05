@@ -73,3 +73,15 @@ def test_alarm_clears_when_panel_reports_empty_alarms() -> None:
         )
         is False
     )
+
+
+def test_alrm_snd_text_without_alarms_sets_alarm_active() -> None:
+    assert _alarm_active_after(_status(alarms="", alrm_snd="BURG")) is True
+
+
+def test_alarms_none_string_sets_alarm_active() -> None:
+    assert _alarm_active_after(_status(alarms="none")) is True
+
+
+def test_legacy_alarm_state_none_not_active() -> None:
+    assert _alarm_active_after(_status(alarm_state="none")) is False

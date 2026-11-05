@@ -10,8 +10,10 @@
     new ``AreaState.alarms`` and ``AreaState.alrm_snd``), so an armed area in
     alarm reports triggered. ``FIRE TROUBLE`` and ``CO TROUBLE`` are
     supervisory troubles and do not set it. The legacy ``alarm_state`` field
-    is still read; ``"none"`` or empty no longer counts as active, and
-    ``alarm_active`` clears when the panel reports no alarm.
+    is still read when ``alarms``/``alrm_snd`` do not indicate an alarm;
+    legacy ``"none"`` or empty there no longer counts as active. The
+    ``alarms`` string is not special-cased (``alarms="none"`` still sets
+    active). ``alarm_active`` clears when the panel reports no alarm.
   - Docs (#108): private reference pointers in ``PERMISSIONS.md`` and
     ``ADR-0107`` are replaced with the generic name.
 
