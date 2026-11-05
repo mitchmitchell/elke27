@@ -1,4 +1,19 @@
-  Unreleased
+  Arm Modes, Area Troubles, Triggered Alarms, Keepalive Stats (0.4.0)
+
+  - Breaking (#102): ``AreaState.trouble`` is removed. Read the documented
+    ``troubles`` string from the new ``AreaState.trouble_status`` instead.
+  - Breaking (#100): vacation now counts as armed. ``ARMED_VACATION`` maps to
+    the new ``ArmMode.ARMED_VACATION`` instead of ``None``, so integrations
+    that treated ``None`` as disarmed now see the area as armed.
+  - Triggered alarms (#98): ``AreaState.alarm_active`` is now set from the
+    ``alarms`` and ``alrm_snd`` fields of ``area.get_status`` (stored on the
+    new ``AreaState.alarms`` and ``AreaState.alrm_snd``), so an armed area in
+    alarm reports triggered. ``FIRE TROUBLE`` and ``CO TROUBLE`` are
+    supervisory troubles and do not set it. The legacy ``alarm_state`` field
+    is still read; ``"none"`` or empty no longer counts as active, and
+    ``alarm_active`` clears when the panel reports no alarm.
+  - Docs (#108): private reference pointers in ``PERMISSIONS.md`` and
+    ``ADR-0107`` are replaced with the generic name.
 
   - Arm state mapping (#100, S1): ``arm_state`` strings are matched exactly
     against the documented ``area_get_status`` values. ``ARMED_VACATION`` is the
