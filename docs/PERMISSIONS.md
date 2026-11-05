@@ -133,4 +133,4 @@ RATIONALE
 - Scales to paging, broadcasts, and future extensions
 
 SOURCE
-- Dealer API reference set:  [oai_citation:0‡control_pc214d_app_DealerAPI_UL_CHM.pdf](file-service://file-Uv42GdDB5cDgbb5t82MzPW)
+- Dealer API reference set (HelpDealerAPI_UL documentation)
