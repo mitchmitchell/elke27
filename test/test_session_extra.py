@@ -140,6 +140,8 @@ def test_connect_starts_receiver_when_configured(monkeypatch: pytest.MonkeyPatch
     )
     sess.on_message = lambda _msg: None
     sess.connect()
+    assert started["count"] == 0
+    sess.start_auto_receive()
     assert started["count"] == 1
 
 
@@ -368,28 +370,37 @@ def test_pump_once_handles_errors(monkeypatch: pytest.MonkeyPatch) -> None:
         sess.pump_once(timeout_s=0.01)
 
 
-def test_start_and_stop_receiver(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.asyncio
+async def test_start_and_stop_receiver(monkeypatch: pytest.MonkeyPatch) -> None:
+    loop = asyncio.get_running_loop()
+    main_ident = threading.get_ident()
     sess = _ready_session()
-    sess.on_message = lambda _msg: None
+    sess.cfg = SessionConfig(  # type: ignore[misc]
+        host="example",
+        auto_receive=True,
+        io_timeout_s=sess.cfg.io_timeout_s,
+    )
+    sess.enable_outbound_queue(loop=loop, min_interval_s=0.0, max_burst=1)
 
-    async def _dummy_thread(*_a, **_k):  # type: ignore[no-untyped-def]
-        return None
+    done = asyncio.Event()
 
-    class _Loop:
-        def create_task(self, coro):  # type: ignore[no-untyped-def]
-            assert asyncio.iscoroutine(coro)
-            coro.close()
-            return "task"
+    def _on_message(_msg: dict[str, object]) -> None:
+        assert threading.get_ident() == main_ident
+        done.set()
 
-    monkeypatch.setattr(session_mod.asyncio, "get_running_loop", lambda: _Loop())
-    monkeypatch.setattr(session_mod.asyncio, "to_thread", lambda *_a, **_k: _dummy_thread())
+    sess.on_message = _on_message
+
+    def _fake_recv_loop(_stop_event: threading.Event) -> None:
+        assert threading.get_ident() != main_ident
+        sess._deliver_message({"k": 1})
+
+    monkeypatch.setattr(sess, "_recv_loop", _fake_recv_loop)
 
     sess._start_receiver()
-    assert sess._recv_task == "task"
+    assert sess._recv_thread is not None
+    assert sess._recv_thread is not threading.current_thread()
 
-    sess._recv_task = "task"  # type: ignore[assignment]
-    sess._stop_receiver()
-    assert sess._recv_task is None
+    await asyncio.wait_for(done.wait(), timeout=2.0)
 
     class _Thread:
         def __init__(self) -> None:

@@ -174,8 +174,7 @@ class Session:
         self._recv_lock = threading.Lock()
         self._send_lock = threading.Lock()
         self._disconnect_lock = threading.Lock()
-        self._recv_task: asyncio.Task[None] | None = None
-        self._recv_loop_ref: asyncio.AbstractEventLoop | None = None
+        self._loop_ref: asyncio.AbstractEventLoop | None = None
         self._outbound: OutboundQueue | None = None
 
         # Event hooks (optional)
@@ -183,6 +182,35 @@ class Session:
         self.on_message: Callable[[dict[str, Any]], None] | None = None
         self.on_disconnected: Callable[[Exception | None], None] | None = None
         self.on_idle: Callable[[], None] | None = None
+
+    def _invoke_on_loop(self, fn: Callable[..., Any], /, *args: Any) -> None:
+        loop = self._loop_ref
+        if loop is None:
+            fn(*args)
+            return
+        try:
+            loop.call_soon_threadsafe(fn, *args)
+        except RuntimeError:
+            with contextlib.suppress(Exception):
+                fn(*args)
+
+    def _deliver_message(self, obj: dict[str, Any]) -> None:
+        cb = self.on_message
+        if cb is None:
+            return
+        self._invoke_on_loop(cb, obj)
+
+    def _notify_idle(self) -> None:
+        cb = self.on_idle
+        if cb is None:
+            return
+        self._invoke_on_loop(cb)
+
+    def _notify_disconnected(self, err: Exception | None) -> None:
+        cb = self.on_disconnected
+        if cb is None:
+            return
+        self._invoke_on_loop(cb, err)
 
     # --------------------------
     # Connection lifecycle
@@ -254,9 +282,6 @@ class Session:
 
         if self.on_connected:
             self.on_connected(self.info)
-
-        if self.cfg.auto_receive and self.on_message is not None:
-            self._start_receiver()
 
         return self.info
 
@@ -487,7 +512,7 @@ class Session:
                 # keep pumping until overall deadline; allow idle hooks for retries
                 if self.on_idle:
                     with contextlib.suppress(Exception):
-                        self.on_idle()
+                        self._notify_idle()
                 continue
 
             # Byte count only: the frame is not yet decoded, so we cannot tell whether
@@ -563,6 +588,7 @@ class Session:
         min_interval_s: float,
         max_burst: int,
     ) -> None:
+        self._loop_ref = loop
         self._outbound = OutboundQueue(
             loop=loop,
             send_fn=self._send_all,
@@ -609,7 +635,7 @@ class Session:
             while True:
                 if self.on_idle and time.monotonic() >= idle_check_at:
                     with contextlib.suppress(Exception):
-                        self.on_idle()
+                        self._notify_idle()
                     idle_check_at = time.monotonic() + timeout_s
                 frame_no_crc = self._recv_one_frame_no_crc(timeout_s=timeout_s)
                 if len(frame_no_crc) < 3:
@@ -715,7 +741,7 @@ class Session:
             obj = self.recv_json(timeout_s=timeout_s)
         except TimeoutError:
             if self.on_idle:
-                self.on_idle()
+                self._notify_idle()
             return None
         except SessionNotReadyError:
             # Caller attempted to pump without a connected session.
@@ -746,28 +772,16 @@ class Session:
             raise
 
         if self.on_message:
-            self.on_message(obj)
+            self._deliver_message(obj)
 
         return obj
 
     def _start_receiver(self) -> None:
-        if self._recv_thread is not None or self._recv_task is not None:
+        if self._recv_thread is not None:
+            return
+        if self._loop_ref is None and not self.cfg.auto_receive_thread_fallback:
             return
         self._recv_stop = threading.Event()
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-
-        if loop is not None:
-            # Prefer asyncio.to_thread when a loop is running (HA async contexts).
-            self._recv_loop_ref = loop
-            self._recv_task = loop.create_task(asyncio.to_thread(self._recv_loop, self._recv_stop))
-            return
-
-        if not self.cfg.auto_receive_thread_fallback:
-            return
-
         self._recv_thread = threading.Thread(
             target=self._recv_loop,
             args=(self._recv_stop,),
@@ -789,26 +803,13 @@ class Session:
     def _join_recv_thread(self, thread: threading.Thread) -> None:
         if thread is threading.current_thread():
             return
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            thread.join(timeout=1.0)
-            return
-        threading.Thread(
-            target=lambda: thread.join(timeout=1.0),
-            name="e27-recv-join",
-            daemon=True,
-        ).start()
+        thread.join(timeout=1.0)
 
     def _stop_receiver(self) -> None:
         if self._recv_stop is not None:
             self._recv_stop.set()
         if self._recv_thread is not None and self._recv_thread is not threading.current_thread():
             self._join_recv_thread(self._recv_thread)
-        if self._recv_task is not None:
-            # Let the to_thread worker exit via stop_event; no hard cancel needed.
-            self._recv_task = None
-            self._recv_loop_ref = None
         self._recv_thread = None
         self._recv_stop = None
 
@@ -835,7 +836,7 @@ class Session:
             except TimeoutError:
                 if self.on_idle:
                     with contextlib.suppress(Exception):
-                        self.on_idle()
+                        self._notify_idle()
                 continue
             except SessionNotReadyError:
                 break
@@ -848,7 +849,7 @@ class Session:
                     break
                 self._handle_disconnect(e)
                 break
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:  # noqa: BLE001 -- preserve broad except handling intentionally
                 if stop_event.is_set() or self._is_disconnect_handled() or self._closing:
                     break
                 self._handle_disconnect(e)
@@ -856,7 +857,7 @@ class Session:
                 break
 
             if self.on_message:
-                self.on_message(obj)
+                self._deliver_message(obj)
 
     def _handle_disconnect(self, err: Exception | None) -> None:
         if not self._try_begin_disconnect_teardown():
@@ -894,7 +895,7 @@ class Session:
             self.close()
         finally:
             if self.on_disconnected:
-                self.on_disconnected(err)
+                self._notify_disconnected(err)
 
     @staticmethod
     def _extract_domain_key(obj: dict[str, Any]) -> str | None:

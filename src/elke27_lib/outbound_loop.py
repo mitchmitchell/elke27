@@ -153,7 +153,7 @@ class OutboundQueue:
             def _run() -> None:
                 try:
                     done.set_result(_cancel_on_loop())
-                except BaseException as exc:  # noqa: BLE001
+                except BaseException as exc:  # noqa: BLE001 -- preserve broad except handling intentionally
                     done.set_exception(exc)
 
             self._loop.call_soon_threadsafe(_run)
@@ -183,7 +183,7 @@ class OutboundQueue:
                 if item.on_fail is not None:
                     try:
                         item.on_fail(exc)
-                    except Exception as fail_exc:  # noqa: BLE001
+                    except Exception as fail_exc:  # noqa: BLE001 -- preserve broad except handling intentionally
                         self._log.warning(
                             "Outbound on_fail callback failed: seq=%s kind=%s error=%s",
                             item.seq,
@@ -215,7 +215,11 @@ class OutboundQueue:
                 await asyncio.to_thread(self._send_fn, item.payload)
                 sent_at = time.monotonic()
                 if item.on_sent is not None:
-                    item.on_sent(sent_at)
+
+                    def _run_on_sent(cb: Callable[[float], None], t: float = sent_at) -> None:
+                        cb(t)
+
+                    self._loop.call_soon_threadsafe(_run_on_sent, item.on_sent)
                 if self._log.isEnabledFor(logging.DEBUG):
                     waited = max(0.0, sent_at - item.enqueued_at)
                     self._log.debug(
@@ -225,7 +229,7 @@ class OutboundQueue:
                         len(item.payload),
                         waited,
                     )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 -- preserve broad except handling intentionally
                 if item.on_fail is not None:
                     item.on_fail(exc)
                 self._log.warning(

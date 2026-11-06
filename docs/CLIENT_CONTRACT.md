@@ -236,7 +236,9 @@ when the panel responds with error_code `11008` for auth-gated calls.
 - Subscribe callbacks must be invoked from the same dispatch thread/task context
   (or via a queue); do not call Home Assistant APIs.
 - Home Assistant: all I/O and library calls are async; never block the event loop.
-- Session auto-receive uses `asyncio.to_thread(...)` when a running event loop exists.
+- Session auto-receive runs on a dedicated thread; after `enable_outbound_queue` binds
+  an `asyncio` loop, inbound callbacks are scheduled onto it with
+  `asyncio.AbstractEventLoop.call_soon_threadsafe`.
 - Dedicated receiver thread fallback is disabled by default; enable
   `SessionConfig.auto_receive_thread_fallback=True` to allow it in non-async contexts.
 

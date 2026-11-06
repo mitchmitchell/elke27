@@ -14,13 +14,13 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import concurrent.futures
 import contextlib
 import functools
 import inspect
 import json
 import logging
 import math
-import queue
 import threading
 import time
 import types
@@ -55,7 +55,7 @@ if TYPE_CHECKING:
     from typing_extensions import override
 else:
 
-    def override(func):  # type: ignore[no-redef]
+    def override(func):  # type: ignore[no-redef] -- typing_extensions only when TYPE_CHECKING
         return func
 
 
@@ -390,7 +390,7 @@ def _generator_pin_wants_int(generator: Callable[..., Any], pin_param: inspect.P
     annotation: object = pin_param.annotation
     try:
         hints = get_type_hints(generator)
-    except Exception:  # noqa: BLE001 - unresolved names fall back to raw text
+    except Exception:  # noqa: BLE001 -- unresolved names fall back to raw text
         hints = {}
     if "pin" in hints:
         annotation = hints["pin"]
@@ -638,18 +638,26 @@ class Elke27Client:
         kinds: Iterable[str] | None = None,
     ) -> Callable[[], bool]:
         del kinds
-        with self._subscriber_lock:
+        if not self._subscriber_lock.acquire(timeout=30.0):
+            raise RuntimeError("Subscriber lock contention timed out.")
+        try:
             if callback in self._subscriber_callbacks:
                 return lambda: self.unsubscribe(callback)
             self._subscriber_callbacks.append(callback)
+        finally:
+            self._subscriber_lock.release()
         return lambda: self.unsubscribe(callback)
 
     def unsubscribe(self, callback: Callable[[Elke27Event], None]) -> bool:
-        with self._subscriber_lock:
+        if not self._subscriber_lock.acquire(timeout=30.0):
+            return False
+        try:
             if callback not in self._subscriber_callbacks:
                 return False
             self._subscriber_callbacks.remove(callback)
-        return True
+            return True
+        finally:
+            self._subscriber_lock.release()
 
     def subscribe_typed(
         self,
@@ -658,18 +666,26 @@ class Elke27Client:
         kinds: Iterable[str] | None = None,
     ) -> Callable[[], bool]:
         del kinds
-        with self._subscriber_lock:
+        if not self._subscriber_lock.acquire(timeout=30.0):
+            raise RuntimeError("Subscriber lock contention timed out.")
+        try:
             if callback in self._typed_subscriber_callbacks:
                 return lambda: self.unsubscribe_typed(callback)
             self._typed_subscriber_callbacks.append(callback)
+        finally:
+            self._subscriber_lock.release()
         return lambda: self.unsubscribe_typed(callback)
 
     def unsubscribe_typed(self, callback: Callable[[Event], None]) -> bool:
-        with self._subscriber_lock:
+        if not self._subscriber_lock.acquire(timeout=30.0):
+            return False
+        try:
             if callback not in self._typed_subscriber_callbacks:
                 return False
             self._typed_subscriber_callbacks.remove(callback)
-        return True
+            return True
+        finally:
+            self._subscriber_lock.release()
 
     def drain_events(self) -> list[Event]:
         return self._kernel.drain_events()
@@ -1247,12 +1263,16 @@ class Elke27Client:
             raw_type="snapshot_updated",
         )
         self._enqueue_event(v2_evt)
-        with self._subscriber_lock:
+        if not self._subscriber_lock.acquire(timeout=30.0):
+            return
+        try:
             callbacks = list(self._subscriber_callbacks)
+        finally:
+            self._subscriber_lock.release()
         for cb in callbacks:
             try:
                 cb(v2_evt)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 -- preserve broad except handling intentionally
                 exc_type = type(exc)
                 if exc_type not in self._subscriber_error_types:
                     self._subscriber_error_types.add(exc_type)
@@ -1970,9 +1990,13 @@ class Elke27Client:
             )
         self._maybe_set_ready()
 
-        with self._subscriber_lock:
+        if not self._subscriber_lock.acquire(timeout=30.0):
+            return
+        try:
             callbacks = list(self._subscriber_callbacks)
             typed_callbacks = list(self._typed_subscriber_callbacks)
+        finally:
+            self._subscriber_lock.release()
         if self._log.isEnabledFor(logging.DEBUG) and evt.kind == ZoneStatusUpdated.KIND:
             self._log.debug(
                 "Dispatching %s to %d typed subscribers (zone_id=%s changed=%s)",
@@ -1984,7 +2008,7 @@ class Elke27Client:
         for cb in callbacks:
             try:
                 cb(v2_evt)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 -- preserve broad except handling intentionally
                 exc_type = type(exc)
                 if exc_type not in self._subscriber_error_types:
                     self._subscriber_error_types.add(exc_type)
@@ -1992,7 +2016,7 @@ class Elke27Client:
         for cb in typed_callbacks:
             try:
                 cb(evt)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 -- preserve broad except handling intentionally
                 exc_type = type(exc)
                 if exc_type not in self._subscriber_error_types:
                     self._subscriber_error_types.add(exc_type)
@@ -2014,7 +2038,7 @@ class Elke27Client:
         timeout = int(timeout_s) if timeout_s is not None else 10
         try:
             result = await E27Kernel.discover(timeout=timeout, address=address)
-        except BaseException as exc:  # noqa: BLE001
+        except BaseException as exc:  # noqa: BLE001 -- preserve broad except handling intentionally
             self._raise_v2_error(exc, phase="discover")
             raise AssertionError("unreachable") from exc
         panels: list[DiscoveredPanel] = []
@@ -2067,7 +2091,7 @@ class Elke27Client:
         timeout_value = float(timeout_s) if timeout_s is not None else 10.0
         try:
             link_keys = await self._kernel.link(panel, identity, creds, timeout_s=timeout_value)
-        except BaseException as exc:  # noqa: BLE001
+        except BaseException as exc:  # noqa: BLE001 -- preserve broad except handling intentionally
             self._raise_v2_error(exc, phase="link")
             raise AssertionError("unreachable") from exc
         return LinkKeys(
@@ -2099,7 +2123,7 @@ class Elke27Client:
                 )
                 connect_exc = None
                 break
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 -- preserve broad except handling intentionally
                 connect_exc = exc
                 will_retry = attempt + 1 < max_attempts and self._is_retryable_connect_error(exc)
                 self._log_connect_attempt_failure(attempt + 1, exc, will_retry=will_retry)
@@ -2175,7 +2199,7 @@ class Elke27Client:
                 expected_route=route,
                 expects_reply=False,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 -- preserve broad except handling intentionally
             self._log.debug(
                 "control.get_version_info request failed; panel identity stays unset: %s",
                 type(exc).__name__,
@@ -2302,7 +2326,7 @@ class Elke27Client:
         self._authenticated = False
         try:
             await self._kernel.close()
-        except BaseException as exc:  # noqa: BLE001
+        except BaseException as exc:  # noqa: BLE001 -- preserve broad except handling intentionally
             self._raise_v2_error(exc, phase="disconnect")
         self._connected = False
         self._reset_bootstrap_state()
@@ -2371,7 +2395,7 @@ class Elke27Client:
         try:
             try:
                 self._kernel.request_csm_refresh(auth_pin=self._session_auth_pin())
-            except BaseException as exc:  # noqa: BLE001
+            except BaseException as exc:  # noqa: BLE001 -- preserve broad except handling intentionally
                 self._raise_v2_error(exc, phase="refresh_csm")
             timeout_value = self._kernel.request_timeout_s
             with contextlib.suppress(TimeoutError):
@@ -2450,7 +2474,7 @@ class Elke27Client:
             return
         try:
             self._kernel.request(route, **kwargs)
-        except BaseException as exc:  # noqa: BLE001
+        except BaseException as exc:  # noqa: BLE001 -- preserve broad except handling intentionally
             self._raise_v2_error(exc, phase="refresh_domain_config")
 
     async def async_set_output(self, output_id: int, *, on: bool) -> None:
@@ -2742,7 +2766,10 @@ class Elke27Client:
         return None
 
     async def discover(
-        self, *, timeout: int = 10, address: str | None = None
+        self,
+        *,
+        timeout: int = 10,  # noqa: ASYNC109 -- public keyword timeout stays stable
+        address: str | None = None,
     ) -> Result[DiscoverResult]:
         try:
             panels: DiscoverResult = await E27Kernel.discover(timeout=timeout, address=address)
@@ -3495,7 +3522,7 @@ class Elke27Client:
 
         try:
             merged_payload = cast(Mapping[str, Any], merge_fn(blocks, block_count or len(blocks)))
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 -- preserve broad except handling intentionally
             return _err(ProtocolError(f"{command_key} merge failed: {exc}"))
 
         return _ok(merged_payload)
@@ -3509,11 +3536,12 @@ class Elke27Client:
         opaque: Any = None,
         **kwargs: Any,
     ) -> Result[int]:
-        auth_queue: queue.Queue[dict[str, object]] | Any = (
-            opaque if opaque is not None else queue.Queue(maxsize=1)
-        )
-        if not hasattr(auth_queue, "get"):
-            return _err(ProtocolError("Authenticate opaque must support get()."))
+        if opaque is None:
+            auth_waiter: Any = concurrent.futures.Future[dict[str, object]]()
+        else:
+            auth_waiter = opaque
+        if not (hasattr(auth_waiter, "result") or hasattr(auth_waiter, "get")):
+            return _err(ProtocolError("Authenticate opaque must support result() or get()."))
         pin_value = kwargs.get("pin")
         accepted_pin: int | None = None
         if isinstance(pin_value, str) and is_ascii_digit_string(pin_value):
@@ -3521,14 +3549,21 @@ class Elke27Client:
         elif isinstance(pin_value, int) and not isinstance(pin_value, bool):
             accepted_pin = pin_value
         try:
-            seq = self._kernel.request(route, pending=pending, opaque=auth_queue, **kwargs)
+            seq = self._kernel.request(route, pending=pending, opaque=auth_waiter, **kwargs)
         except _CLIENT_EXCEPTIONS as exc:
             detail = f"route={route[0]}.{route[1]}"
             return _err(self._normalize_error(exc, phase="request", detail=detail))
 
         try:
-            result = auth_queue.get(timeout=10.0)
-        except queue.Empty:
+            result_fn = getattr(auth_waiter, "result", None)
+            if callable(result_fn):
+                result = result_fn(timeout=10.0)
+            else:
+                result = auth_waiter.get(timeout=10.0)
+        except (
+            TimeoutError,
+            concurrent.futures.TimeoutError,
+        ):
             return _err(E27Timeout("Authenticate response timed out."))
 
         if not isinstance(result, dict):

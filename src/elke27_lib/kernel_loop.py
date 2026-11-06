@@ -28,7 +28,6 @@ import contextlib
 import importlib
 import json
 import logging
-import socket
 import threading
 import time
 from collections import deque
@@ -347,7 +346,6 @@ class E27Kernel:
     requests: RequestRegistry
     _events: deque[Event]
     _seq: int
-    _event_lock: threading.Lock
     _subscribers: dict[int, _Subscriber]
     _next_subscriber_id: int
     _request_timeout_s: float
@@ -369,7 +367,6 @@ class E27Kernel:
     _closing: bool
     _closed_explicitly: bool
     _sent_events: dict[int, asyncio.Event]
-    _sent_event_lock: threading.Lock
     _loop: asyncio.AbstractEventLoop | None
     _request_state: _RequestState
     _active_seq: int | None
@@ -444,7 +441,6 @@ class E27Kernel:
         self.events_dropped: int = 0
         self._events_dropped_warned = False
         self._seq = 1
-        self._event_lock = threading.Lock()
         self._subscribers = {}
         self._next_subscriber_id = 1
         self._request_timeout_s = request_timeout_s
@@ -481,7 +477,6 @@ class E27Kernel:
         self._closing = False
         self._closed_explicitly = False
         self._sent_events = {}
-        self._sent_event_lock = threading.Lock()
         self._confirmed_sent_seqs: set[int] = set()
         # Correlation-only pending entries for fire-and-forget sends (#40). Nothing
         # waits on them, so they are dropped on close and on every connect.
@@ -539,7 +534,12 @@ class E27Kernel:
     # -------------------------
 
     @classmethod
-    async def discover(cls, *, timeout: int = 10, address: str | None = None) -> DiscoverResult:
+    async def discover(
+        cls,
+        *,
+        timeout: int = 10,  # noqa: ASYNC109 -- public keyword timeout stays stable
+        address: str | None = None,
+    ) -> DiscoverResult:
         """
         E27Kernel.discover uses the discovery.py module to find a list of discovered panels and
         returns the list with the data returned by discovery.AIOELKDiscovery.async_scan().
@@ -601,33 +601,16 @@ class E27Kernel:
         if not isinstance(passphrase, str) or not passphrase:
             raise KernelError("link(): credentials.passphrase (string) is required.")
 
-        def _do_link_sync() -> linking.E27LinkKeys:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            try:
-                sock.settimeout(float(timeout_s))
-                sock.connect((host, port))
-
-                # Wait for discovery hello/nonce (cleartext)
-                nonce = linking.wait_for_discovery_nonce(sock, timeout_s=float(timeout_s))
-                nonce_bytes = nonce.encode("utf-8")
-
-                # Perform API_LINK. Existing library signature is sock-based; newer wrappers may differ.
-                return linking.perform_api_link(
-                    sock=sock,
-                    client_identity=client_identity,
-                    access_code=access_code,
-                    passphrase=passphrase,
-                    mn_for_hash=client_identity.mn,
-                    discovery_nonce=nonce_bytes,
-                    seq=110,
-                    timeout_s=float(timeout_s),
-                )
-            finally:
-                with contextlib.suppress(OSError):
-                    sock.close()
-
         try:
-            link_keys = await asyncio.to_thread(_do_link_sync)
+            link_keys = await asyncio.to_thread(
+                linking.do_tcp_api_link,
+                host,
+                port,
+                client_identity=client_identity,
+                access_code=access_code,
+                passphrase=passphrase,
+                timeout_s=float(timeout_s),
+            )
         except (E27Error, OSError, RuntimeError, ValueError) as e:
             raise KernelError(f"Linking failed for {host}:{port}: {e}") from e
 
@@ -647,6 +630,7 @@ class E27Kernel:
         """
         await asyncio.to_thread(self.load_features_blocking, None)
         self._loop = asyncio.get_running_loop()
+        loop = self._loop
         self._drop_fire_and_forget_pending()  # never carry correlation across sessions
         if session_config is None and panel is None:
             raise KernelMissingContextError(
@@ -701,7 +685,6 @@ class E27Kernel:
         def _do_connect_sync() -> session_mod.SessionInfo:
             return s.connect()
 
-        loop = asyncio.get_running_loop()
         connect_cf: concurrent.futures.Future[session_mod.SessionInfo] = _CONNECT_EXECUTOR.submit(
             _do_connect_sync
         )
@@ -1027,7 +1010,7 @@ class E27Kernel:
                     priority=OutboundPriority.HIGH,
                     timeout_s=self._keepalive_timeout_s,
                 )
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 -- preserve broad except handling intentionally
                 self._pending_responses.drop(seq)
                 return False
             probe_sent_at = self._probe_sent_at(seq)
@@ -1067,7 +1050,7 @@ class E27Kernel:
                     stats.rescued += 1
                     self._log.debug("E27 keepalive reply missing; later traffic kept the link")
                 return rescued
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 -- preserve broad except handling intentionally
                 self._log.warning(
                     "E27 keepalive check failed: seq=%s session_id=%s error=%s",
                     seq,
@@ -1102,7 +1085,9 @@ class E27Kernel:
 
     def load_features_blocking(self, modules: Sequence[str] | None = None) -> None:
         """Import each module and invoke its register(elk) function (blocking)."""
-        with self._features_lock:
+        if not self._features_lock.acquire(timeout=30.0):
+            raise KernelError("Feature load lock contention timed out.")
+        try:
             if self._features_loaded:
                 return
             for modname in modules or self._feature_modules:
@@ -1114,6 +1099,8 @@ class E27Kernel:
                     )
                 reg(self)
             self._features_loaded = True
+        finally:
+            self._features_lock.release()
 
     # -------------------------
     # Registration surface for features
@@ -1263,15 +1250,13 @@ class E27Kernel:
         self, callback: Callable[[Event], None], *, kinds: Iterable[str] | None = None
     ) -> int:
         kind_set = set(kinds) if kinds is not None else None
-        with self._event_lock:
-            token = self._next_subscriber_id
-            self._next_subscriber_id += 1
-            self._subscribers[token] = _Subscriber(callback=callback, kinds=kind_set)
+        token = self._next_subscriber_id
+        self._next_subscriber_id += 1
+        self._subscribers[token] = _Subscriber(callback=callback, kinds=kind_set)
         return token
 
     def unsubscribe(self, token: int) -> bool:
-        with self._event_lock:
-            return self._subscribers.pop(token, None) is not None
+        return self._subscribers.pop(token, None) is not None
 
     # -------------------------
     # Session -> E27Kernel -> Dispatcher wiring
@@ -1444,13 +1429,11 @@ class E27Kernel:
         return True
 
     def _register_sent_event(self, seq: int, event: asyncio.Event) -> asyncio.Event:
-        with self._sent_event_lock:
-            self._sent_events[seq] = event
+        self._sent_events[seq] = event
         return event
 
     def _signal_sent_event(self, seq: int) -> None:
-        with self._sent_event_lock:
-            event = self._sent_events.pop(seq, None)
+        event = self._sent_events.pop(seq, None)
         if event is None:
             return
         try:
@@ -1459,7 +1442,7 @@ class E27Kernel:
                 loop.call_soon_threadsafe(event.set)
             else:
                 event.set()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 -- preserve broad except handling intentionally
             self._log.warning("Event set failed: %s", exc, exc_info=True)
             event.set()
 
@@ -1566,7 +1549,7 @@ class E27Kernel:
                 on_sent=lambda _: self._on_request_sent(item.seq, item.timeout_s),
                 on_fail=lambda exc: self._handle_send_failure(item.seq, exc),
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 -- preserve broad except handling intentionally
             self._handle_send_failure(item.seq, exc)
 
     def _on_request_sent(self, seq: int, timeout_s: float) -> None:
@@ -1775,8 +1758,7 @@ class E27Kernel:
         self._signal_all_sent_events()
 
     def _signal_all_sent_events(self) -> None:
-        with self._sent_event_lock:
-            seqs = list(self._sent_events.keys())
+        seqs = list(self._sent_events.keys())
         for seq in seqs:
             self._signal_sent_event(seq)
 
@@ -2012,21 +1994,16 @@ class E27Kernel:
     def _mark_request_sent(self, seq: int) -> None:
         now = self.now()
         self._last_exchange_at = now
-        with self._sent_event_lock:
-            # Record a real on_sent confirmation for callers waiting on this seq;
-            # the sent event alone is also set when a queued command is failed.
-            if seq in self._sent_events:
-                self._confirmed_sent_seqs.add(seq)
+        if seq in self._sent_events:
+            self._confirmed_sent_seqs.add(seq)
         self._signal_sent_event(seq)
 
     def was_request_sent(self, seq: int) -> bool:
         """True once the transport confirmed sending ``seq`` (on_sent fired)."""
-        with self._sent_event_lock:
-            return seq in self._confirmed_sent_seqs
+        return seq in self._confirmed_sent_seqs
 
     def forget_request_sent(self, seq: int) -> None:
-        with self._sent_event_lock:
-            self._confirmed_sent_seqs.discard(seq)
+        self._confirmed_sent_seqs.discard(seq)
 
     def _mark_send_failed(self, seq: int, exc: BaseException) -> None:
         self.dispatcher.drop_pending(seq)
@@ -2285,15 +2262,14 @@ class E27Kernel:
         self._log.debug("Emit event: %s", stamped)
 
         warn_drop = False
-        with self._event_lock:
-            maxlen = self._events.maxlen
-            if maxlen is not None and len(self._events) >= maxlen:
-                self.events_dropped += 1
-                if not self._events_dropped_warned:
-                    self._events_dropped_warned = True
-                    warn_drop = True
-            self._events.append(stamped)
-            subscribers = list(self._subscribers.values())
+        maxlen = self._events.maxlen
+        if maxlen is not None and len(self._events) >= maxlen:
+            self.events_dropped += 1
+            if not self._events_dropped_warned:
+                self._events_dropped_warned = True
+                warn_drop = True
+        self._events.append(stamped)
+        subscribers = list(self._subscribers.values())
         if warn_drop:
             # DEBUG, not WARNING: subscriber-only clients (e.g. Home Assistant) never
             # drain the deque, so it fills in normal use while subscribers miss nothing.
@@ -2311,14 +2287,12 @@ class E27Kernel:
                 self._log.warning("Event subscriber failed: %s", exc, exc_info=True)
 
     def drain_events(self) -> list[Event]:
-        with self._event_lock:
-            out: list[Event] = list(self._events)
-            self._events.clear()
+        out: list[Event] = list(self._events)
+        self._events.clear()
         return out
 
     def iter_events(self) -> Iterable[Event]:
-        with self._event_lock:
-            return iter(list(self._events))
+        return iter(list(self._events))
 
     def _emit_connection_state(
         self,

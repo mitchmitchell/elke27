@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import builtins
-import queue
+import concurrent.futures
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
@@ -418,19 +418,21 @@ def test_request_authenticate_and_payload_helpers(monkeypatch: pytest.MonkeyPatc
     result = client._request_authenticate(("control", "authenticate"), opaque=object(), pin="1234")
     assert result.ok is False and isinstance(result.error, ProtocolError)
 
-    q = queue.Queue(maxsize=1)
-    q.put({"success": True, "error_code": 0})
-    result = client._request_authenticate(("control", "authenticate"), opaque=q, pin=1234)
+    fut_ok: concurrent.futures.Future[dict[str, object]] = concurrent.futures.Future()
+    fut_ok.set_result({"success": True, "error_code": 0})
+    result = client._request_authenticate(("control", "authenticate"), opaque=fut_ok, pin=1234)
     assert result.ok is True and client._last_auth_pin == 1234
 
-    q = queue.Queue(maxsize=1)
-    q.put({"success": False, "error_code": 2})
-    result = client._request_authenticate(("control", "authenticate"), opaque=q, pin="1234")
+    fut_err: concurrent.futures.Future[dict[str, object]] = concurrent.futures.Future()
+    fut_err.set_result({"success": False, "error_code": 2})
+    result = client._request_authenticate(("control", "authenticate"), opaque=fut_err, pin="1234")
     assert result.ok is False and isinstance(result.error, InvalidPin)
 
-    q = queue.Queue(maxsize=1)
-    q.put({"success": False})
-    result = client._request_authenticate(("control", "authenticate"), opaque=q, pin="1234")
+    fut_unknown: concurrent.futures.Future[dict[str, object]] = concurrent.futures.Future()
+    fut_unknown.set_result({"success": False})
+    result = client._request_authenticate(
+        ("control", "authenticate"), opaque=fut_unknown, pin="1234"
+    )
     assert result.ok is False and isinstance(result.error, InvalidPin)
 
     assert client._extract_error_code({"zone": {"get": {"error_code": 5}}}, ("zone", "get")) == 5

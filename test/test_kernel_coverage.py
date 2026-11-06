@@ -501,8 +501,7 @@ def test_signal_sent_event_exception_path() -> None:
                 raise RuntimeError("boom")
 
     event = _Event()
-    with kernel._sent_event_lock:
-        kernel._sent_events[1] = event  # type: ignore[assignment]
+    kernel._sent_events[1] = event  # type: ignore[assignment]
     kernel._signal_sent_event(1)
 
 

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
 import os
+import socket
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -538,6 +540,36 @@ def _coerce_intish(value: object, *, default: int | None = None) -> int:
 
 
 _LINK_SLOTS_FULL_MESSAGES: Final[tuple[str, ...]] = ("not enough space",)
+
+
+def do_tcp_api_link(
+    host: str,
+    port: int,
+    *,
+    client_identity: E27Identity,
+    access_code: str,
+    passphrase: str,
+    timeout_s: float,
+) -> E27LinkKeys:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.settimeout(float(timeout_s))
+        sock.connect((host, port))
+        nonce = wait_for_discovery_nonce(sock, timeout_s=float(timeout_s))
+        nonce_bytes = nonce.encode("utf-8")
+        return perform_api_link(
+            sock=sock,
+            client_identity=client_identity,
+            access_code=access_code,
+            passphrase=passphrase,
+            mn_for_hash=client_identity.mn,
+            discovery_nonce=nonce_bytes,
+            seq=110,
+            timeout_s=float(timeout_s),
+        )
+    finally:
+        with contextlib.suppress(OSError):
+            sock.close()
 
 
 def _raise_panel_link_error(obj: Mapping[str, object]) -> None:

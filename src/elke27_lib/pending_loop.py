@@ -51,8 +51,12 @@ class PendingResponseManager:
             future=future,
             loop=loop,
         )
-        with self._lock:
+        if not self._lock.acquire(timeout=30.0):
+            raise RuntimeError("Pending response lock contention timed out.")
+        try:
             self._pending[seq] = entry
+        finally:
+            self._lock.release()
         return future
 
     def resolve(self, seq: int, msg: Mapping[str, Any]) -> bool:
@@ -80,17 +84,29 @@ class PendingResponseManager:
         return True
 
     def drop(self, seq: int) -> None:
-        with self._lock:
+        if not self._lock.acquire(timeout=30.0):
+            return
+        try:
             self._pending.pop(seq, None)
+        finally:
+            self._lock.release()
 
     def pending_count(self) -> int:
-        with self._lock:
+        if not self._lock.acquire(timeout=30.0):
+            return 0
+        try:
             return len(self._pending)
+        finally:
+            self._lock.release()
 
     def fail_all(self, exc: BaseException) -> None:
-        with self._lock:
+        if not self._lock.acquire(timeout=30.0):
+            raise RuntimeError("Pending response lock contention timed out.")
+        try:
             entries = list(self._pending.values())
             self._pending.clear()
+        finally:
+            self._lock.release()
         for entry in entries:
 
             def _set_exc(entry: PendingResponse = entry) -> None:
@@ -100,8 +116,12 @@ class PendingResponseManager:
             self._call_in_loop(entry, _set_exc)
 
     def _pop(self, seq: int) -> PendingResponse | None:
-        with self._lock:
+        if not self._lock.acquire(timeout=30.0):
+            return None
+        try:
             return self._pending.pop(seq, None)
+        finally:
+            self._lock.release()
 
     @staticmethod
     def _call_in_loop(entry: PendingResponse, fn: Callable[[], None]) -> None:

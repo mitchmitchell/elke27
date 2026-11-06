@@ -337,19 +337,27 @@ def _notify_auth_opaque(ctx: DispatchContext, *, success: bool, error_code: int 
     if opaque is None:
         return
     payload = {"success": success, "error_code": error_code}
+    set_result = getattr(opaque, "set_result", None)
+    if callable(set_result):
+        try:
+            set_result(payload)
+            return
+        except Exception as exc:  # noqa: BLE001 -- must not break dispatch
+            LOG.warning("auth opaque set_result failed: %s", exc, exc_info=True)
+            return
     put_nowait = getattr(opaque, "put_nowait", None)
     if callable(put_nowait):
         try:
             put_nowait(payload)
             return
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 -- must not break dispatch
             LOG.warning("auth opaque put_nowait failed: %s", exc, exc_info=True)
             return
     put = getattr(opaque, "put", None)
     if callable(put):
         try:
             put(payload)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 -- must not break dispatch
             LOG.warning("auth opaque put failed: %s", exc, exc_info=True)
             return
 
