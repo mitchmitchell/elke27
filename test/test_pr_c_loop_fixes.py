@@ -155,38 +155,42 @@ async def test_close_scheduled_on_loop_returns_quickly_with_blocked_recv(
     sess.bind_loop(loop)
     await asyncio.to_thread(sess.connect)
 
-    def _close1() -> None:
-        try:
-            sess.close()
-        finally:
-            loop.call_soon_threadsafe(done1.set)
+    try:
 
-    def _close2() -> None:
-        try:
-            sess.close()
-        finally:
-            loop.call_soon_threadsafe(done2.set)
+        def _close1() -> None:
+            try:
+                sess.close()
+            finally:
+                loop.call_soon_threadsafe(done1.set)
 
-    t0 = time.monotonic()
-    loop.call_soon_threadsafe(_close1)
-    await asyncio.wait_for(done1.wait(), timeout=2.0)
-    first_elapsed = time.monotonic() - t0
-    assert first_elapsed < 0.2
+        def _close2() -> None:
+            try:
+                sess.close()
+            finally:
+                loop.call_soon_threadsafe(done2.set)
 
-    t1 = time.monotonic()
-    loop.call_soon_threadsafe(_close2)
-    await asyncio.wait_for(done2.wait(), timeout=2.0)
-    second_elapsed = time.monotonic() - t1
-    assert second_elapsed < 0.2
+        t0 = time.monotonic()
+        loop.call_soon_threadsafe(_close1)
+        await asyncio.wait_for(done1.wait(), timeout=2.0)
+        first_elapsed = time.monotonic() - t0
+        assert first_elapsed < 0.2
 
-    recv_joins = [j for j in joins if j[1] == "e27-recv"]
-    assert recv_joins
-    assert all(j[0] == "e27-recv-join" and j[2] == 1.0 for j in recv_joins)
+        t1 = time.monotonic()
+        loop.call_soon_threadsafe(_close2)
+        await asyncio.wait_for(done2.wait(), timeout=2.0)
+        second_elapsed = time.monotonic() - t1
+        assert second_elapsed < 0.2
 
-    main_joins_recv = [j for j in joins if j[0] == "MainThread" and j[1] == "e27-recv"]
-    main_joins_helper = [j for j in joins if j[0] == "MainThread" and j[1] == "e27-recv-join"]
-    assert main_joins_recv == []
-    assert main_joins_helper == []
+        recv_joins = [j for j in joins if j[1] == "e27-recv"]
+        assert recv_joins
+        assert all(j[0] == "e27-recv-join" and j[2] == 1.0 for j in recv_joins)
+
+        main_joins_recv = [j for j in joins if j[0] == "MainThread" and j[1] == "e27-recv"]
+        main_joins_helper = [j for j in joins if j[0] == "MainThread" and j[1] == "e27-recv-join"]
+        assert main_joins_recv == []
+        assert main_joins_helper == []
+    finally:
+        await asyncio.to_thread(sess.close)
 
 
 @pytest.mark.asyncio
@@ -217,8 +221,16 @@ async def test_stale_recv_join_helper_does_not_clear_new_receiver_after_reconnec
 
     monkeypatch.setattr(threading.Thread, "start", _track_start)
 
+    # R1 must not leave recv until R2's first recv runs — forces ordering that
+    # exposes stale _recv_join_helper clearing _recv_thread for the new receiver
+    # (regression against 8fb49222-style close()) without relying on scheduler luck.
+    r2_in_recv = threading.Event()
+    _sock_instances: list[Any] = []
+
     class _SlowSock:
         def __init__(self) -> None:
+            self._sock_idx = len(_sock_instances)
+            _sock_instances.append(self)
             self.closed = False
 
         def settimeout(self, _t: float) -> None:
@@ -231,6 +243,15 @@ async def test_stale_recv_join_helper_does_not_clear_new_receiver_after_reconnec
             self.closed = True
 
         def recv(self, _n: int) -> bytes:
+            # First session only has one fake socket — do not block R1 waiting for R2
+            # (that would deadlock initial connect). After reconnect(), sock 0 is stale
+            # recv while sock 1 exists; gate so the stale recv cannot finishjoin before
+            # R2's first recv() (forces ordering for the regression).
+            if len(_sock_instances) >= 2 and self._sock_idx == 0:
+                if not r2_in_recv.wait(timeout=60.0):
+                    raise AssertionError("timed out waiting for R2 recv()")
+            elif len(_sock_instances) >= 2 and self._sock_idx >= 1:
+                r2_in_recv.set()
             while not self.closed:
                 time.sleep(0.05)
             return b""
@@ -263,61 +284,73 @@ async def test_stale_recv_join_helper_does_not_clear_new_receiver_after_reconnec
     assert len(recv_objs) == 1
     r1 = recv_objs[0]
 
-    def _close1() -> None:
-        try:
-            sess.close()
-        finally:
-            loop.call_soon_threadsafe(done1.set)
+    try:
 
-    def _close2() -> None:
-        try:
-            sess.close()
-        finally:
-            loop.call_soon_threadsafe(done2.set)
+        def _close1() -> None:
+            try:
+                sess.close()
+            finally:
+                loop.call_soon_threadsafe(done1.set)
 
-    loop.call_soon_threadsafe(_close1)
-    await asyncio.wait_for(done1.wait(), timeout=2.0)
-    loop.call_soon_threadsafe(_close2)
-    await asyncio.wait_for(done2.wait(), timeout=2.0)
-    await asyncio.to_thread(sess.reconnect)
-    assert len(recv_objs) == 2
-    r2 = recv_objs[1]
-    assert sess.state == session_mod.SessionState.ACTIVE
-    deadline = time.monotonic() + 2.0
-    while time.monotonic() < deadline:
-        alive_tracked = [t for t in recv_objs if t.is_alive()]
-        if len(alive_tracked) == 1 and alive_tracked[0] is r2 and not r1.is_alive():
-            break
-        await asyncio.sleep(0.05)
-    else:
-        alive_tracked = [t for t in recv_objs if t.is_alive()]
-        raise AssertionError(
-            f"expected exactly r2 live among tracked recv threads, got {alive_tracked!r} "
-            f"r1_alive={r1.is_alive()}"
-        )
-    helper_deadline = time.monotonic() + 5.0
-    while time.monotonic() < helper_deadline:
-        if not join_helpers:
-            await asyncio.sleep(0.01)
-            continue
-        if all(not h.is_alive() for h in join_helpers):
-            break
-        await asyncio.sleep(0.05)
-    else:
-        still = [h for h in join_helpers if h.is_alive()]
-        raise AssertionError(f"e27-recv-join helper(s) still alive: {still!r}")
-    assert join_helpers, "expected at least one e27-recv-join from the two loop closes"
+        def _close2() -> None:
+            try:
+                sess.close()
+            finally:
+                loop.call_soon_threadsafe(done2.set)
 
-    await asyncio.to_thread(sess.start_auto_receive)
-    assert len(recv_objs) == 2
-    assert recv_objs[1].is_alive()
-    assert not recv_objs[0].is_alive()
+        loop.call_soon_threadsafe(_close1)
+        await asyncio.wait_for(done1.wait(), timeout=2.0)
+        loop.call_soon_threadsafe(_close2)
+        await asyncio.wait_for(done2.wait(), timeout=2.0)
+        # Off-loop reconnect: close() joins the prior e27-recv-join helper (with
+        # timeout) before connect() so _recv_thread can be cleared safely; then R2
+        # starts and unblocks R1's gated recv. Running reconnect on the asyncio
+        # loop thread would block connect() until the loop spins, leaving _recv_thread
+        # set and preventing _start_receiver from starting R2.
+        await asyncio.to_thread(sess.reconnect)
+        assert len(_sock_instances) == 2, f"expected 2 fake sockets, got {len(_sock_instances)}"
+        assert len(recv_objs) == 2
+        r2 = recv_objs[1]
+        assert sess.state == session_mod.SessionState.ACTIVE
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            alive_tracked = [t for t in recv_objs if t.is_alive()]
+            if len(alive_tracked) == 1 and alive_tracked[0] is r2 and not r1.is_alive():
+                break
+            await asyncio.sleep(0.05)
+        else:
+            alive_tracked = [t for t in recv_objs if t.is_alive()]
+            raise AssertionError(
+                f"expected exactly r2 live among tracked recv threads, got {alive_tracked!r} "
+                f"r1_alive={r1.is_alive()}"
+            )
+        helper_deadline = time.monotonic() + 5.0
+        while time.monotonic() < helper_deadline:
+            if not join_helpers:
+                await asyncio.sleep(0.01)
+                continue
+            if all(not h.is_alive() for h in join_helpers):
+                break
+            await asyncio.sleep(0.05)
+        else:
+            still = [h for h in join_helpers if h.is_alive()]
+            raise AssertionError(f"e27-recv-join helper(s) still alive: {still!r}")
+        assert join_helpers, "expected at least one e27-recv-join from the two loop closes"
 
-    helper_joins_recv = [j for j in joins if j[0] == "e27-recv-join" and j[1] == "e27-recv"]
-    any_joins_recv = [j for j in joins if j[1] == "e27-recv"]
-    assert len(helper_joins_recv) == len(any_joins_recv)
-    main_bad = [j for j in joins if j[0] == "MainThread" and j[1] in ("e27-recv", "e27-recv-join")]
-    assert main_bad == []
+        await asyncio.to_thread(sess.start_auto_receive)
+        assert len(recv_objs) == 2
+        assert recv_objs[1].is_alive()
+        assert not recv_objs[0].is_alive()
+
+        helper_joins_recv = [j for j in joins if j[0] == "e27-recv-join" and j[1] == "e27-recv"]
+        any_joins_recv = [j for j in joins if j[1] == "e27-recv"]
+        assert len(helper_joins_recv) == len(any_joins_recv)
+        main_bad = [
+            j for j in joins if j[0] == "MainThread" and j[1] in ("e27-recv", "e27-recv-join")
+        ]
+        assert main_bad == []
+    finally:
+        await asyncio.to_thread(sess.close)
 
 
 @pytest.mark.asyncio
@@ -375,13 +408,17 @@ async def test_close_twice_then_reconnect_starts_receiver_again(
     await asyncio.to_thread(sess.connect)
     assert len(recv_starts) == 1
 
-    def _close_twice() -> None:
-        sess.close()
-        sess.close()
+    try:
 
-    await asyncio.to_thread(_close_twice)
-    await asyncio.to_thread(sess.reconnect)
-    assert len(recv_starts) == 2
+        def _close_twice() -> None:
+            sess.close()
+            sess.close()
+
+        await asyncio.to_thread(_close_twice)
+        await asyncio.to_thread(sess.reconnect)
+        assert len(recv_starts) == 2
+    finally:
+        await asyncio.to_thread(sess.close)
 
 
 @pytest.mark.asyncio

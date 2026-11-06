@@ -316,16 +316,12 @@ class Session:
             prev_join = self._recv_join_thread
             if prev_join is not None:
                 if on_loop:
-
-                    def _await_prev_join() -> None:
-                        prev_join.join(timeout=2.0)
-
-                    threading.Thread(
-                        target=_await_prev_join, name="e27-recv-join-await", daemon=True
-                    ).start()
+                    # Drop the handle: never join e27-recv / e27-recv-join on the loop thread,
+                    # and do not spawn a background join for the prior helper (B1).
+                    self._recv_join_thread = None
                 else:
                     prev_join.join(timeout=2.0)
-                self._recv_join_thread = None
+                    self._recv_join_thread = None
 
             self._set_recv_stop_flag()
 
