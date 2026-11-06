@@ -130,7 +130,8 @@ async def test_close_scheduled_on_loop_returns_quickly_with_blocked_recv(
             return b""
 
     loop = asyncio.get_running_loop()
-    done = asyncio.Event()
+    done1 = asyncio.Event()
+    done2 = asyncio.Event()
     cfg = session_mod.SessionConfig(
         host="example",
         auto_receive=True,
@@ -154,21 +155,102 @@ async def test_close_scheduled_on_loop_returns_quickly_with_blocked_recv(
     sess.bind_loop(loop)
     await asyncio.to_thread(sess.connect)
 
-    started = time.monotonic()
-
-    def _close_from_loop() -> None:
+    def _close1() -> None:
         try:
             sess.close()
         finally:
-            loop.call_soon_threadsafe(done.set)
+            loop.call_soon_threadsafe(done1.set)
 
-    loop.call_soon_threadsafe(_close_from_loop)
-    await asyncio.wait_for(done.wait(), timeout=2.0)
-    elapsed = time.monotonic() - started
-    assert elapsed < 0.2
+    def _close2() -> None:
+        try:
+            sess.close()
+        finally:
+            loop.call_soon_threadsafe(done2.set)
+
+    t0 = time.monotonic()
+    loop.call_soon_threadsafe(_close1)
+    await asyncio.wait_for(done1.wait(), timeout=2.0)
+    first_elapsed = time.monotonic() - t0
+    assert first_elapsed < 0.2
+
+    t1 = time.monotonic()
+    loop.call_soon_threadsafe(_close2)
+    await asyncio.wait_for(done2.wait(), timeout=2.0)
+    second_elapsed = time.monotonic() - t1
+    assert second_elapsed < 0.2
+
     recv_joins = [j for j in joins if j[1] == "e27-recv"]
     assert recv_joins
     assert all(j[0] == "e27-recv-join" and j[2] == 1.0 for j in recv_joins)
+
+    main_joins_recv = [j for j in joins if j[0] == "MainThread" and j[1] == "e27-recv"]
+    main_joins_helper = [j for j in joins if j[0] == "MainThread" and j[1] == "e27-recv-join"]
+    assert main_joins_recv == []
+    assert main_joins_helper == []
+
+
+@pytest.mark.asyncio
+async def test_close_twice_then_reconnect_starts_receiver_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import elke27_lib.session_thread as session_mod
+
+    recv_starts: list[int] = []
+    real_start = threading.Thread.start
+
+    def _track_start(self: threading.Thread) -> None:  # type: ignore[override]
+        if self.name == "e27-recv":
+            recv_starts.append(1)
+        return real_start(self)
+
+    monkeypatch.setattr(threading.Thread, "start", _track_start)
+
+    class _Sock:
+        def settimeout(self, _t: float) -> None:
+            return None
+
+        def connect(self, _a: object) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+        def recv(self, _n: int) -> bytes:
+            time.sleep(30.0)
+            return b""
+
+    loop = asyncio.get_running_loop()
+    cfg = session_mod.SessionConfig(
+        host="example",
+        auto_receive=True,
+        io_timeout_s=60.0,
+        auto_receive_thread_fallback=True,
+    )
+    sess = session_mod.Session(
+        cfg,
+        client_identity=session_mod.linking.E27Identity("m", "s", "f", "h", "o"),
+        link_key_hex="00",
+    )
+    monkeypatch.setattr(session_mod.socket, "socket", lambda *_a, **_k: _Sock())
+    monkeypatch.setattr(
+        session_mod,
+        "perform_hello",
+        lambda **_k: SimpleNamespace(
+            session_id=1, session_key_hex="00" * 16, hmac_key_hex="11" * 16
+        ),
+    )
+    sess.on_message = lambda _m: None
+    sess.bind_loop(loop)
+    await asyncio.to_thread(sess.connect)
+    assert len(recv_starts) == 1
+
+    def _close_twice() -> None:
+        sess.close()
+        sess.close()
+
+    await asyncio.to_thread(_close_twice)
+    await asyncio.to_thread(sess.reconnect)
+    assert len(recv_starts) == 2
 
 
 @pytest.mark.asyncio

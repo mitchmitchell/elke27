@@ -306,15 +306,26 @@ class Session:
         """
         self._closing = True
         try:
-            if self._recv_join_thread is not None:
-                self._recv_join_thread.join(timeout=2.0)
-                self._recv_join_thread = None
             in_recv_thread = (
                 self._recv_thread is not None and threading.current_thread() is self._recv_thread
             )
             on_loop = self._running_loop_is_bound() and self._loop_ref is not None
             if self._loop_ref is not None:
                 on_loop = on_loop and self._loop_ref.is_running()
+
+            prev_join = self._recv_join_thread
+            if prev_join is not None:
+                if on_loop:
+
+                    def _await_prev_join() -> None:
+                        prev_join.join(timeout=2.0)
+
+                    threading.Thread(
+                        target=_await_prev_join, name="e27-recv-join-await", daemon=True
+                    ).start()
+                else:
+                    prev_join.join(timeout=2.0)
+                self._recv_join_thread = None
 
             self._set_recv_stop_flag()
 
