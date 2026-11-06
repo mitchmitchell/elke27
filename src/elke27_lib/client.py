@@ -60,10 +60,10 @@ else:
 
 
 from . import discovery as discovery_mod
-from . import linking as linking_mod
+from . import linking_thread as linking_mod
 from .command_kinds import is_read_only_route
 from .const import E27ErrorCode as PanelErrorCode
-from .dispatcher import PagedBlock, RouteKey
+from .dispatcher_loop import PagedBlock, RouteKey
 from .errors import (
     AuthorizationRequired,
     ConnectionLost,
@@ -155,7 +155,7 @@ from .handlers.area import (
     make_area_configured_merge,
 )
 from .handlers.zone import make_zone_configured_merge
-from .kernel import (
+from .kernel_loop import (
     DiscoverResult,
     E27Kernel,
     KernelError,
@@ -163,8 +163,8 @@ from .kernel import (
     KernelMissingContextError,
     KernelNotLinkedError,
 )
-from .linking import E27Identity, E27LinkKeys
-from .outbound import OutboundPriority
+from .linking_thread import E27Identity, E27LinkKeys
+from .outbound_loop import OutboundPriority
 from .permissions import (
     PermissionLevel,
     canonical_generator_key,
@@ -173,7 +173,7 @@ from .permissions import (
     requires_pin,
 )
 from .redact import redact_for_diagnostics
-from .session import (
+from .session_thread import (
     SessionConfig,
     SessionIOError,
     SessionNotReadyError,

@@ -35,14 +35,14 @@ from .errors import (
     E27ProvisioningTimeout,
     E27Timeout,
 )
-from .linking import (
+from .linking_thread import (
     E27Identity,
     SocketLike,
     recv_cleartext_json_objects,
     recv_cleartext_json_objects_from_bytes,
     send_unframed_json,
 )
-from .presentation import decrypt_key_field_with_linkkey
+from .presentation_loop import decrypt_key_field_with_linkkey
 
 LOG = logging.getLogger(__name__)
 

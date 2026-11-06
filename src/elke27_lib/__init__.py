@@ -1,7 +1,10 @@
 """Elke27 v2 public API surface."""
 
 import importlib
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .hub_loop import Elke27Hub
 
 from .discovery import async_discover_host, normalize_panel_mac
 from .errors import (
@@ -55,7 +58,7 @@ def __getattr__(name: str) -> Any:
         module = importlib.import_module(".client", __name__)
         return module.Elke27Client
     if name == "Elke27Hub":
-        module = importlib.import_module(".hub", __name__)
+        module = importlib.import_module(".hub_loop", __name__)
         return module.Elke27Hub
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 

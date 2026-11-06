@@ -46,8 +46,8 @@ from elke27_lib.events import (
     OutputConfiguredInventoryReady,
     ZoneConfiguredInventoryReady,
 )
-from elke27_lib.kernel import DiscoverResult
-from elke27_lib.linking import E27LinkKeys
+from elke27_lib.kernel_loop import DiscoverResult
+from elke27_lib.linking_thread import E27LinkKeys
 from elke27_lib.states import InventoryState
 
 
@@ -174,7 +174,7 @@ async def test_async_discover_maps_panels(monkeypatch: MonkeyPatch) -> None:
             ]
         )
 
-    monkeypatch.setattr("elke27_lib.kernel.E27Kernel.discover", _fake_discover)
+    monkeypatch.setattr("elke27_lib.kernel_loop.E27Kernel.discover", _fake_discover)
     client = Elke27Client()
     panels = await client.async_discover()
     assert len(panels) == 1

@@ -7,7 +7,7 @@ from typing import Any, cast
 import pytest
 from _pytest.monkeypatch import MonkeyPatch
 
-from elke27_lib import session as session_mod
+from elke27_lib import session_thread as session_mod
 from elke27_lib.client import Elke27Client
 from elke27_lib.const import E27ErrorCode
 from elke27_lib.errors import (

@@ -415,18 +415,18 @@ DOCSTRING_CLAIMS: dict[str, tuple[str, ...] | str] = {
     "src/elke27_lib/client.py::Elke27Client.async_raw_request": (
         "test/test_raw_passthrough.py::test_raw_get_is_never_resent_after_lost_reply",
     ),
-    "src/elke27_lib/kernel.py::E27Kernel.cancel_command_transport": (
+    "src/elke27_lib/kernel_loop.py::E27Kernel.cancel_command_transport": (
         "test/test_transport_command_retry.py::test_async_execute_timeout_cancels_kernel_transport_retry",
         "test/test_transport_command_retry.py::test_cancel_command_transport_drops_outbound_queued_frame",
     ),
-    "src/elke27_lib/kernel.py::E27Kernel.mark_raw_passthrough": (
+    "src/elke27_lib/kernel_loop.py::E27Kernel.mark_raw_passthrough": (
         "test/test_raw_passthrough.py::test_raw_get_is_never_resent_after_lost_reply",
         "test/test_raw_passthrough.py::test_raw_reply_never_reaches_feature_handlers_or_logs",
     ),
-    "src/elke27_lib/dispatcher.py::PendingRequest": "n/a: layering note (retry policy lives above)",
+    "src/elke27_lib/dispatcher_loop.py::PendingRequest": "n/a: layering note (retry policy lives above)",
     "src/elke27_lib/errors.py::Elke27LinkSlotsFullError": "n/a: advice to the user",
-    "src/elke27_lib/linking.py::perform_api_link": "n/a: advice to callers",
-    "src/elke27_lib/session.py::Session.reconnect": "n/a: layering note (retry policy lives above)",
+    "src/elke27_lib/linking_thread.py::perform_api_link": "n/a: advice to callers",
+    "src/elke27_lib/session_thread.py::Session.reconnect": "n/a: layering note (retry policy lives above)",
 }
 
 
@@ -488,8 +488,8 @@ GETATTR_LITERAL_CEILING: dict[str, int] = {
     "src/elke27_lib/handlers/log.py": 1,
     "src/elke27_lib/handlers/system.py": 1,
     "src/elke27_lib/handlers/zone.py": 1,
-    "src/elke27_lib/kernel.py": 9,
-    "src/elke27_lib/session.py": 5,
+    "src/elke27_lib/kernel_loop.py": 9,
+    "src/elke27_lib/session_thread.py": 5,
 }
 
 
@@ -523,11 +523,11 @@ WATCHED = ("SLF001", "BLE001")
 NOQA_CEILING: dict[str, int] = {
     "src/elke27_lib/client.py:BLE001": 12,
     "src/elke27_lib/discovery.py:BLE001": 1,
-    "src/elke27_lib/dispatcher.py:BLE001": 1,
+    "src/elke27_lib/dispatcher_loop.py:BLE001": 1,
     "src/elke27_lib/handlers/control.py:BLE001": 2,
-    "src/elke27_lib/kernel.py:BLE001": 4,
-    "src/elke27_lib/outbound.py:BLE001": 3,
-    "src/elke27_lib/session.py:BLE001": 1,
+    "src/elke27_lib/kernel_loop.py:BLE001": 4,
+    "src/elke27_lib/outbound_loop.py:BLE001": 3,
+    "src/elke27_lib/session_thread.py:BLE001": 1,
     "test/conftest.py:BLE001": 2,
     "test/test_e27_area_get_status_live.py:BLE001": 1,
     "test/test_e27_area_info_live.py:BLE001": 1,

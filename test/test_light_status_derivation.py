@@ -9,7 +9,7 @@ from typing import Any, cast
 import pytest
 
 from elke27_lib.client import Elke27Client
-from elke27_lib.dispatcher import DispatchContext
+from elke27_lib.dispatcher_loop import DispatchContext
 from elke27_lib.events import LightStatusUpdated
 from elke27_lib.handlers import light as light_handler
 from elke27_lib.states import PanelState

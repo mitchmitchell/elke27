@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from elke27_lib import presentation
+from elke27_lib import presentation_loop as presentation
 from elke27_lib.errors import E27ProtocolError
 
 

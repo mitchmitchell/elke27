@@ -4,7 +4,7 @@ from collections.abc import Callable
 
 import pytest
 
-from elke27_lib.outbound import OutboundItem, OutboundPriority, OutboundQueue
+from elke27_lib.outbound_loop import OutboundItem, OutboundPriority, OutboundQueue
 
 
 @pytest.mark.asyncio

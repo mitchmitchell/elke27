@@ -8,9 +8,9 @@ from typing import cast
 
 import pytest
 
-from elke27_lib import presentation as presentation_mod
+from elke27_lib import presentation_loop as presentation_mod
 from elke27_lib.errors import E27ProtocolError
-from elke27_lib.presentation import (
+from elke27_lib.presentation_loop import (
     API_LINK_IV,
     E27_MAGIC,
     PROTOCOL_ENCRYPTED_FLAG,

@@ -25,11 +25,11 @@ import pytest
 
 # Adjust import path if your session module lives elsewhere.
 # The tests are written to be resilient by monkeypatching module-level dependencies.
-from elke27_lib import hello as hello_mod
-from elke27_lib import linking
-from elke27_lib import session as session_mod
+from elke27_lib import hello_thread as hello_mod
+from elke27_lib import linking_thread as linking
+from elke27_lib import session_thread as session_mod
 from elke27_lib.errors import E27ErrorContext, E27ProtocolError
-from elke27_lib.framing import DeframeState
+from elke27_lib.framing_loop import DeframeState
 from test.helpers.internal import get_private, set_private
 
 

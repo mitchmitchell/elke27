@@ -13,10 +13,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
-from elke27_lib.dispatcher import PagedTransferKey
+from elke27_lib.dispatcher_loop import PagedTransferKey
 
 if TYPE_CHECKING:
-    from elke27_lib.kernel import E27Kernel
+    from elke27_lib.kernel_loop import E27Kernel
 
 from elke27_lib.handlers.zone import (
     make_zone_configured_merge,

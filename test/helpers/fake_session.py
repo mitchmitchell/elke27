@@ -1,4 +1,4 @@
-"""A stand-in for ``elke27_lib.session.Session`` that lets tests act as the panel."""
+"""A stand-in for ``elke27_lib.session_thread.Session`` that lets tests act as the panel."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from elke27_lib import session as session_mod
+from elke27_lib import session_thread as session_mod
 from elke27_lib.client import Elke27Client
 from elke27_lib.types import LinkKeys
 

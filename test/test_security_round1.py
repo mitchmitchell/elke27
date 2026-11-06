@@ -17,20 +17,20 @@ from typing import Any, cast
 
 import pytest
 
-import elke27_lib.kernel as kernel_mod
-from elke27_lib import linking
-from elke27_lib import session as session_mod
+import elke27_lib.kernel_loop as kernel_mod
+from elke27_lib import linking_thread as linking
+from elke27_lib import session_thread as session_mod
 from elke27_lib.client import MAX_PAGED_BLOCK_COUNT, Elke27Client
 from elke27_lib.discovery import AIOELKDiscovery, async_discover_host
 from elke27_lib.errors import E27ProtocolError, E27ProvisioningTimeout, ProtocolError
 from elke27_lib.events import ConnectionStateChanged
-from elke27_lib.framing import frame_build
-from elke27_lib.hello import SessionKeys
-from elke27_lib.kernel import DEFAULT_EVENT_QUEUE_MAXLEN, E27Kernel
-from elke27_lib.linking import E27LinkKeys
-from elke27_lib.presentation import encrypt_schema0_envelope
+from elke27_lib.framing_loop import frame_build
+from elke27_lib.hello_thread import SessionKeys
+from elke27_lib.kernel_loop import DEFAULT_EVENT_QUEUE_MAXLEN, E27Kernel
+from elke27_lib.linking_thread import E27LinkKeys
+from elke27_lib.presentation_loop import encrypt_schema0_envelope
 from elke27_lib.provisioning import Credentials
-from elke27_lib.session import Session, SessionConfig, SessionInfo
+from elke27_lib.session_thread import Session, SessionConfig, SessionInfo
 from elke27_lib.types import ClientConfig, LinkKeys
 
 DUMMY_A = "DUMMYSECRETAAAA1111"

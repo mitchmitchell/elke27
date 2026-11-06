@@ -6,12 +6,12 @@ from typing import Any
 
 import pytest
 
-from elke27_lib import linking
-from elke27_lib import session as session_mod
+from elke27_lib import linking_thread as linking
+from elke27_lib import session_thread as session_mod
 from elke27_lib.client import Elke27Client, Elke27DisconnectedError, LinkKeys
 from elke27_lib.errors import Elke27ConnectionError
 from elke27_lib.events import ConnectionStateChanged, Event
-from elke27_lib.kernel import E27Kernel, KernelError
+from elke27_lib.kernel_loop import E27Kernel, KernelError
 
 KEYS = linking.E27LinkKeys("aa", "bb", "cc")
 IDENTITY = linking.E27Identity("mn", "sn", "fw", "hw", "os")

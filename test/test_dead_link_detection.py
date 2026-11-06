@@ -9,11 +9,11 @@ from typing import Any, cast
 
 import pytest
 
-import elke27_lib.kernel as kernel_mod
+import elke27_lib.kernel_loop as kernel_mod
 from elke27_lib.errors import E27Timeout
-from elke27_lib.kernel import E27Kernel
-from elke27_lib.outbound import OutboundPriority
-from elke27_lib.session import Session, SessionConfig, SessionProtocolError, SessionState
+from elke27_lib.kernel_loop import E27Kernel
+from elke27_lib.outbound_loop import OutboundPriority
+from elke27_lib.session_thread import Session, SessionConfig, SessionProtocolError, SessionState
 
 
 def test_session_config_defaults_detect_quickly() -> None:
@@ -113,7 +113,7 @@ def test_deliberate_close_logs_disconnect_at_debug(caplog: pytest.LogCaptureFixt
         cfg=SessionConfig(host="192.0.2.1"), client_identity=cast(Any, None), link_key_hex="00"
     )
     s._closing = True
-    with caplog.at_level(logging.DEBUG, logger="elke27_lib.session"):
+    with caplog.at_level(logging.DEBUG, logger="elke27_lib.session_thread"):
         s._handle_disconnect(None)
     recs = [r for r in caplog.records if "Session disconnect" in r.getMessage()]
     assert recs and all(r.levelno == logging.DEBUG for r in recs)
@@ -123,7 +123,7 @@ def test_link_loss_logs_disconnect_at_info(caplog: pytest.LogCaptureFixture) -> 
     s = Session(
         cfg=SessionConfig(host="192.0.2.1"), client_identity=cast(Any, None), link_key_hex="00"
     )
-    with caplog.at_level(logging.DEBUG, logger="elke27_lib.session"):
+    with caplog.at_level(logging.DEBUG, logger="elke27_lib.session_thread"):
         s._handle_disconnect(SessionProtocolError("Keepalive timed out"))
     recs = [r for r in caplog.records if "Session disconnect" in r.getMessage()]
     assert recs and all(r.levelno == logging.INFO for r in recs)

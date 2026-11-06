@@ -12,7 +12,7 @@ from typing import Any, cast
 import pytest
 
 from elke27_lib.client import Elke27Client
-from elke27_lib.linking import E27Identity
+from elke27_lib.linking_thread import E27Identity
 from test.helpers.internal import get_kernel, set_private
 from test.helpers.reporter import Reporter
 

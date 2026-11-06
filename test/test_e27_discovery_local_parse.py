@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from elke27_lib.linking import parse_discovery_hello_and_local
+from elke27_lib.linking_thread import parse_discovery_hello_and_local
 
 
 def test_parse_discovery_hello_and_local() -> None:

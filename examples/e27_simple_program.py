@@ -22,9 +22,9 @@ import logging
 import time
 from dataclasses import dataclass
 
-from elke27_lib import Elk, linking
+from elke27_lib import Elk, linking_thread as linking
 from elke27_lib.events import PanelVersionInfoUpdated
-from elke27_lib.session import SessionConfig
+from elke27_lib.session_thread import SessionConfig
 
 LOG = logging.getLogger(__name__)
 

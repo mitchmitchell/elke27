@@ -9,11 +9,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
-from elke27_lib.dispatcher import PagedTransferKey
+from elke27_lib.dispatcher_loop import PagedTransferKey
 from elke27_lib.tstat_units import Setpoint, encode_setpoint
 
 if TYPE_CHECKING:
-    from elke27_lib.kernel import E27Kernel
+    from elke27_lib.kernel_loop import E27Kernel
 
 from elke27_lib.handlers.tstat import (
     make_tstat_configured_merge,

@@ -10,7 +10,7 @@ import pytest
 
 from elke27_lib.client import Elke27Client
 from elke27_lib.handlers.control import make_control_get_version_info_handler
-from elke27_lib.kernel import E27Kernel
+from elke27_lib.kernel_loop import E27Kernel
 from elke27_lib.states import PanelState
 from elke27_lib.types import LinkKeys
 
@@ -187,8 +187,8 @@ async def test_version_info_request_registers_reply_correlation(
 def test_fire_and_forget_pending_reply_is_classified_response() -> None:
     from types import SimpleNamespace
 
-    from elke27_lib.kernel import E27Kernel
-    from elke27_lib.session import SessionState
+    from elke27_lib.kernel_loop import E27Kernel
+    from elke27_lib.session_thread import SessionState
 
     kernel = E27Kernel()
     cast(Any, kernel)._session = SimpleNamespace(
@@ -213,8 +213,8 @@ def test_unicode_digit_serial_does_not_drop_reply() -> None:
 def test_fire_and_forget_correlation_is_dropped_on_close_and_connect() -> None:
     from types import SimpleNamespace
 
-    from elke27_lib.kernel import E27Kernel
-    from elke27_lib.session import SessionState
+    from elke27_lib.kernel_loop import E27Kernel
+    from elke27_lib.session_thread import SessionState
 
     kernel = E27Kernel()
     cast(Any, kernel)._session = SimpleNamespace(
@@ -239,8 +239,8 @@ def test_fire_and_forget_correlation_is_dropped_on_close_and_connect() -> None:
 async def test_connect_drops_stale_fire_and_forget_correlation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from elke27_lib.dispatcher import PendingRequest
-    from elke27_lib.kernel import E27Kernel, KernelMissingContextError
+    from elke27_lib.dispatcher_loop import PendingRequest
+    from elke27_lib.kernel_loop import E27Kernel, KernelMissingContextError
 
     kernel = E27Kernel()
     kernel.dispatcher.add_pending(PendingRequest(seq=5))

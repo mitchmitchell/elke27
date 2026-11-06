@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from elke27_lib import linking
+from elke27_lib import linking_thread as linking
 from elke27_lib.client import Elke27Client
 from elke27_lib.const import E27ErrorCode
 from test.helpers.error_codes import extract_error_code
@@ -38,7 +38,7 @@ class _Credentials:
 async def test_live_output_and_tstat_status() -> None:
     log_level = str(_env("LOG_LEVEL", "INFO") or "INFO").upper()
     logging.basicConfig(level=getattr(logging, log_level, logging.INFO), force=True)
-    logging.getLogger("elke27_lib.session").setLevel(logging.DEBUG)
+    logging.getLogger("elke27_lib.session_thread").setLevel(logging.DEBUG)
 
     host = _require_env("ELKE27_HOST")
     port = int(_env("ELKE27_PORT", "2101") or 2101)

@@ -14,7 +14,7 @@ from elke27_lib import (
     PanelSnapshot,
     TableInfo,
 )
-from elke27_lib.dispatcher import DispatchContext, MessageKind
+from elke27_lib.dispatcher_loop import DispatchContext, MessageKind
 from elke27_lib.events import (
     UNSET_AT,
     UNSET_CLASSIFICATION,

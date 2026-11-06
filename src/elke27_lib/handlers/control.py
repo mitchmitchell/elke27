@@ -25,7 +25,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, cast
 
-from elke27_lib.dispatcher import (
+from elke27_lib.dispatcher_loop import (
     DispatchContext,  # adjust import to your dispatcher module location
 )
 from elke27_lib.events import (

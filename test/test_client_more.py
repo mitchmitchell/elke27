@@ -45,7 +45,7 @@ from elke27_lib.events import (
     CsmSnapshotUpdated,
     ZoneStatusUpdated,
 )
-from elke27_lib.kernel import (
+from elke27_lib.kernel_loop import (
     E27Kernel,
     KernelError,
     KernelInvalidPanelError,
@@ -53,7 +53,7 @@ from elke27_lib.kernel import (
     KernelNotLinkedError,
 )
 from elke27_lib.permissions import PermissionLevel
-from elke27_lib.session import (
+from elke27_lib.session_thread import (
     SessionIOError,
     SessionNotReadyError,
     SessionProtocolError,

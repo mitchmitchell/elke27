@@ -8,8 +8,8 @@ from typing import cast
 import pytest
 
 from elke27_lib.client import Elke27Client
-from elke27_lib.kernel import E27Kernel
-from elke27_lib.pending import PendingResponseManager
+from elke27_lib.kernel_loop import E27Kernel
+from elke27_lib.pending_loop import PendingResponseManager
 from test.helpers.internal import get_private
 
 

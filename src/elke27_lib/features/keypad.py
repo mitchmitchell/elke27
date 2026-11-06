@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from elke27_lib.kernel import E27Kernel
+    from elke27_lib.kernel_loop import E27Kernel
 
 from elke27_lib.handlers.keypad import (
     make_keypad_get_attribs_handler,

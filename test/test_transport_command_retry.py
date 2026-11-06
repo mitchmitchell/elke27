@@ -9,18 +9,18 @@ from typing import Any, cast
 import pytest
 
 from elke27_lib import Elke27PanelError
-from elke27_lib import kernel as kernel_mod
+from elke27_lib import kernel_loop as kernel_mod
 from elke27_lib.client import Elke27Client
 from elke27_lib.const import E27ErrorCode
 from elke27_lib.errors import ConnectionLost, E27Timeout
-from elke27_lib.kernel import E27Kernel, KernelError
-from elke27_lib.outbound import OutboundPriority
+from elke27_lib.kernel_loop import E27Kernel, KernelError
+from elke27_lib.outbound_loop import OutboundPriority
 from test.helpers.internal import get_kernel, get_private
 
 
 class _FakeSession:
     def __init__(self, *, fail_send_count: int = 0) -> None:
-        from elke27_lib.session import SessionState
+        from elke27_lib.session_thread import SessionState
 
         self.state = SessionState.ACTIVE
         self.sent: list[dict[str, Any]] = []
@@ -28,7 +28,7 @@ class _FakeSession:
         self._send_calls = 0
 
     def handle_disconnect(self, _err: BaseException | None) -> None:
-        from elke27_lib.session import SessionState
+        from elke27_lib.session_thread import SessionState
 
         self.state = SessionState.DISCONNECTED
 
@@ -670,8 +670,8 @@ async def test_disarm_transport_retry_stays_ahead_of_queued_commands() -> None:
 
 @pytest.mark.asyncio
 async def test_cancel_command_transport_drops_outbound_queued_frame() -> None:
-    from elke27_lib.outbound import OutboundItem, OutboundQueue
-    from elke27_lib.session import SessionState
+    from elke27_lib.outbound_loop import OutboundItem, OutboundQueue
+    from elke27_lib.session_thread import SessionState
 
     loop = asyncio.get_running_loop()
     outbound = OutboundQueue(

@@ -5,9 +5,9 @@ from typing import Any, cast
 
 from typing_extensions import override
 
-from elke27_lib import kernel as kernel_mod
+from elke27_lib import kernel_loop as kernel_mod
 from elke27_lib.errors import ConnectionLost, E27Timeout
-from elke27_lib.kernel import E27Kernel
+from elke27_lib.kernel_loop import E27Kernel
 from test.helpers.internal import get_private
 
 

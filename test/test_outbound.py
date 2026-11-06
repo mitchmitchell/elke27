@@ -5,7 +5,7 @@ import logging
 
 import pytest
 
-from elke27_lib.outbound import OutboundItem, OutboundPriority, OutboundQueue
+from elke27_lib.outbound_loop import OutboundItem, OutboundPriority, OutboundQueue
 
 
 def test_enqueue_stop_non_running_loop_and_debug() -> None:

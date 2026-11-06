@@ -7,9 +7,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, cast
 
-from elke27_lib.kernel import E27Kernel, KeepaliveTestHooks, _QueuedRequest, _RequestState
-from elke27_lib.outbound import OutboundPriority
-from elke27_lib.session import SessionState
+from elke27_lib.kernel_loop import E27Kernel, KeepaliveTestHooks, _QueuedRequest, _RequestState
+from elke27_lib.outbound_loop import OutboundPriority
+from elke27_lib.session_thread import SessionState
 from test.helpers.internal import get_private, set_private
 
 

@@ -3,7 +3,7 @@ from collections.abc import Mapping
 
 from _pytest.logging import LogCaptureFixture
 
-from elke27_lib.dispatcher import DispatchContext, Dispatcher, PagedBlock, PendingRequest
+from elke27_lib.dispatcher_loop import DispatchContext, Dispatcher, PagedBlock, PendingRequest
 
 
 def test_paged_missing_block_id_warns_and_skips(caplog: LogCaptureFixture) -> None:

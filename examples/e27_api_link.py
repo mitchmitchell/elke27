@@ -23,7 +23,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 
-from elke27_lib import Elk, linking
+from elke27_lib import Elk, linking_thread as linking
 
 LOG = logging.getLogger(__name__)
 
@@ -138,7 +138,7 @@ async def main_async() -> int:
 
 def main() -> int:
     logging.basicConfig(level=logging.INFO)
-    logging.getLogger("elke27_lib.linking").setLevel(logging.DEBUG)
+    logging.getLogger("elke27_lib.linking_thread").setLevel(logging.DEBUG)
     return asyncio.run(main_async())
 
 

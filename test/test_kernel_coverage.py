@@ -7,13 +7,13 @@ from typing import Any, cast
 
 import pytest
 
-import elke27_lib.kernel as kernel_mod
+import elke27_lib.kernel_loop as kernel_mod
 from elke27_lib.errors import ConnectionLost, E27Error, E27Timeout
 from elke27_lib.events import ConnectionStateChanged
-from elke27_lib.kernel import E27Kernel, KernelError, KernelMissingContextError
-from elke27_lib.linking import E27Identity, E27LinkKeys
-from elke27_lib.outbound import OutboundPriority
-from elke27_lib.session import SessionIOError, SessionProtocolError, SessionState
+from elke27_lib.kernel_loop import E27Kernel, KernelError, KernelMissingContextError
+from elke27_lib.linking_thread import E27Identity, E27LinkKeys
+from elke27_lib.outbound_loop import OutboundPriority
+from elke27_lib.session_thread import SessionIOError, SessionProtocolError, SessionState
 
 
 def test_as_mapping_and_redact_value(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -84,7 +84,7 @@ async def test_close_paths(
             raise OSError("boom")
 
     cast(Any, kernel)._session = _Session()
-    caplog.set_level("DEBUG", logger="elke27_lib.kernel")
+    caplog.set_level("DEBUG", logger="elke27_lib.kernel_loop")
     await kernel.close()
 
 
@@ -419,7 +419,7 @@ def test_on_message_paths(
     kernel = E27Kernel()
     kernel._request_state = kernel_mod._RequestState.IN_FLIGHT
     kernel._active_seq = 99
-    caplog.set_level("DEBUG", logger="elke27_lib.kernel")
+    caplog.set_level("DEBUG", logger="elke27_lib.kernel_loop")
     kernel._on_message(types.MappingProxyType({"authenticate": {"seq": 1, "session_id": 2}}))
     kernel._on_message(
         types.MappingProxyType({"seq": "x", "authenticate": {"seq": 2, "session_id": 3}})
@@ -608,7 +608,7 @@ def test_reply_timeout_and_abort(
     kernel._request_state = kernel_mod._RequestState.IN_FLIGHT
     kernel._active_seq = 1
     kernel._active_request = None
-    caplog.set_level("WARNING", logger="elke27_lib.kernel")
+    caplog.set_level("WARNING", logger="elke27_lib.kernel_loop")
     kernel._on_reply_timeout(1)
 
     kernel._active_request = kernel_mod._QueuedRequest(
@@ -762,7 +762,7 @@ def test_build_request_and_emit_and_envelopes(caplog: pytest.LogCaptureFixture) 
     kernel.unsubscribe(token)
 
     token = kernel.subscribe(lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("boom")))
-    caplog.set_level("WARNING", logger="elke27_lib.kernel")
+    caplog.set_level("WARNING", logger="elke27_lib.kernel_loop")
     kernel.emit(
         ConnectionStateChanged(
             kind=ConnectionStateChanged.KIND,

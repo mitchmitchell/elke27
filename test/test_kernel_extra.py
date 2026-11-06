@@ -10,11 +10,12 @@ from typing import Any, cast
 
 import pytest
 
-from elke27_lib import discovery, linking
-from elke27_lib import kernel as kernel_mod
-from elke27_lib import session as session_mod
+from elke27_lib import discovery
+from elke27_lib import kernel_loop as kernel_mod
+from elke27_lib import linking_thread as linking
+from elke27_lib import session_thread as session_mod
 from elke27_lib.errors import E27Error
-from elke27_lib.kernel import (
+from elke27_lib.kernel_loop import (
     E27Kernel,
     KernelError,
     KernelInvalidPanelError,
@@ -502,7 +503,7 @@ def test_build_request_message_and_log(
     msg = kernel._build_request_message(5, "zone", "__root__", {"x": 1})
     assert msg["zone"]["x"] == 1
 
-    caplog.set_level(logging.DEBUG, logger="elke27_lib.kernel")
+    caplog.set_level(logging.DEBUG, logger="elke27_lib.kernel_loop")
     monkeypatch.setattr(kernel_mod, "REDACT_DIAGNOSTICS", True)
     kernel._log_outbound("zone", "get_attribs", {"seq": 1, "pin": "123"})
     assert "Outbound request" in caplog.text

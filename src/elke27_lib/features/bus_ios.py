@@ -14,7 +14,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from elke27_lib.kernel import E27Kernel
+    from elke27_lib.kernel_loop import E27Kernel
 
 from elke27_lib.handlers.bus_ios import make_bus_ios_get_trouble_handler
 

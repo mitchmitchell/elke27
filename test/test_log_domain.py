@@ -4,7 +4,7 @@ from typing import cast
 
 import pytest
 
-from elke27_lib.dispatcher import DispatchContext
+from elke27_lib.dispatcher_loop import DispatchContext
 from elke27_lib.events import CsmSnapshotUpdated, Event, TableCsmChanged
 from elke27_lib.generators.log import (
     generator_log_clear,

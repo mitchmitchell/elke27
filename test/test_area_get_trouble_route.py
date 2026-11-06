@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from elke27_lib.events import AreaTroublesUpdated
-from elke27_lib.kernel import E27Kernel
+from elke27_lib.kernel_loop import E27Kernel
 from test.helpers.internal import get_private
 
 

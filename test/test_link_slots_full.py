@@ -8,9 +8,10 @@ from typing import Any
 import pytest
 
 import elke27_lib
-from elke27_lib import Elke27Client, Elke27LinkSlotsFullError, linking
+from elke27_lib import Elke27Client, Elke27LinkSlotsFullError
+from elke27_lib import linking_thread as linking
 from elke27_lib.errors import E27LinkSlotsFull, E27ProtocolError
-from elke27_lib.kernel import E27Kernel, KernelError
+from elke27_lib.kernel_loop import E27Kernel, KernelError
 
 
 class _Sock:

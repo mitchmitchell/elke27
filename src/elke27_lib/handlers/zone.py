@@ -11,7 +11,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, cast
 
-from elke27_lib.dispatcher import DispatchContext, PagedBlock
+from elke27_lib.dispatcher_loop import DispatchContext, PagedBlock
 from elke27_lib.events import (
     UNSET_AT,
     UNSET_CLASSIFICATION,

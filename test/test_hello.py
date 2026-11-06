@@ -4,14 +4,14 @@ import json
 
 import pytest
 
-from elke27_lib import hello
+from elke27_lib import hello_thread as hello
 from elke27_lib.errors import (
     E27HelloTimeout,
     E27ProtocolError,
     Elke27LinkRequiredError,
     Elke27ProtocolError,
 )
-from elke27_lib.linking import E27Identity
+from elke27_lib.linking_thread import E27Identity
 
 
 class _FakeSocket:
@@ -382,7 +382,7 @@ def _hello_reply_on_connect(monkeypatch: pytest.MonkeyPatch, hello_obj: dict) ->
     import socket
     import types
 
-    from elke27_lib import session as session_mod
+    from elke27_lib import session_thread as session_mod
 
     fake_socket_mod = types.SimpleNamespace(**vars(socket))
     fake_socket_mod.socket = lambda *_a, **_k: _ConnSocket()

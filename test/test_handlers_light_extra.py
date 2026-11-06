@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from elke27_lib.dispatcher import DispatchContext, PagedBlock
+from elke27_lib.dispatcher_loop import DispatchContext, PagedBlock
 from elke27_lib.events import (
     ApiError,
     AuthorizationRequiredEvent,

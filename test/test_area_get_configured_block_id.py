@@ -2,7 +2,7 @@ import logging
 
 from _pytest.logging import LogCaptureFixture
 
-from elke27_lib.dispatcher import DispatchContext
+from elke27_lib.dispatcher_loop import DispatchContext
 from elke27_lib.events import Event
 from elke27_lib.handlers.area import make_area_get_configured_handler
 from elke27_lib.states import PanelState

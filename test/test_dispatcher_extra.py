@@ -4,7 +4,7 @@ import logging
 
 import pytest
 
-from elke27_lib.dispatcher import (
+from elke27_lib.dispatcher_loop import (
     DispatchContext,
     Dispatcher,
     MessageKind,
@@ -216,7 +216,7 @@ def test_dispatch_zone_debug_and_error_emit(
         return True
 
     dispatcher.register(route, _handler)
-    caplog.set_level(logging.DEBUG, logger="elke27_lib.dispatcher")
+    caplog.set_level(logging.DEBUG, logger="elke27_lib.dispatcher_loop")
     msg = {"seq": "bad", "zone": {"get_configured": {"block_id": 0}}}
     result = dispatcher.dispatch(msg)
     assert result.handled is True
