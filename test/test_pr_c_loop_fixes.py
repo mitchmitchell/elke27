@@ -190,6 +190,116 @@ async def test_close_scheduled_on_loop_returns_quickly_with_blocked_recv(
 
 
 @pytest.mark.asyncio
+async def test_stale_recv_join_helper_does_not_clear_new_receiver_after_reconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import elke27_lib.session_thread as session_mod
+
+    joins: list[tuple[str, str, float | None]] = []
+    real_join = threading.Thread.join
+
+    def _tracked_join(self: threading.Thread, timeout: float | None = None) -> None:  # type: ignore[override]
+        joins.append((threading.current_thread().name, self.name, timeout))
+        return real_join(self, timeout)
+
+    monkeypatch.setattr(threading.Thread, "join", _tracked_join)
+
+    old_start = threading.Thread.start
+    recv_objs: list[threading.Thread] = []
+
+    def _track_start(self: threading.Thread) -> None:  # type: ignore[override]
+        if self.name == "e27-recv":
+            recv_objs.append(self)
+        return old_start(self)
+
+    monkeypatch.setattr(threading.Thread, "start", _track_start)
+
+    class _SlowSock:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def settimeout(self, _t: float) -> None:
+            return None
+
+        def connect(self, _a: object) -> None:
+            return None
+
+        def close(self) -> None:
+            self.closed = True
+
+        def recv(self, _n: int) -> bytes:
+            while not self.closed:
+                time.sleep(0.05)
+            return b""
+
+    loop = asyncio.get_running_loop()
+    done1 = asyncio.Event()
+    done2 = asyncio.Event()
+    cfg = session_mod.SessionConfig(
+        host="example",
+        auto_receive=True,
+        io_timeout_s=60.0,
+        auto_receive_thread_fallback=True,
+    )
+    sess = session_mod.Session(
+        cfg,
+        client_identity=session_mod.linking.E27Identity("m", "s", "f", "h", "o"),
+        link_key_hex="00",
+    )
+    monkeypatch.setattr(session_mod.socket, "socket", lambda *_a, **_k: _SlowSock())
+    monkeypatch.setattr(
+        session_mod,
+        "perform_hello",
+        lambda **_k: SimpleNamespace(
+            session_id=1, session_key_hex="00" * 16, hmac_key_hex="11" * 16
+        ),
+    )
+    sess.on_message = lambda _m: None
+    sess.bind_loop(loop)
+    await asyncio.to_thread(sess.connect)
+    assert len(recv_objs) == 1
+    r1 = recv_objs[0]
+
+    def _close1() -> None:
+        try:
+            sess.close()
+        finally:
+            loop.call_soon_threadsafe(done1.set)
+
+    def _close2() -> None:
+        try:
+            sess.close()
+        finally:
+            loop.call_soon_threadsafe(done2.set)
+
+    loop.call_soon_threadsafe(_close1)
+    await asyncio.wait_for(done1.wait(), timeout=2.0)
+    loop.call_soon_threadsafe(_close2)
+    await asyncio.wait_for(done2.wait(), timeout=2.0)
+    await asyncio.to_thread(sess.reconnect)
+    assert len(recv_objs) == 2
+    r2 = recv_objs[1]
+    assert sess.state == session_mod.SessionState.ACTIVE
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        alive_tracked = [t for t in recv_objs if t.is_alive()]
+        if len(alive_tracked) == 1 and alive_tracked[0] is r2 and not r1.is_alive():
+            break
+        await asyncio.sleep(0.05)
+    else:
+        alive_tracked = [t for t in recv_objs if t.is_alive()]
+        raise AssertionError(
+            f"expected exactly r2 live among tracked recv threads, got {alive_tracked!r} "
+            f"r1_alive={r1.is_alive()}"
+        )
+    helper_joins_recv = [j for j in joins if j[0] == "e27-recv-join" and j[1] == "e27-recv"]
+    any_joins_recv = [j for j in joins if j[1] == "e27-recv"]
+    assert len(helper_joins_recv) == len(any_joins_recv)
+    main_bad = [j for j in joins if j[0] == "MainThread" and j[1] in ("e27-recv", "e27-recv-join")]
+    assert main_bad == []
+
+
+@pytest.mark.asyncio
 async def test_close_twice_then_reconnect_starts_receiver_again(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

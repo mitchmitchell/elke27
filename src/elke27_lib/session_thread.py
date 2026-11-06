@@ -344,13 +344,15 @@ class Session:
             recv_t = self._recv_thread
             if recv_t is not None and not in_recv_thread:
                 if on_loop:
+                    reap_target = recv_t
 
                     def _join_recv() -> None:
-                        rt = self._recv_thread
+                        rt = reap_target
                         if rt is not None and rt is not threading.current_thread():
                             rt.join(timeout=1.0)
-                        self._recv_thread = None
-                        self._recv_stop = None
+                        if self._recv_thread is rt:
+                            self._recv_thread = None
+                            self._recv_stop = None
 
                     jt = threading.Thread(target=_join_recv, name="e27-recv-join", daemon=True)
                     self._recv_join_thread = jt
