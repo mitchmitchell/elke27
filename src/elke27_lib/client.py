@@ -39,6 +39,8 @@ from collections.abc import (
 from dataclasses import asdict, dataclass
 from dataclasses import field as dc_field
 from datetime import UTC, datetime
+
+_QueueEmpty = __import__("queue").Empty
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -3563,8 +3565,12 @@ class Elke27Client:
         except (
             TimeoutError,
             concurrent.futures.TimeoutError,
+            _QueueEmpty,
         ):
             return _err(E27Timeout("Authenticate response timed out."))
+        except _CLIENT_EXCEPTIONS as exc:
+            detail = f"route={route[0]}.{route[1]}"
+            return _err(self._normalize_error(exc, phase="authenticate_wait", detail=detail))
 
         if not isinstance(result, dict):
             return _err(ProtocolError("Authenticate response was invalid."))

@@ -27,19 +27,19 @@ import logging
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any, cast
 
 RouteKey = tuple[str, str]
 
 
-class MessageKind(str, Enum):
+class MessageKind(StrEnum):
     UNKNOWN = "UNKNOWN"
     DIRECTED = "DIRECTED"
     BROADCAST = "BROADCAST"
 
 
-class DispatchSeverity(str, Enum):
+class DispatchSeverity(StrEnum):
     DEBUG = "debug"
     INFO = "info"
     WARNING = "warning"

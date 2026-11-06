@@ -642,11 +642,17 @@ def test_request_authenticate_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.ok is False
     assert isinstance(result.error, E27Timeout)
 
+    monkeypatch.setattr(client._kernel, "request", lambda *_a, **_k: 5)
+    result = client.request(("control", "authenticate"), opaque=queue.Queue(maxsize=1))
+    assert result.ok is False
+    assert isinstance(result.error, E27Timeout)
+
     monkeypatch.setattr(
         client._kernel, "request", lambda *_a, **_k: (_ for _ in ()).throw(E27TransportError("x"))
     )
     result = client.request(("control", "authenticate"), opaque=queue.Queue(maxsize=1))
     assert result.ok is False
+    assert isinstance(result.error, ConnectionLost)
 
     monkeypatch.setattr(client._kernel, "request", lambda *_a, **_k: 6)
     auth_queue = queue.Queue(maxsize=1)

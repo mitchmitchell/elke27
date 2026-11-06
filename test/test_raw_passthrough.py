@@ -316,6 +316,9 @@ async def test_kernel_shares_raw_seqs_with_session(monkeypatch: pytest.MonkeyPat
             self.wire_log_suppress_seqs: Any = frozenset()
             created.append(self)
 
+        def bind_loop(self, *_args: Any, **_kwargs: Any) -> None:
+            return None
+
         def connect(self, *_a: Any, **_kw: Any) -> None:
             raise RuntimeError("stop after session setup")
 

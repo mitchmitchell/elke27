@@ -7,10 +7,10 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 
-class OutboundPriority(str, Enum):
+class OutboundPriority(StrEnum):
     HIGH = "high"
     NORMAL = "normal"
 
@@ -215,11 +215,7 @@ class OutboundQueue:
                 await asyncio.to_thread(self._send_fn, item.payload)
                 sent_at = time.monotonic()
                 if item.on_sent is not None:
-
-                    def _run_on_sent(cb: Callable[[float], None], t: float = sent_at) -> None:
-                        cb(t)
-
-                    self._loop.call_soon_threadsafe(_run_on_sent, item.on_sent)
+                    item.on_sent(sent_at)
                 if self._log.isEnabledFor(logging.DEBUG):
                     waited = max(0.0, sent_at - item.enqueued_at)
                     self._log.debug(

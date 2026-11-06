@@ -27,7 +27,7 @@ import time
 from collections import deque
 from collections.abc import Callable, Container, Mapping
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any, cast
 
 from . import linking_thread as linking
@@ -78,7 +78,7 @@ class SessionInfo:
     session_hmac_hex: str = field(repr=False)
 
 
-class SessionState(str, Enum):
+class SessionState(StrEnum):
     """Internal connection lifecycle states.
 
     This is intentionally mechanical and policy-free.
@@ -175,6 +175,7 @@ class Session:
         self._send_lock = threading.Lock()
         self._disconnect_lock = threading.Lock()
         self._loop_ref: asyncio.AbstractEventLoop | None = None
+        self._loop_thread_id: int | None = None
         self._outbound: OutboundQueue | None = None
 
         # Event hooks (optional)
@@ -182,6 +183,17 @@ class Session:
         self.on_message: Callable[[dict[str, Any]], None] | None = None
         self.on_disconnected: Callable[[Exception | None], None] | None = None
         self.on_idle: Callable[[], None] | None = None
+        self._recv_join_thread: threading.Thread | None = None
+
+    def _running_loop_is_bound(self) -> bool:
+        """True when close/teardown runs on the thread Session.bind_loop used."""
+        if self._loop_ref is None or self._loop_thread_id is None:
+            return False
+        return threading.get_ident() == self._loop_thread_id
+
+    def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        self._loop_ref = loop
+        self._loop_thread_id = threading.get_ident()
 
     def _invoke_on_loop(self, fn: Callable[..., Any], /, *args: Any) -> None:
         loop = self._loop_ref
@@ -191,8 +203,7 @@ class Session:
         try:
             loop.call_soon_threadsafe(fn, *args)
         except RuntimeError:
-            with contextlib.suppress(Exception):
-                fn(*args)
+            return
 
     def _deliver_message(self, obj: dict[str, Any]) -> None:
         cb = self.on_message
@@ -283,6 +294,10 @@ class Session:
         if self.on_connected:
             self.on_connected(self.info)
 
+        if self.cfg.auto_receive and self.on_message is not None:
+            if self._loop_ref is not None or self.cfg.auto_receive_thread_fallback:
+                self._start_receiver()
+
         return self.info
 
     def close(self) -> None:
@@ -292,6 +307,16 @@ class Session:
         self._closing = True
         try:
             self._stop_receiver()
+            if self._recv_join_thread is not None:
+                self._recv_join_thread.join(timeout=2.0)
+                self._recv_join_thread = None
+            in_recv_thread = (
+                self._recv_thread is not None and threading.current_thread() is self._recv_thread
+            )
+            on_loop = self._running_loop_is_bound() and self._loop_ref is not None
+            if self._loop_ref is not None:
+                on_loop = on_loop and self._loop_ref.is_running()
+
             if self._outbound is not None:
                 self._outbound.stop(fail_exc=SessionIOError("Session closed."))
                 self._outbound = None
@@ -303,6 +328,29 @@ class Session:
             self._pending_frames = deque()
             self.info = None
             self.state = SessionState.DISCONNECTED
+
+            recv_t = self._recv_thread
+            if recv_t is not None and not in_recv_thread:
+                if self._recv_stop is not None:
+                    self._recv_stop.set()
+                if on_loop:
+
+                    def _join_recv() -> None:
+                        rt = self._recv_thread
+                        if rt is not None and rt is not threading.current_thread():
+                            rt.join(timeout=1.0)
+                        self._recv_thread = None
+                        self._recv_stop = None
+
+                    jt = threading.Thread(target=_join_recv, name="e27-recv-join", daemon=True)
+                    self._recv_join_thread = jt
+                    jt.start()
+                else:
+                    self._join_recv_thread(recv_t)
+                    self._recv_thread = None
+                    self._recv_stop = None
+            elif in_recv_thread:
+                self._recv_stop = None
         finally:
             self._closing = False
 
@@ -589,6 +637,7 @@ class Session:
         max_burst: int,
     ) -> None:
         self._loop_ref = loop
+        self._loop_thread_id = threading.get_ident()
         self._outbound = OutboundQueue(
             loop=loop,
             send_fn=self._send_all,
@@ -808,8 +857,12 @@ class Session:
     def _stop_receiver(self) -> None:
         if self._recv_stop is not None:
             self._recv_stop.set()
-        if self._recv_thread is not None and self._recv_thread is not threading.current_thread():
-            self._join_recv_thread(self._recv_thread)
+        if self._recv_thread is None:
+            self._recv_stop = None
+            return
+        if self._recv_thread is threading.current_thread():
+            return
+        self._join_recv_thread(self._recv_thread)
         self._recv_thread = None
         self._recv_stop = None
 

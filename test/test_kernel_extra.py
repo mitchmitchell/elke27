@@ -63,6 +63,9 @@ class _FakeSession:
     def connect(self) -> session_mod.SessionInfo:
         return self.info
 
+    def bind_loop(self, *_args: object, **_kwargs: object) -> None:  # type: ignore[no-untyped-def]
+        return None
+
     def enable_outbound_queue(self, **_kwargs) -> None:  # type: ignore[no-untyped-def]
         self.outbound_enabled = True
 

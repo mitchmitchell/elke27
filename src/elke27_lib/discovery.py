@@ -217,7 +217,7 @@ class AIOELKDiscovery:
                 if socket_factory is not None
                 else await asyncio.to_thread(ds.create_udp_socket)
             )
-        destinations = self._destinations_from_address(address)
+        destinations = await asyncio.to_thread(self._destinations_from_address, address)
         found_all_future: asyncio.Future[bool] = asyncio.Future()
         response_list: dict[tuple[str, int], E27System] = {}
 

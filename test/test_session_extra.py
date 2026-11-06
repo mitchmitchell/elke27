@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import socket as stdlib_socket
 import threading
 from types import SimpleNamespace
 from typing import Any, cast
@@ -128,7 +129,18 @@ def test_connect_starts_receiver_when_configured(monkeypatch: pytest.MonkeyPatch
     cfg = SessionConfig(host="example", auto_receive=True)
     sess = Session(cfg, client_identity=_identity(), link_key_hex="00")
     fake_socket = _FakeSocket()
-    monkeypatch.setattr(session_mod.socket, "socket", lambda *_a, **_k: fake_socket)
+    _real_socket = stdlib_socket.socket
+
+    def _socket_for_session(*args: Any, **kwargs: Any) -> Any:
+        if (
+            len(args) >= 2
+            and args[0] == stdlib_socket.AF_INET
+            and args[1] == stdlib_socket.SOCK_STREAM
+        ):
+            return fake_socket
+        return _real_socket(*args, **kwargs)
+
+    monkeypatch.setattr(session_mod.socket, "socket", _socket_for_session)
     monkeypatch.setattr(
         session_mod,
         "perform_hello",
@@ -139,10 +151,13 @@ def test_connect_starts_receiver_when_configured(monkeypatch: pytest.MonkeyPatch
         sess, "_start_receiver", lambda: started.__setitem__("count", started["count"] + 1)
     )
     sess.on_message = lambda _msg: None
-    sess.connect()
-    assert started["count"] == 0
-    sess.start_auto_receive()
-    assert started["count"] == 1
+    loop = asyncio.new_event_loop()
+    sess.bind_loop(loop)
+    try:
+        sess.connect()
+        assert started["count"] == 1
+    finally:
+        loop.close()
 
 
 def test_close_stops_outbound_queue() -> None:

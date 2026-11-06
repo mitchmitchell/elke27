@@ -33,7 +33,7 @@ import time
 from collections import deque
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from enum import Enum
+from enum import StrEnum
 from typing import (
     Any,
     cast,
@@ -138,7 +138,7 @@ class _Subscriber:
     kinds: set[str] | None = None
 
 
-class _RequestState(str, Enum):
+class _RequestState(StrEnum):
     IDLE = "idle"
     IN_FLIGHT = "in_flight"
 
@@ -676,6 +676,7 @@ class E27Kernel:
         self._closed_explicitly = False
         s = session_mod.Session(cfg=cfg, client_identity=client_identity, link_key_hex=link_key_hex)
         s.wire_log_suppress_seqs = self._raw_passthrough_seqs
+        s.bind_loop(loop)
 
         # Wire callbacks before connecting so HELLO path can report, if needed.
         s.on_message = self._on_message
