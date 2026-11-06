@@ -258,7 +258,6 @@ PRIVATE_ACCESS_CEILING: dict[str, int] = {
     "test/test_outbound.py": 16,
     "test/test_outbound_queue.py": 3,
     "test/test_panel_errors_ready_night.py": 13,
-    "test/test_pr_c_loop_fixes.py": 2,
     "test/test_panel_version_info.py": 17,
     "test/test_presentation_errors.py": 10,
     "test/test_public_api_imports.py": 5,

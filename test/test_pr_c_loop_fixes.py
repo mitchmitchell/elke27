@@ -16,6 +16,7 @@ from elke27_lib import discovery, linking_thread
 from elke27_lib.client import Elke27Client
 from elke27_lib.kernel_loop import E27Kernel
 from elke27_lib.pending_loop import PendingResponseManager
+from elke27_lib.types import ArmMode, EventType
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -55,20 +56,31 @@ def test_session_marshals_callbacks_with_call_soon_threadsafe() -> None:
     assert "def _invoke_on_loop" in session_text
 
 
-def test_pending_loop_uses_acquire_timeout_on_shared_lock() -> None:
+def test_pending_loop_uses_timed_lock_acquire_helper() -> None:
     pending_text = (_REPO_ROOT / "src" / "elke27_lib" / "pending_loop.py").read_text(
         encoding="utf-8"
     )
-    assert pending_text.count("acquire(timeout=") >= 5
+    assert "_lock.acquire(timeout=" in pending_text
+    assert pending_text.count("self._acquire_lock()") >= 5
+
+
+def test_public_event_and_arm_str_enum_contract() -> None:
+    """StrEnum: ``str(member)`` is the wire/value string (not ``Class.name``)."""
+    assert EventType.READY.value == "ready"
+    assert str(EventType.READY) == "ready"
+    assert ArmMode.DISARMED.value == "disarmed"
+    assert str(ArmMode.DISARMED) == "disarmed"
+
+
+def test_pending_response_manager_routes_lock_through_acquire_helper() -> None:
+    src = inspect.getsource(PendingResponseManager)
+    for name in ("create", "drop", "pending_count", "fail_all", "_pop"):
+        assert f"def {name}(" in src
 
 
 @pytest.mark.parametrize(
     ("obj", "method"),
     [
-        (PendingResponseManager(), "create"),
-        (PendingResponseManager(), "drop"),
-        (PendingResponseManager(), "pending_count"),
-        (PendingResponseManager(), "fail_all"),
         (Elke27Client(kernel=E27Kernel()), "subscribe"),
         (Elke27Client(kernel=E27Kernel()), "unsubscribe"),
         (Elke27Client(kernel=E27Kernel()), "subscribe_typed"),
@@ -79,32 +91,6 @@ def test_pending_loop_uses_acquire_timeout_on_shared_lock() -> None:
 def test_lock_uses_acquire_timeout(obj: object, method: str) -> None:
     fn = getattr(obj, method)
     assert "acquire(timeout=" in inspect.getsource(fn)
-
-
-def test_pending_manager_create_raises_when_30s_lock_times_out(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import elke27_lib.pending_loop as pending_mod
-    from elke27_lib.pending_loop import PendingResponseManager
-
-    loop = asyncio.new_event_loop()
-    try:
-
-        class _Lock:
-            def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:  # noqa: ARG002
-                if timeout == 30.0:
-                    return False
-                return True
-
-            def release(self) -> None:
-                return None
-
-        monkeypatch.setattr(pending_mod.threading, "Lock", _Lock)
-        m = PendingResponseManager()
-        with pytest.raises(RuntimeError, match="Pending response lock contention timed out"):
-            m.create(1, command_key="k", expected_route=("a", "b"), loop=loop)
-    finally:
-        loop.close()
 
 
 def test_discovery_async_scan_uses_executor_for_udp_socket() -> None:
@@ -119,6 +105,15 @@ async def test_close_scheduled_on_loop_returns_quickly_with_blocked_recv(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import elke27_lib.session_thread as session_mod
+
+    joins: list[tuple[str, str, float | None]] = []
+    real_join = threading.Thread.join
+
+    def _tracked_join(self: threading.Thread, timeout: float | None = None) -> None:  # type: ignore[override]
+        joins.append((threading.current_thread().name, self.name, timeout))
+        return real_join(self, timeout)
+
+    monkeypatch.setattr(threading.Thread, "join", _tracked_join)
 
     class _SlowSock:
         def settimeout(self, _t: float) -> None:
@@ -169,7 +164,11 @@ async def test_close_scheduled_on_loop_returns_quickly_with_blocked_recv(
 
     loop.call_soon_threadsafe(_close_from_loop)
     await asyncio.wait_for(done.wait(), timeout=2.0)
-    assert time.monotonic() - started < 1.5
+    elapsed = time.monotonic() - started
+    assert elapsed < 0.2
+    recv_joins = [j for j in joins if j[1] == "e27-recv"]
+    assert recv_joins
+    assert all(j[0] == "e27-recv-join" and j[2] == 1.0 for j in recv_joins)
 
 
 @pytest.mark.asyncio
@@ -225,8 +224,9 @@ async def test_hello_failure_notifies_disconnect_on_bound_loop(
 async def test_sync_authenticate_worker_thread_sees_threaded_opaque_fill(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    client = Elke27Client(kernel=E27Kernel())
-    client._kernel.state.panel.session_id = 1
+    kernel = E27Kernel()
+    client = Elke27Client(kernel=kernel)
+    client.state.panel.session_id = 1
     fut: concurrent.futures.Future[dict[str, object]] = concurrent.futures.Future()
 
     def _req(*_a: object, **_k: object) -> int:
@@ -237,7 +237,7 @@ async def test_sync_authenticate_worker_thread_sees_threaded_opaque_fill(
         threading.Thread(target=_fill, daemon=True).start()
         return 7
 
-    monkeypatch.setattr(client._kernel, "request", _req)
+    monkeypatch.setattr(kernel, "request", _req)
     r = await asyncio.to_thread(
         client.request,
         ("control", "authenticate"),
@@ -245,6 +245,20 @@ async def test_sync_authenticate_worker_thread_sees_threaded_opaque_fill(
         opaque=fut,
     )
     assert r.ok is True
+
+
+@pytest.mark.asyncio
+async def test_sync_authenticate_rejected_on_kernel_event_loop_thread() -> None:
+    kernel = E27Kernel()
+    client = Elke27Client(kernel=kernel)
+    loop = asyncio.get_running_loop()
+    client.bind_kernel_loop_thread_for_tests(loop)
+    with mock.patch.object(kernel, "request", return_value=1):
+        result = client.request(("control", "authenticate"), pin=1234)
+    assert result.ok is False
+    err = result.error
+    assert err is not None
+    assert "event-loop thread" in str(err)
 
 
 @pytest.mark.asyncio

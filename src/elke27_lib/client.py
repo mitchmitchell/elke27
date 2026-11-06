@@ -588,6 +588,10 @@ class Elke27Client:
         }
         self._ensure_kernel_subscription()
 
+    def bind_kernel_loop_thread_for_tests(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Test-only: record the kernel asyncio loop as bound to the current thread."""
+        self._kernel.bind_loop_thread_for_tests(loop)
+
     def _ensure_kernel_subscription(self) -> None:
         if self._kernel_event_token is not None:
             return
@@ -3544,6 +3548,13 @@ class Elke27Client:
             auth_waiter = opaque
         if not (hasattr(auth_waiter, "result") or hasattr(auth_waiter, "get")):
             return _err(ProtocolError("Authenticate opaque must support result() or get()."))
+        if self._kernel.current_thread_runs_bound_loop():
+            return _err(
+                ProtocolError(
+                    "Synchronous authenticate cannot run on the asyncio event-loop thread; "
+                    'use async_execute("control_authenticate", ...) instead.'
+                )
+            )
         pin_value = kwargs.get("pin")
         accepted_pin: int | None = None
         if isinstance(pin_value, str) and is_ascii_digit_string(pin_value):

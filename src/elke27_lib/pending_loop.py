@@ -28,11 +28,22 @@ class PendingResponseManager:
     _now: Callable[[], float]
     _pending: dict[int, PendingResponse]
     _lock: threading.Lock
+    _lock_acquire_timeout_s: float
 
-    def __init__(self, *, now: Callable[[], float] = time.monotonic) -> None:
+    def __init__(
+        self,
+        *,
+        now: Callable[[], float] = time.monotonic,
+        lock: threading.Lock | None = None,
+        lock_acquire_timeout_s: float = 30.0,
+    ) -> None:
         self._now = now
         self._pending = {}
-        self._lock = threading.Lock()
+        self._lock = lock if lock is not None else threading.Lock()
+        self._lock_acquire_timeout_s = float(lock_acquire_timeout_s)
+
+    def _acquire_lock(self) -> bool:
+        return self._lock.acquire(timeout=self._lock_acquire_timeout_s)
 
     def create(
         self,
@@ -51,7 +62,7 @@ class PendingResponseManager:
             future=future,
             loop=loop,
         )
-        if not self._lock.acquire(timeout=30.0):
+        if not self._acquire_lock():
             raise RuntimeError("Pending response lock contention timed out.")
         try:
             self._pending[seq] = entry
@@ -84,7 +95,7 @@ class PendingResponseManager:
         return True
 
     def drop(self, seq: int) -> None:
-        if not self._lock.acquire(timeout=30.0):
+        if not self._acquire_lock():
             return
         try:
             self._pending.pop(seq, None)
@@ -92,7 +103,7 @@ class PendingResponseManager:
             self._lock.release()
 
     def pending_count(self) -> int:
-        if not self._lock.acquire(timeout=30.0):
+        if not self._acquire_lock():
             return 0
         try:
             return len(self._pending)
@@ -100,7 +111,7 @@ class PendingResponseManager:
             self._lock.release()
 
     def fail_all(self, exc: BaseException) -> None:
-        if not self._lock.acquire(timeout=30.0):
+        if not self._acquire_lock():
             raise RuntimeError("Pending response lock contention timed out.")
         try:
             entries = list(self._pending.values())
@@ -116,7 +127,7 @@ class PendingResponseManager:
             self._call_in_loop(entry, _set_exc)
 
     def _pop(self, seq: int) -> PendingResponse | None:
-        if not self._lock.acquire(timeout=30.0):
+        if not self._acquire_lock():
             return None
         try:
             return self._pending.pop(seq, None)

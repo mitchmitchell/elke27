@@ -368,6 +368,7 @@ class E27Kernel:
     _closed_explicitly: bool
     _sent_events: dict[int, asyncio.Event]
     _loop: asyncio.AbstractEventLoop | None
+    _loop_thread_id: int | None
     _request_state: _RequestState
     _active_seq: int | None
     _active_timeout_handle: asyncio.TimerHandle | None
@@ -482,6 +483,7 @@ class E27Kernel:
         # waits on them, so they are dropped on close and on every connect.
         self._fire_and_forget_pending_seqs: set[int] = set()
         self._loop = None
+        self._loop_thread_id = None
         self._request_state = _RequestState.IDLE
         self._active_seq = None
         self._active_sent_at = None
@@ -630,6 +632,7 @@ class E27Kernel:
         """
         await asyncio.to_thread(self.load_features_blocking, None)
         self._loop = asyncio.get_running_loop()
+        self._loop_thread_id = threading.get_ident()
         loop = self._loop
         self._drop_fire_and_forget_pending()  # never carry correlation across sessions
         if session_config is None and panel is None:
@@ -1452,8 +1455,21 @@ class E27Kernel:
             return
         try:
             self._loop = asyncio.get_running_loop()
+            self._loop_thread_id = threading.get_ident()
         except RuntimeError:
             return
+
+    def current_thread_runs_bound_loop(self) -> bool:
+        return (
+            self._loop is not None
+            and self._loop_thread_id is not None
+            and threading.get_ident() == self._loop_thread_id
+        )
+
+    def bind_loop_thread_for_tests(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Test-only: mark ``loop`` as the kernel's asyncio loop on this thread."""
+        self._loop = loop
+        self._loop_thread_id = threading.get_ident()
 
     def _enqueue_request(self, item: _QueuedRequest) -> None:
         if item.priority is OutboundPriority.HIGH:

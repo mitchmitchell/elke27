@@ -306,7 +306,6 @@ class Session:
         """
         self._closing = True
         try:
-            self._stop_receiver()
             if self._recv_join_thread is not None:
                 self._recv_join_thread.join(timeout=2.0)
                 self._recv_join_thread = None
@@ -316,6 +315,8 @@ class Session:
             on_loop = self._running_loop_is_bound() and self._loop_ref is not None
             if self._loop_ref is not None:
                 on_loop = on_loop and self._loop_ref.is_running()
+
+            self._set_recv_stop_flag()
 
             if self._outbound is not None:
                 self._outbound.stop(fail_exc=SessionIOError("Session closed."))
@@ -331,8 +332,6 @@ class Session:
 
             recv_t = self._recv_thread
             if recv_t is not None and not in_recv_thread:
-                if self._recv_stop is not None:
-                    self._recv_stop.set()
                 if on_loop:
 
                     def _join_recv() -> None:
@@ -853,6 +852,10 @@ class Session:
         if thread is threading.current_thread():
             return
         thread.join(timeout=1.0)
+
+    def _set_recv_stop_flag(self) -> None:
+        if self._recv_stop is not None:
+            self._recv_stop.set()
 
     def _stop_receiver(self) -> None:
         if self._recv_stop is not None:
