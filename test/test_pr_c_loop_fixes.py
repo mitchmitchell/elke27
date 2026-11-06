@@ -206,10 +206,13 @@ async def test_stale_recv_join_helper_does_not_clear_new_receiver_after_reconnec
 
     old_start = threading.Thread.start
     recv_objs: list[threading.Thread] = []
+    join_helpers: list[threading.Thread] = []
 
     def _track_start(self: threading.Thread) -> None:  # type: ignore[override]
         if self.name == "e27-recv":
             recv_objs.append(self)
+        elif self.name == "e27-recv-join":
+            join_helpers.append(self)
         return old_start(self)
 
     monkeypatch.setattr(threading.Thread, "start", _track_start)
@@ -292,6 +295,24 @@ async def test_stale_recv_join_helper_does_not_clear_new_receiver_after_reconnec
             f"expected exactly r2 live among tracked recv threads, got {alive_tracked!r} "
             f"r1_alive={r1.is_alive()}"
         )
+    helper_deadline = time.monotonic() + 5.0
+    while time.monotonic() < helper_deadline:
+        if not join_helpers:
+            await asyncio.sleep(0.01)
+            continue
+        if all(not h.is_alive() for h in join_helpers):
+            break
+        await asyncio.sleep(0.05)
+    else:
+        still = [h for h in join_helpers if h.is_alive()]
+        raise AssertionError(f"e27-recv-join helper(s) still alive: {still!r}")
+    assert join_helpers, "expected at least one e27-recv-join from the two loop closes"
+
+    await asyncio.to_thread(sess.start_auto_receive)
+    assert len(recv_objs) == 2
+    assert recv_objs[1].is_alive()
+    assert not recv_objs[0].is_alive()
+
     helper_joins_recv = [j for j in joins if j[0] == "e27-recv-join" and j[1] == "e27-recv"]
     any_joins_recv = [j for j in joins if j[1] == "e27-recv"]
     assert len(helper_joins_recv) == len(any_joins_recv)
