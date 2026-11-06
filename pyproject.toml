@@ -97,8 +97,12 @@ artifacts = ["src/elke27_lib/py.typed"]
 [tool.ruff]
 # Set as desired, typically 88 (black standard) or 100 (wide).
 line-length = 100
+# Loopcheck fixtures are deliberately bad code that the checker must flag.
+extend-exclude = ["test/fixtures/loopcheck"]
 
 [tool.ruff.lint]
+# ELK codes come from devtools/loopcheck.py; ruff must accept them in noqa comments.
+external = ["ELK"]
 select = [
     # See: https://docs.astral.sh/ruff/rules/
     # Basic list from: https://docs.astral.sh/ruff/linter/#rule-selection
@@ -229,6 +233,8 @@ ignore = [
 # https://marketplace.visualstudio.com/items?itemName=detachhead.basedpyright
 # https://docs.basedpyright.com/latest/configuration/config-files/#sample-pyprojecttoml-file
 include = ["src", "test", "devtools"]
+# Loopcheck fixtures are deliberately bad code that the checker must flag.
+exclude = ["test/fixtures/loopcheck", "**/__pycache__", "**/.*"]
 extraPaths = ["src", "."]
 typeCheckingMode = "standard"
 # By default BasedPyright is very strict, so you almost certainly want to disable
@@ -252,6 +258,19 @@ reportUnreachable = false
 # reportUnknownVariableType = false
 # reportUnknownArgumentType = false
 
+[tool.elke27.loopcheck]
+loop_modules = [
+    "src/elke27_lib/client.py",
+    "src/elke27_lib/discovery.py",
+    "src/elke27_lib/hub.py",
+]
+loop_paths = [
+    "src/elke27_lib/__init__.py",
+    "src/elke27_lib/features",
+    "src/elke27_lib/handlers",
+    "src/elke27_lib/generators",
+]
+
 [tool.codespell]
 # Add here as needed:
 # ignore-words-list = "foo,bar"
@@ -267,7 +286,8 @@ python_functions = ["test_*"]
 testpaths = [
     "test",
 ]
-norecursedirs = []
+# Loopcheck fixtures are checker input, never test modules.
+norecursedirs = ["fixtures"]
 filterwarnings = []
 asyncio_mode = "auto"
 markers = [
