@@ -1,3 +1,11 @@
+  Developer note (deep imports / logging, #120)
+
+  - Internal protocol modules were renamed to ``*_loop.py`` (asyncio loop
+    side) and ``*_thread.py`` (blocking worker-thread I/O). Code that used
+    deep imports (``elke27_lib.kernel``, etc.) or
+    ``logging.getLogger("elke27_lib.<name>")`` must use the new module names
+    (``kernel_loop``, ``session_thread``, and so on).
+
   Arm Modes, Area Troubles, Triggered Alarms, Keepalive Stats (0.4.0)
 
   - Breaking (#102): ``AreaState.trouble`` is removed. Read the documented
