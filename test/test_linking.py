@@ -6,7 +6,7 @@ import types
 
 import pytest
 
-from elke27_lib import linking
+from elke27_lib import linking_thread as linking
 from elke27_lib.errors import E27ProtocolError, E27ProvisioningTimeout, E27TransportError
 
 
@@ -355,8 +355,8 @@ def test_api_link_nonzero_ack_does_not_log_keys(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A non-zero api_link ACK logs the ACK byte and length, never the link key or HMAC."""
-    from elke27_lib.framing import frame_build
-    from elke27_lib.presentation import encrypt_schema0_envelope
+    from elke27_lib.framing_loop import frame_build
+    from elke27_lib.presentation_loop import encrypt_schema0_envelope
     from elke27_lib.util import swap_endianness
 
     cnonce = "00" * 20

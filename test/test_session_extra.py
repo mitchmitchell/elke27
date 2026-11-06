@@ -8,10 +8,10 @@ from typing import Any, cast
 
 import pytest
 
-from elke27_lib import session as session_mod
+from elke27_lib import session_thread as session_mod
 from elke27_lib.errors import E27Error
-from elke27_lib.framing import DeframeState
-from elke27_lib.session import (
+from elke27_lib.framing_loop import DeframeState
+from elke27_lib.session_thread import (
     Session,
     SessionConfig,
     SessionIOError,
@@ -226,7 +226,7 @@ def test_recv_one_frame_no_crc_with_idle_and_wire_log(
 
     monkeypatch.setattr(sess, "_recv_some", _recv_some)
     monkeypatch.setattr(session_mod, "deframe_feed", _deframe_feed)
-    caplog.set_level(logging.DEBUG, logger="elke27_lib.session")
+    caplog.set_level(logging.DEBUG, logger="elke27_lib.session_thread")
 
     frame = sess._recv_one_frame_no_crc(timeout_s=0.1)
     assert frame == b"\x80\x00\x00"
@@ -293,7 +293,7 @@ def test_encode_json_wire_log(
         lambda **_k: (0x80, b"cipher"),
     )
     monkeypatch.setattr(session_mod, "frame_build", lambda **_k: b"frame")
-    caplog.set_level(logging.DEBUG, logger="elke27_lib.session")
+    caplog.set_level(logging.DEBUG, logger="elke27_lib.session_thread")
     framed = sess._encode_json({"seq": 1})
     assert framed == b"frame"
     assert "TX framed" in caplog.text

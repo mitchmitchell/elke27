@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from elke27_lib.const import E27ErrorCode
-from elke27_lib.dispatcher import DispatchContext
+from elke27_lib.dispatcher_loop import DispatchContext
 from elke27_lib.events import Event
 from elke27_lib.handlers.area import make_area_get_attribs_handler
 from elke27_lib.states import PanelState

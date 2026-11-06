@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from elke27_lib import linking
+from elke27_lib import linking_thread as linking
 from elke27_lib.client import Elke27Client
 from elke27_lib.events import (
     UNSET_AT,
@@ -14,7 +14,7 @@ from elke27_lib.events import (
     OutputConfiguredInventoryReady,
     ZoneConfiguredInventoryReady,
 )
-from elke27_lib.session import Session, SessionConfig, SessionState
+from elke27_lib.session_thread import Session, SessionConfig, SessionState
 from test.helpers.internal import get_kernel, get_private, set_private
 
 

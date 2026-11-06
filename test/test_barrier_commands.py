@@ -19,7 +19,7 @@ from elke27_lib.errors import (
     Elke27PermissionError,
     PermissionDeniedError,
 )
-from elke27_lib.kernel import E27Kernel
+from elke27_lib.kernel_loop import E27Kernel
 from elke27_lib.states import BarrierState as KernelBarrierState
 from elke27_lib.types import barrier_is_open
 from test.helpers.internal import get_kernel, get_private

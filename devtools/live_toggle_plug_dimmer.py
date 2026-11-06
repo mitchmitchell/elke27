@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 
-from elke27_lib import linking
+from elke27_lib import linking_thread as linking
 from elke27_lib.client import Elke27Client
 
 TARGET_NAME = "plug dimmer"

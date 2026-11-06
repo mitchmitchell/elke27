@@ -8,11 +8,12 @@ from typing import Any
 
 import pytest
 
-from elke27_lib import hello, linking
-from elke27_lib import session as session_mod
+from elke27_lib import hello_thread as hello
+from elke27_lib import linking_thread as linking
+from elke27_lib import session_thread as session_mod
 from elke27_lib.errors import E27ErrorContext, E27HelloNoSession, E27ProtocolError
 from elke27_lib.events import ConnectionStateChanged, Event
-from elke27_lib.kernel import E27Kernel, KernelError
+from elke27_lib.kernel_loop import E27Kernel, KernelError
 
 KEYS = linking.E27LinkKeys("aa", "bb", "cc")
 IDENTITY = linking.E27Identity("mn", "sn", "fw", "hw", "os")

@@ -4,7 +4,7 @@ import importlib
 
 import pytest
 
-from elke27_lib import encryption as enc
+from elke27_lib import encryption_loop as enc
 
 
 def test_hex_to_bytes_valid() -> None:
@@ -86,7 +86,7 @@ def test_decrypt_hello_field_roundtrip() -> None:
 
 
 def test_crypto_backend_missing(monkeypatch: pytest.MonkeyPatch) -> None:
-    module = importlib.import_module("elke27_lib.encryption")
+    module = importlib.import_module("elke27_lib.encryption_loop")
     monkeypatch.setattr(module, "_has_crypto", False)
     monkeypatch.setattr(module, "Cipher", None)
     monkeypatch.setattr(module, "algorithms", None)

@@ -5,7 +5,7 @@ from typing import Any, cast
 import pytest
 
 from elke27_lib.client import Elke27Client
-from elke27_lib.kernel import E27Kernel
+from elke27_lib.kernel_loop import E27Kernel
 from elke27_lib.states import TstatState
 from elke27_lib.tstat_units import decode_value, encode_setpoint, precision_from_prec
 

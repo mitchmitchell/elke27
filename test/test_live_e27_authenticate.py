@@ -38,7 +38,7 @@ def _get_pin() -> str:
 async def test_live_control_authenticate(live_e27_client: Elke27Client) -> None:
     log_level = str(os.environ.get("LOG_LEVEL", "INFO") or "INFO").upper()
     logging.basicConfig(level=getattr(logging, log_level, logging.INFO), force=True)
-    logging.getLogger("elke27_lib.session").setLevel(logging.DEBUG)
+    logging.getLogger("elke27_lib.session_thread").setLevel(logging.DEBUG)
 
     pin = int(_get_pin())
     kernel = get_kernel(live_e27_client)

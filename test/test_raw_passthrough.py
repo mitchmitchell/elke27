@@ -19,8 +19,8 @@ from elke27_lib.errors import (
     Elke27PanelError,
     Elke27PermissionError,
 )
-from elke27_lib.kernel import E27Kernel, KernelError
-from elke27_lib.linking import E27Identity, E27LinkKeys
+from elke27_lib.kernel_loop import E27Kernel, KernelError
+from elke27_lib.linking_thread import E27Identity, E27LinkKeys
 from elke27_lib.states import AreaState
 from test.helpers.internal import get_kernel, get_private
 from test.test_transport_command_retry import _FakeSession
@@ -230,8 +230,8 @@ async def test_no_message_or_reply_content_in_logs(caplog: pytest.LogCaptureFixt
 # --- wire hex suppression (Architect ruling 5) -----------------------------------
 from types import SimpleNamespace  # noqa: E402
 
-from elke27_lib import session as session_mod  # noqa: E402
-from elke27_lib.session import SessionConfig  # noqa: E402
+from elke27_lib import session_thread as session_mod  # noqa: E402
+from elke27_lib.session_thread import SessionConfig  # noqa: E402
 from test.test_session_extra import _ready_session  # noqa: E402
 
 _FRAME = b"\x80\x05\x00\xde\xad\xbe\xef\x99"
@@ -425,7 +425,7 @@ async def test_permission_keyed_by_exact_pair_no_collisions() -> None:
 
 # --- in-flight seqs never evicted; no automatic retries (Bugbot HIGH, Codex P1) --
 def test_inflight_raw_seq_survives_more_than_window() -> None:
-    from elke27_lib.kernel import RawSeqTracker
+    from elke27_lib.kernel_loop import RawSeqTracker
 
     t = RawSeqTracker(late_window=4)
     t.mark(1)  # in flight the whole time

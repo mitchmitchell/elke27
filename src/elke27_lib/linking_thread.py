@@ -16,8 +16,8 @@ from .errors import (
     E27ProvisioningTimeout,
     E27TransportError,
 )
-from .framing import DeframeState, deframe_feed
-from .presentation import decrypt_api_link_response
+from .framing_loop import DeframeState, deframe_feed
+from .presentation_loop import decrypt_api_link_response
 
 LOG = logging.getLogger(__name__)
 

@@ -10,7 +10,7 @@ from typing import Any, cast
 import pytest
 
 from elke27_lib import Elke27CodeRejectedError, Elke27PanelError
-from elke27_lib import session as session_mod
+from elke27_lib import session_thread as session_mod
 from elke27_lib.client import ArmMode, Elke27Client
 from elke27_lib.const import E27ErrorCode
 from elke27_lib.errors import Elke27InvalidArgument

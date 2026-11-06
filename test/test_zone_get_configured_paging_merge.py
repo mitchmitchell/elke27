@@ -1,4 +1,4 @@
-from elke27_lib.dispatcher import PagedBlock
+from elke27_lib.dispatcher_loop import PagedBlock
 from elke27_lib.handlers.zone import make_zone_configured_merge
 from elke27_lib.states import PanelState
 

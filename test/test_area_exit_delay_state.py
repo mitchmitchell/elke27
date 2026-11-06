@@ -5,8 +5,8 @@ from typing import Any
 
 import pytest
 
-from elke27_lib import linking
-from elke27_lib import session as session_mod
+from elke27_lib import linking_thread as linking
+from elke27_lib import session_thread as session_mod
 from elke27_lib.client import Elke27Client
 from elke27_lib.const import E27ErrorCode
 from elke27_lib.events import AreaStatusUpdated, ConnectionStateChanged
@@ -16,7 +16,7 @@ from elke27_lib.handlers.area import (
     make_area_set_arm_state_handler,
     make_area_set_status_handler,
 )
-from elke27_lib.kernel import E27Kernel
+from elke27_lib.kernel_loop import E27Kernel
 from elke27_lib.states import AreaState, PanelState
 from elke27_lib.types import ArmMode
 from test.helpers.dispatch import make_ctx

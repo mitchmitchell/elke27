@@ -12,7 +12,7 @@ import pytest
 
 import elke27_lib.client as client_mod
 from elke27_lib.client import Elke27Client, Result
-from elke27_lib.dispatcher import PagedBlock
+from elke27_lib.dispatcher_loop import PagedBlock
 from elke27_lib.errors import (
     ConnectionLost,
     E27Timeout,
@@ -37,7 +37,7 @@ from elke27_lib.events import (
     ZonesStatusBulkUpdated,
     ZoneStatusUpdated,
 )
-from elke27_lib.kernel import E27Kernel, KernelError
+from elke27_lib.kernel_loop import E27Kernel, KernelError
 from elke27_lib.permissions import PermissionLevel
 from elke27_lib.states import BarrierState, CsmSnapshot, LightState, LockState, TstatState
 

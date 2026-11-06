@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from elke27_lib import pending, permissions, states, util
+from elke27_lib import pending_loop as pending
+from elke27_lib import permissions, states, util
 
 
 def test_parse_url_invalid_host() -> None:

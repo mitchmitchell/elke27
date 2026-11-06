@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from elke27_lib.const import E27ErrorCode
-from elke27_lib.dispatcher import DispatchContext, MessageKind
+from elke27_lib.dispatcher_loop import DispatchContext, MessageKind
 from elke27_lib.handlers.zone import make_zone_get_status_handler
 from elke27_lib.states import PanelState
 

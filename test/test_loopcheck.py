@@ -162,15 +162,15 @@ def test_nonexistent_path_is_a_usage_error(
 
 def test_hub_is_a_configured_loop_module() -> None:
     config = loopcheck.Config.load(ROOT / "pyproject.toml")
-    assert config.is_loop(ROOT / "src" / "elke27_lib" / "hub.py")
+    assert config.is_loop(ROOT / "src" / "elke27_lib" / "hub_loop.py")
 
 
 def test_each_import_is_recorded_once() -> None:
     imports = loopcheck.ImportTable()
-    imports.visit(ast.parse("from . import client\nfrom .hub import Elke27Hub\n"))
+    imports.visit(ast.parse("from . import client\nfrom .hub_loop import Elke27Hub\n"))
     assert [(name, relative) for _, name, relative in imports.imports] == [
         ("client", True),
-        ("hub", True),
+        ("hub_loop", True),
     ]
 
 

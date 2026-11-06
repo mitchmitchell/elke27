@@ -16,10 +16,10 @@ from typing import Any, cast
 
 import pytest
 
-from elke27_lib import session as session_mod
-from elke27_lib.framing import DeframeState
-from elke27_lib.kernel import E27Kernel
-from elke27_lib.session import (
+from elke27_lib import session_thread as session_mod
+from elke27_lib.framing_loop import DeframeState
+from elke27_lib.kernel_loop import E27Kernel
+from elke27_lib.session_thread import (
     Session,
     SessionConfig,
     SessionIOError,
@@ -186,7 +186,7 @@ def test_send_all_logs_partial_send_and_completes(
     sock = _PartialSendSocket(chunk_size=2)
     sess = _ready_session(sock=sock)
     payload = b"abcdef"
-    with caplog.at_level(logging.DEBUG, logger="elke27_lib.session"):
+    with caplog.at_level(logging.DEBUG, logger="elke27_lib.session_thread"):
         sess._send_all(payload)
     assert b"".join(sock.sent) == payload
     assert any("Partial socket send" in r.getMessage() for r in caplog.records)
@@ -571,7 +571,7 @@ def test_disconnect_log_includes_exception_message(
 
     sess = _ready_session(sock=_Sock())
     exc = SessionIOError("Connection closed by the panel (panel:2101).")
-    with caplog.at_level(logging.INFO, logger="elke27_lib.session"):
+    with caplog.at_level(logging.INFO, logger="elke27_lib.session_thread"):
         sess._handle_disconnect(exc)
     recs = [r for r in caplog.records if "Session disconnect" in r.getMessage()]
     assert len(recs) == 1

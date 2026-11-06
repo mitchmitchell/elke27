@@ -32,7 +32,7 @@ from elke27_lib.events import (
     ConnectionStateChanged,
     ZoneConfiguredInventoryReady,
 )
-from elke27_lib.session import SessionConfig
+from elke27_lib.session_thread import SessionConfig
 
 LOG = logging.getLogger(__name__)
 

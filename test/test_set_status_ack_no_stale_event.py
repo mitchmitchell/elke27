@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from elke27_lib import session as session_mod
+from elke27_lib import session_thread as session_mod
 from elke27_lib.client import Elke27Client, LinkKeys
 from elke27_lib.events import OutputStatusUpdated, TstatStatusUpdated
 from elke27_lib.handlers import output as output_handler

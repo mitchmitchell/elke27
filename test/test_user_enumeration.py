@@ -4,7 +4,7 @@ from collections.abc import Callable, Mapping
 
 import elke27_lib.client as client_mod
 from elke27_lib.const import E27ErrorCode
-from elke27_lib.dispatcher import DispatchContext, PagedBlock
+from elke27_lib.dispatcher_loop import DispatchContext, PagedBlock
 from elke27_lib.events import Event
 from elke27_lib.handlers.user import (
     make_user_get_attribs_handler,

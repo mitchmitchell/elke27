@@ -1,5 +1,5 @@
 from elke27_lib.events import ApiError, AuthorizationRequiredEvent, DispatchRoutingError
-from elke27_lib.kernel import E27Kernel
+from elke27_lib.kernel_loop import E27Kernel
 from test.helpers.internal import get_private
 
 

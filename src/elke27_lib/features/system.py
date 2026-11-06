@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from elke27_lib.kernel import E27Kernel
+    from elke27_lib.kernel_loop import E27Kernel
 
 from elke27_lib.handlers.system import (
     make_system_file_info_handler,

@@ -25,8 +25,8 @@ import asyncio
 import logging
 from dataclasses import dataclass
 
-from elke27_lib import Elk, linking
-from elke27_lib.session import SessionState
+from elke27_lib import Elk, linking_thread as linking
+from elke27_lib.session_thread import SessionState
 
 LOG = logging.getLogger(__name__)
 
@@ -148,7 +148,7 @@ async def main_async() -> int:
         panel_host = panel.panel_host
         panel_port = int(panel.port)
 
-    from elke27_lib.session import SessionConfig
+    from elke27_lib.session_thread import SessionConfig
 
     session_cfg = SessionConfig(
         host=panel_host,

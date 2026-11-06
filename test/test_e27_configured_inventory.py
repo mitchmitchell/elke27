@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping
 
 from elke27_lib.client import Elke27Client
 from elke27_lib.const import E27ErrorCode
-from elke27_lib.dispatcher import DispatchContext
+from elke27_lib.dispatcher_loop import DispatchContext
 from elke27_lib.events import (
     UNSET_AT,
     UNSET_CLASSIFICATION,

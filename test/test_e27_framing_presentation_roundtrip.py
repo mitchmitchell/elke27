@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from elke27_lib.framing import DeframeState, deframe_feed, frame_build
-from elke27_lib.linking import derive_pass_tempkey_with_cnonce
-from elke27_lib.presentation import decrypt_schema0_envelope, encrypt_schema0_envelope
+from elke27_lib.framing_loop import DeframeState, deframe_feed, frame_build
+from elke27_lib.linking_thread import derive_pass_tempkey_with_cnonce
+from elke27_lib.presentation_loop import decrypt_schema0_envelope, encrypt_schema0_envelope
 
 
 def test_encrypt_frame_deframe_decrypt_roundtrip() -> None:

@@ -7,11 +7,11 @@ import threading
 from collections.abc import Callable
 from typing import cast
 
-from elke27_lib import presentation as presentation_mod
+from elke27_lib import presentation_loop as presentation_mod
 from elke27_lib.const import E27ErrorCode
-from elke27_lib.hello import perform_hello
-from elke27_lib.linking import E27Identity
-from elke27_lib.presentation import API_LINK_IV
+from elke27_lib.hello_thread import perform_hello
+from elke27_lib.linking_thread import E27Identity
+from elke27_lib.presentation_loop import API_LINK_IV
 from elke27_lib.util import swap_endianness
 from test.helpers.internal import get_private
 

@@ -22,6 +22,7 @@ from .errors import (
     Elke27TimeoutError,
     Elke27TransientError,
 )
+from .hub_loop import Elke27Hub
 from .redact import redact_for_diagnostics
 from .types import (
     Area,
@@ -54,9 +55,6 @@ def __getattr__(name: str) -> Any:
     if name == "Elke27Client":
         module = importlib.import_module(".client", __name__)
         return module.Elke27Client
-    if name == "Elke27Hub":
-        module = importlib.import_module(".hub", __name__)
-        return module.Elke27Hub
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

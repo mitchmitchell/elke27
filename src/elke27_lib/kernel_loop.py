@@ -46,10 +46,11 @@ _CONNECT_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
     max_workers=2, thread_name_prefix="e27-connect"
 )
 
-from . import discovery, linking
-from . import session as session_mod
+from . import discovery
+from . import linking_thread as linking
+from . import session_thread as session_mod
 from .const import REDACT_DIAGNOSTICS
-from .dispatcher import (
+from .dispatcher_loop import (
     DispatchContext,
     Dispatcher,
     MessageKind,
@@ -80,8 +81,8 @@ from .events import (
     stamp_event,
 )
 from .handlers.area import clear_all_area_exit_delay_pending
-from .outbound import OutboundPriority
-from .pending import PendingResponseManager
+from .outbound_loop import OutboundPriority
+from .pending_loop import PendingResponseManager
 from .redact import SECRET_KEYS, redact_for_diagnostics
 from .states import PanelState
 

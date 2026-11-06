@@ -13,9 +13,9 @@ from typing import Any
 
 import pytest
 
-from elke27_lib import linking
-from elke27_lib import session as session_mod
-from elke27_lib.kernel import E27Kernel, KeepaliveStats
+from elke27_lib import linking_thread as linking
+from elke27_lib import session_thread as session_mod
+from elke27_lib.kernel_loop import E27Kernel, KeepaliveStats
 
 KEYS = linking.E27LinkKeys("aa", "bb", "cc")
 IDENTITY = linking.E27Identity("mn", "sn", "fw", "hw", "os")
@@ -112,7 +112,7 @@ async def test_round_trips_log_debug_and_count(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     kernel, _made = _kernel(monkeypatch, answer=True)
-    with caplog.at_level(logging.DEBUG, logger="elke27_lib.kernel"):
+    with caplog.at_level(logging.DEBUG, logger="elke27_lib.kernel_loop"):
         await kernel.connect(KEYS, session_config=_cfg(), client_identity=IDENTITY)
         await _wait(lambda: kernel.keepalive_stats.replies >= 2)
         await kernel.close()
@@ -138,7 +138,7 @@ async def test_unanswered_probe_counts_miss_and_logs(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     kernel, made = _kernel(monkeypatch, answer=False)
-    with caplog.at_level(logging.DEBUG, logger="elke27_lib.kernel"):
+    with caplog.at_level(logging.DEBUG, logger="elke27_lib.kernel_loop"):
         await kernel.connect(KEYS, session_config=_cfg(), client_identity=IDENTITY)
         await _wait(lambda: bool(made[0].disconnects))
     stats = kernel.keepalive_stats
@@ -155,7 +155,7 @@ async def test_unanswered_probe_rescued_by_later_traffic(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     kernel, made = _kernel(monkeypatch, answer=False, rescue=True)
-    with caplog.at_level(logging.DEBUG, logger="elke27_lib.kernel"):
+    with caplog.at_level(logging.DEBUG, logger="elke27_lib.kernel_loop"):
         await kernel.connect(KEYS, session_config=_cfg(), client_identity=IDENTITY)
         await _wait(lambda: kernel.keepalive_stats.rescued >= 1)
         stats = kernel.keepalive_stats

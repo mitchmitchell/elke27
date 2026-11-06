@@ -10,7 +10,7 @@ import logging
 from collections.abc import Callable, Mapping
 from typing import Any, cast
 
-from elke27_lib.dispatcher import DispatchContext
+from elke27_lib.dispatcher_loop import DispatchContext
 from elke27_lib.events import (
     UNSET_AT,
     UNSET_CLASSIFICATION,

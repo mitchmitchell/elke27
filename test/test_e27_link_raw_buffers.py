@@ -7,15 +7,15 @@ import time
 
 import pytest
 
-from elke27_lib.framing import DeframeState, deframe_feed
-from elke27_lib.linking import (
+from elke27_lib.framing_loop import DeframeState, deframe_feed
+from elke27_lib.linking_thread import (
     E27Identity,
     build_api_link_request,
     derive_pass_tempkey_with_cnonce,
     send_unframed_json,
     wait_for_discovery_nonce,
 )
-from elke27_lib.presentation import decrypt_api_link_response
+from elke27_lib.presentation_loop import decrypt_api_link_response
 
 
 def _env(name: str, default: str | None = None) -> str | None:

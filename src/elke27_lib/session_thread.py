@@ -30,12 +30,12 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, cast
 
-from . import linking
+from . import linking_thread as linking
 from .errors import E27Error
-from .framing import DeframeState, deframe_feed, frame_build
-from .hello import perform_hello
-from .outbound import OutboundItem, OutboundPriority, OutboundQueue
-from .presentation import decrypt_schema0_envelope, encrypt_schema0_envelope
+from .framing_loop import DeframeState, deframe_feed, frame_build
+from .hello_thread import perform_hello
+from .outbound_loop import OutboundItem, OutboundPriority, OutboundQueue
+from .presentation_loop import decrypt_schema0_envelope, encrypt_schema0_envelope
 
 logger = logging.getLogger(__name__)
 

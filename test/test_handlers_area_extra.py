@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 
 from elke27_lib.const import E27ErrorCode
-from elke27_lib.dispatcher import DispatchContext, PagedBlock
+from elke27_lib.dispatcher_loop import DispatchContext, PagedBlock
 from elke27_lib.events import (
     ApiError,
     AreaAttribsUpdated,

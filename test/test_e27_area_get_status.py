@@ -5,7 +5,7 @@ import logging
 import pytest
 
 from elke27_lib.const import E27ErrorCode
-from elke27_lib.dispatcher import DispatchContext
+from elke27_lib.dispatcher_loop import DispatchContext
 from elke27_lib.events import ApiError, AreaStatusUpdated, Event
 from elke27_lib.handlers.area import make_area_get_status_handler
 from elke27_lib.states import PanelState

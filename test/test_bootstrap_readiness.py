@@ -18,7 +18,7 @@ from elke27_lib.events import (
     ZoneConfiguredInventoryReady,
     ZoneStatusUpdated,
 )
-from elke27_lib.kernel import E27Kernel
+from elke27_lib.kernel_loop import E27Kernel
 from elke27_lib.states import PanelState
 from test.helpers.internal import get_private
 

@@ -14,8 +14,8 @@ import logging
 import time
 from dataclasses import asdict, dataclass, is_dataclass
 
-from elke27_lib import Elk, linking
-from elke27_lib.session import SessionConfig, SessionState
+from elke27_lib import Elk, linking_thread as linking
+from elke27_lib.session_thread import SessionConfig, SessionState
 
 LOG = logging.getLogger(__name__)
 

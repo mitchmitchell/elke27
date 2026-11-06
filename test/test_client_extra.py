@@ -9,7 +9,8 @@ from typing import Any
 import pytest
 
 from elke27_lib import client as client_mod
-from elke27_lib import discovery, linking
+from elke27_lib import discovery
+from elke27_lib import linking_thread as linking
 from elke27_lib.client import Elke27Client, Result
 from elke27_lib.errors import (
     ConnectionLost,
@@ -47,9 +48,9 @@ from elke27_lib.events import (
     ConnectionStateChanged,
     CsmSnapshotUpdated,
 )
-from elke27_lib.kernel import E27Kernel, KernelError, KernelMissingContextError
+from elke27_lib.kernel_loop import E27Kernel, KernelError, KernelMissingContextError
 from elke27_lib.permissions import PermissionLevel
-from elke27_lib.session import SessionConfig, SessionNotReadyError, SessionProtocolError
+from elke27_lib.session_thread import SessionConfig, SessionNotReadyError, SessionProtocolError
 from elke27_lib.states import AreaState, OutputState, ZoneState
 from elke27_lib.types import ArmMode, CsmSnapshot, LinkKeys
 
@@ -1379,7 +1380,7 @@ async def test_connect_success_after_failures_resets_warning_cycle(
 
 def test_raise_v2_error_maps_hello_rejections(caplog: pytest.LogCaptureFixture) -> None:
     from elke27_lib.errors import E27HelloLinkRequired, E27HelloRejected, Elke27ProtocolError
-    from elke27_lib.session import SessionProtocolError
+    from elke27_lib.session_thread import SessionProtocolError
 
     client = Elke27Client(kernel=E27Kernel())
     try:
@@ -1404,7 +1405,7 @@ def test_raise_v2_error_maps_hello_rejections(caplog: pytest.LogCaptureFixture) 
 
 def test_normalize_error_keeps_hello_link_rejection() -> None:
     from elke27_lib.errors import AuthorizationRequired, E27HelloLinkRequired
-    from elke27_lib.session import SessionProtocolError
+    from elke27_lib.session_thread import SessionProtocolError
 
     client = Elke27Client(kernel=E27Kernel())
     try:

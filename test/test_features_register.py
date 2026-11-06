@@ -4,7 +4,7 @@ from typing import Any, cast
 
 import pytest
 
-from elke27_lib.dispatcher import PagedTransferKey
+from elke27_lib.dispatcher_loop import PagedTransferKey
 from elke27_lib.features import (
     barrier,
     bus_ios,

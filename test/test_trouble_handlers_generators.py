@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from elke27_lib.dispatcher import DispatchContext
+from elke27_lib.dispatcher_loop import DispatchContext
 from elke27_lib.events import Event
 from elke27_lib.generators.bus_ios import generator_bus_ios_get_trouble
 from elke27_lib.generators.control import generator_control_get_trouble

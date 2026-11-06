@@ -4,7 +4,8 @@ import logging
 
 import pytest
 
-from elke27_lib import errors, events, framing
+from elke27_lib import errors, events
+from elke27_lib import framing_loop as framing
 
 
 def test_event_domain_property() -> None:

@@ -3,8 +3,8 @@ from typing import Any, cast
 
 import pytest
 
-from elke27_lib import session as session_mod
-from elke27_lib.kernel import E27Kernel
+from elke27_lib import session_thread as session_mod
+from elke27_lib.kernel_loop import E27Kernel
 from test.helpers.internal import get_private
 
 
