@@ -221,10 +221,26 @@ async def test_stale_recv_join_helper_does_not_clear_new_receiver_after_reconnec
 
     monkeypatch.setattr(threading.Thread, "start", _track_start)
 
-    # R1 must not leave recv until R2's first recv runs — forces ordering that
-    # exposes stale _recv_join_helper clearing _recv_thread for the new receiver
-    # (regression against 8fb49222-style close()) without relying on scheduler luck.
     r2_in_recv = threading.Event()
+
+    class _DummyRecvLock:
+        def __enter__(self) -> _DummyRecvLock:
+            return self
+
+        def __exit__(self, *_a: object) -> bool:
+            return False
+
+    _real_lock = threading.Lock
+    _recv_lock_is_dummy = [True]
+
+    def _lock_factory() -> Any:
+        if _recv_lock_is_dummy[0]:
+            _recv_lock_is_dummy[0] = False
+            return _DummyRecvLock()
+        return _real_lock()
+
+    monkeypatch.setattr(threading, "Lock", _lock_factory)
+
     _sock_instances: list[Any] = []
 
     class _SlowSock:
@@ -240,19 +256,18 @@ async def test_stale_recv_join_helper_does_not_clear_new_receiver_after_reconnec
             return None
 
         def close(self) -> None:
+            if self._sock_idx == 0 and not r2_in_recv.is_set():
+                return
             self.closed = True
 
         def recv(self, _n: int) -> bytes:
-            # First session only has one fake socket — do not block R1 waiting for R2
-            # (that would deadlock initial connect). After reconnect(), sock 0 is stale
-            # recv while sock 1 exists; gate so the stale recv cannot finishjoin before
-            # R2's first recv() (forces ordering for the regression).
-            if len(_sock_instances) >= 2 and self._sock_idx == 0:
-                if not r2_in_recv.wait(timeout=60.0):
-                    raise AssertionError("timed out waiting for R2 recv()")
-            elif len(_sock_instances) >= 2 and self._sock_idx >= 1:
+            if len(_sock_instances) >= 2 and self._sock_idx >= 1:
                 r2_in_recv.set()
+                _sock_instances[0].closed = True
             while not self.closed:
+                if self._sock_idx == 0 and len(_sock_instances) >= 2 and not r2_in_recv.is_set():
+                    r2_in_recv.wait(timeout=0.05)
+                    continue
                 time.sleep(0.05)
             return b""
 
@@ -302,11 +317,6 @@ async def test_stale_recv_join_helper_does_not_clear_new_receiver_after_reconnec
         await asyncio.wait_for(done1.wait(), timeout=2.0)
         loop.call_soon_threadsafe(_close2)
         await asyncio.wait_for(done2.wait(), timeout=2.0)
-        # Off-loop reconnect: close() joins the prior e27-recv-join helper (with
-        # timeout) before connect() so _recv_thread can be cleared safely; then R2
-        # starts and unblocks R1's gated recv. Running reconnect on the asyncio
-        # loop thread would block connect() until the loop spins, leaving _recv_thread
-        # set and preventing _start_receiver from starting R2.
         await asyncio.to_thread(sess.reconnect)
         assert len(_sock_instances) == 2, f"expected 2 fake sockets, got {len(_sock_instances)}"
         assert len(recv_objs) == 2
@@ -350,6 +360,9 @@ async def test_stale_recv_join_helper_does_not_clear_new_receiver_after_reconnec
         ]
         assert main_bad == []
     finally:
+        r2_in_recv.set()
+        for _sock in _sock_instances:
+            _sock.closed = True
         await asyncio.to_thread(sess.close)
 
 

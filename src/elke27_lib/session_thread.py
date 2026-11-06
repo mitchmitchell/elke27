@@ -316,8 +316,6 @@ class Session:
             prev_join = self._recv_join_thread
             if prev_join is not None:
                 if on_loop:
-                    # Drop the handle: never join e27-recv / e27-recv-join on the loop thread,
-                    # and do not spawn a background join for the prior helper (B1).
                     self._recv_join_thread = None
                 else:
                     prev_join.join(timeout=2.0)
