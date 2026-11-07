@@ -10,18 +10,21 @@ from elke27_lib.outbound_loop import OutboundItem, OutboundPriority, OutboundQue
 @pytest.mark.asyncio
 async def test_outbound_queue_throttle() -> None:
     loop = asyncio.get_running_loop()
-    sent_times: list[float] = []
+    release_times: list[float] = []
     done = asyncio.Event()
 
     def _send(payload: bytes) -> None:
         del payload
 
-    def _on_sent(ts: float) -> None:
-        sent_times.append(ts)
-        if len(sent_times) >= 5:
+    queue = OutboundQueue(loop=loop, send_fn=_send, min_interval_s=0.05, max_burst=1)
+
+    async def _recording_throttle() -> None:
+        await OutboundQueue._throttle(queue)
+        release_times.append(loop.time())
+        if len(release_times) >= 5:
             done.set()
 
-    queue = OutboundQueue(loop=loop, send_fn=_send, min_interval_s=0.05, max_burst=1)
+    queue._throttle = _recording_throttle  # type: ignore[method-assign]
     queue.start()
 
     for i in range(5):
@@ -32,12 +35,11 @@ async def test_outbound_queue_throttle() -> None:
                 kind="request",
                 priority=OutboundPriority.NORMAL,
                 enqueued_at=time.monotonic(),
-                on_sent=_on_sent,
             )
         )
 
     await asyncio.wait_for(done.wait(), timeout=2.0)
-    deltas = [b - a for a, b in zip(sent_times, sent_times[1:], strict=False)]
+    deltas = [b - a for a, b in zip(release_times, release_times[1:], strict=False)]
     assert all(delta >= 0.04 for delta in deltas)
 
 
