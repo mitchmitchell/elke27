@@ -1,3 +1,10 @@
+  Unreleased
+
+  Developer note (local lint / loopcheck)
+
+  - ``python devtools/lint.py`` and ``make lint`` now run loopcheck on ``src``;
+    any ELK finding fails lint like ruff or basedpyright.
+
   Developer note (deep imports / logging, #120)
 
   - Internal protocol modules were renamed to ``*_loop.py`` (asyncio loop

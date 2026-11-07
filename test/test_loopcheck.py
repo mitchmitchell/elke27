@@ -131,8 +131,9 @@ def test_cli_exits_zero_when_clean(tmp_path: Path) -> None:
     assert loopcheck.main(["--config", str(cfg), str(tmp_path)]) == 0
 
 
-def test_not_wired_into_lint() -> None:
-    assert "loopcheck" not in (ROOT / "devtools" / "lint.py").read_text(encoding="utf-8")
+def test_wired_into_lint() -> None:
+    text = (ROOT / "devtools" / "lint.py").read_text(encoding="utf-8")
+    assert '["python", "devtools/loopcheck.py", "src"]' in text
 
 
 def test_syntax_error_is_one_elk000_finding_not_a_traceback(
