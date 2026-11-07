@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-import importlib
+from pathlib import Path
 
 import pytest
 
 from elke27_lib import encryption_loop as enc
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_ENCRYPTION_LOOP_SRC = _REPO_ROOT / "src" / "elke27_lib" / "encryption_loop.py"
 
 
 def test_hex_to_bytes_valid() -> None:
@@ -85,19 +88,6 @@ def test_decrypt_hello_field_roundtrip() -> None:
     assert out == pt
 
 
-def test_crypto_backend_missing(monkeypatch: pytest.MonkeyPatch) -> None:
-    module = importlib.import_module("elke27_lib.encryption_loop")
-    monkeypatch.setattr(module, "_has_crypto", False)
-    monkeypatch.setattr(module, "Cipher", None)
-    monkeypatch.setattr(module, "algorithms", None)
-    monkeypatch.setattr(module, "modes", None)
-    monkeypatch.setattr(module, "default_backend", None)
-    with pytest.raises(enc.E27CryptoError):
-        module._aes_cbc_encrypt_no_padding(b"\x00" * 16, enc.API_LINK_IV, b"\x00" * 16)
-    with pytest.raises(enc.E27CryptoError):
-        module._aes_cbc_decrypt_no_padding(b"\x00" * 16, enc.API_LINK_IV, b"\x00" * 16)
-
-
 def test_require_helpers_errors() -> None:
     with pytest.raises(enc.E27CryptoError):
         enc._require_block_multiple(None, 16, "data")  # type: ignore[arg-type]
@@ -109,23 +99,12 @@ def test_require_helpers_errors() -> None:
         enc._require_len(None, 16, "key")  # type: ignore[arg-type]
 
 
-def test_import_without_crypto(monkeypatch: pytest.MonkeyPatch) -> None:
-    import builtins
+def test_encryption_loop_no_optional_crypto_fallback() -> None:
+    text = _ENCRYPTION_LOOP_SRC.read_text(encoding="utf-8")
+    assert "except ImportError" not in text
+    assert "_has_crypto" not in text
 
-    real_import = builtins.__import__
 
-    def _fake_import(name, globals=None, locals=None, fromlist=(), level=0):  # type: ignore[no-untyped-def]
-        if name.startswith("cryptography"):
-            raise ImportError("no crypto")
-        return real_import(name, globals, locals, fromlist, level)
-
-    with monkeypatch.context() as m:
-        m.setattr(builtins, "__import__", _fake_import)
-        module = importlib.reload(enc)
-        assert module._has_crypto is False
-        assert module.Cipher is None
-        assert module.algorithms is None
-        assert module.modes is None
-        assert module.default_backend is None
-
-    importlib.reload(enc)
+def test_encryption_loop_no_default_backend() -> None:
+    text = _ENCRYPTION_LOOP_SRC.read_text(encoding="utf-8")
+    assert "default_backend" not in text

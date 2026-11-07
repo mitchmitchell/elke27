@@ -25,17 +25,7 @@ from __future__ import annotations
 
 from typing import Final
 
-try:
-    from cryptography.hazmat.backends import default_backend
-    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-
-    _has_crypto = True
-except ImportError:
-    Cipher = None  # type: ignore[assignment] -- optional cryptography import
-    algorithms = None  # type: ignore[assignment] -- optional cryptography import
-    modes = None  # type: ignore[assignment] -- optional cryptography import
-    default_backend = None  # type: ignore[assignment] -- optional cryptography import
-    _has_crypto = False
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 API_LINK_IV: Final[bytes] = bytes(range(16))  # 00 01 02 ... 0f (Java initVectorBytes)
 
@@ -134,16 +124,7 @@ def _aes_cbc_encrypt_no_padding(key: bytes, iv: bytes, plaintext: bytes) -> byte
     _require_len(iv, 16, "AES IV")
     _require_block_multiple(plaintext, 16, "plaintext")
 
-    if (
-        not _has_crypto
-        or Cipher is None
-        or algorithms is None
-        or modes is None
-        or default_backend is None
-    ):
-        raise E27CryptoError("AES backend not available. Install 'cryptography' to use AES-CBC.")
-
-    cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+    cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
     encryptor = cipher.encryptor()
     return encryptor.update(plaintext) + encryptor.finalize()
 
@@ -156,16 +137,7 @@ def _aes_cbc_decrypt_no_padding(key: bytes, iv: bytes, ciphertext: bytes) -> byt
     _require_len(iv, 16, "AES IV")
     _require_block_multiple(ciphertext, 16, "ciphertext")
 
-    if (
-        not _has_crypto
-        or Cipher is None
-        or algorithms is None
-        or modes is None
-        or default_backend is None
-    ):
-        raise E27CryptoError("AES backend not available. Install 'cryptography' to use AES-CBC.")
-
-    cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+    cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
     decryptor = cipher.decryptor()
     return decryptor.update(ciphertext) + decryptor.finalize()
 

@@ -1,5 +1,11 @@
   Unreleased
 
+  Developer note (encryption / cryptography, #114)
+
+  - ``encryption_loop`` imports ``cryptography`` directly (required
+    dependency); the optional-import fallback and ``default_backend()`` call
+    were removed.
+
   Developer note (local lint / loopcheck)
 
   - ``python devtools/lint.py`` and ``make lint`` now run loopcheck on ``src``;
