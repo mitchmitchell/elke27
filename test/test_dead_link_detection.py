@@ -313,7 +313,7 @@ def test_close_resets_closing_flag_when_it_raises() -> None:
     def _boom() -> None:
         raise RuntimeError("receiver stop failed")
 
-    cast(Any, s)._stop_receiver = _boom
+    cast(Any, s)._set_recv_stop_flag = _boom
     with pytest.raises(RuntimeError):
         s.close()
     assert s._closing is False

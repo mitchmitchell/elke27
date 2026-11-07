@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
-import queue
 from datetime import UTC, datetime
 from typing import Any
 
@@ -431,15 +431,15 @@ def test_request_authenticate_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     bad = client._request_authenticate(("control", "authenticate"), opaque=object())
     assert bad.ok is False
 
-    q: queue.Queue[dict[str, object]] = queue.Queue(maxsize=1)
-    q.put({"success": True})
+    fut: concurrent.futures.Future[dict[str, object]] = concurrent.futures.Future()
+    fut.set_result({"success": True})
     monkeypatch.setattr(kernel, "request", lambda *_a, **_k: 5)
-    res = client._request_authenticate(("control", "authenticate"), opaque=q, pin="1234")
+    res = client._request_authenticate(("control", "authenticate"), opaque=fut, pin="1234")
     assert res.ok is True and res.data == 5
 
-    q = queue.Queue(maxsize=1)
-    q.put({"success": False, "error_code": 5})
-    res = client._request_authenticate(("control", "authenticate"), opaque=q, pin="1234")
+    fut2: concurrent.futures.Future[dict[str, object]] = concurrent.futures.Future()
+    fut2.set_result({"success": False, "error_code": 5})
+    res = client._request_authenticate(("control", "authenticate"), opaque=fut2, pin="1234")
     assert res.ok is False
 
 
@@ -833,14 +833,14 @@ async def test_async_discover_and_link_errors(monkeypatch: pytest.MonkeyPatch) -
 
 def test_request_authenticate_timeout_and_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
     client = Elke27Client(kernel=E27Kernel())
-    q: queue.Queue[dict[str, object]] = queue.Queue(maxsize=1)
+    pending: concurrent.futures.Future[dict[str, object]] = concurrent.futures.Future()
     monkeypatch.setattr(client._kernel, "request", lambda *_a, **_k: 5)
-    result = client._request_authenticate(("control", "authenticate"), opaque=q, pin="1234")
+    result = client._request_authenticate(("control", "authenticate"), opaque=pending, pin="1234")
     assert result.ok is False and isinstance(result.error, E27Timeout)
 
-    q = queue.Queue(maxsize=1)
-    q.put("bad")  # type: ignore[arg-type]
-    result = client._request_authenticate(("control", "authenticate"), opaque=q, pin="1234")
+    bad: concurrent.futures.Future[object] = concurrent.futures.Future()
+    bad.set_result("bad")
+    result = client._request_authenticate(("control", "authenticate"), opaque=bad, pin="1234")
     assert result.ok is False and isinstance(result.error, ProtocolError)
 
 

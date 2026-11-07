@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,7 +86,7 @@ class LinkKeys:
         )
 
 
-class EventType(str, Enum):
+class EventType(StrEnum):
     """High-level event categories for the v2 public API."""
 
     READY = "ready"
@@ -115,7 +115,7 @@ class Elke27Event:
     raw_type: str | None = None
 
 
-class ArmMode(str, Enum):
+class ArmMode(StrEnum):
     """Arm/disarm modes for areas."""
 
     DISARMED = "disarmed"

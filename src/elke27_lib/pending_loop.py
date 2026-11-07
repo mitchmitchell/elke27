@@ -28,11 +28,22 @@ class PendingResponseManager:
     _now: Callable[[], float]
     _pending: dict[int, PendingResponse]
     _lock: threading.Lock
+    _lock_acquire_timeout_s: float
 
-    def __init__(self, *, now: Callable[[], float] = time.monotonic) -> None:
+    def __init__(
+        self,
+        *,
+        now: Callable[[], float] = time.monotonic,
+        lock: threading.Lock | None = None,
+        lock_acquire_timeout_s: float = 30.0,
+    ) -> None:
         self._now = now
         self._pending = {}
-        self._lock = threading.Lock()
+        self._lock = lock if lock is not None else threading.Lock()
+        self._lock_acquire_timeout_s = float(lock_acquire_timeout_s)
+
+    def _acquire_lock(self) -> bool:
+        return self._lock.acquire(timeout=self._lock_acquire_timeout_s)
 
     def create(
         self,
@@ -51,8 +62,12 @@ class PendingResponseManager:
             future=future,
             loop=loop,
         )
-        with self._lock:
+        if not self._acquire_lock():
+            raise RuntimeError("Pending response lock contention timed out.")
+        try:
             self._pending[seq] = entry
+        finally:
+            self._lock.release()
         return future
 
     def resolve(self, seq: int, msg: Mapping[str, Any]) -> bool:
@@ -80,17 +95,29 @@ class PendingResponseManager:
         return True
 
     def drop(self, seq: int) -> None:
-        with self._lock:
+        if not self._acquire_lock():
+            return
+        try:
             self._pending.pop(seq, None)
+        finally:
+            self._lock.release()
 
     def pending_count(self) -> int:
-        with self._lock:
+        if not self._acquire_lock():
+            return 0
+        try:
             return len(self._pending)
+        finally:
+            self._lock.release()
 
     def fail_all(self, exc: BaseException) -> None:
-        with self._lock:
+        if not self._acquire_lock():
+            raise RuntimeError("Pending response lock contention timed out.")
+        try:
             entries = list(self._pending.values())
             self._pending.clear()
+        finally:
+            self._lock.release()
         for entry in entries:
 
             def _set_exc(entry: PendingResponse = entry) -> None:
@@ -100,8 +127,12 @@ class PendingResponseManager:
             self._call_in_loop(entry, _set_exc)
 
     def _pop(self, seq: int) -> PendingResponse | None:
-        with self._lock:
+        if not self._acquire_lock():
+            return None
+        try:
             return self._pending.pop(seq, None)
+        finally:
+            self._lock.release()
 
     @staticmethod
     def _call_in_loop(entry: PendingResponse, fn: Callable[[], None]) -> None:

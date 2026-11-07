@@ -21,6 +21,7 @@ Focus: ("control","get_version_info")
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, cast
@@ -337,21 +338,32 @@ def _notify_auth_opaque(ctx: DispatchContext, *, success: bool, error_code: int 
     if opaque is None:
         return
     payload = {"success": success, "error_code": error_code}
-    put_nowait = getattr(opaque, "put_nowait", None)
-    if callable(put_nowait):
-        try:
-            put_nowait(payload)
-            return
-        except Exception as exc:  # noqa: BLE001
-            LOG.warning("auth opaque put_nowait failed: %s", exc, exc_info=True)
-            return
-    put = getattr(opaque, "put", None)
-    if callable(put):
-        try:
-            put(payload)
-        except Exception as exc:  # noqa: BLE001
-            LOG.warning("auth opaque put failed: %s", exc, exc_info=True)
-            return
+
+    def _deliver() -> None:
+        set_result = getattr(opaque, "set_result", None)
+        if callable(set_result):
+            try:
+                set_result(payload)
+                return
+            except Exception as exc:  # noqa: BLE001 -- must not break dispatch
+                LOG.warning("auth opaque set_result failed: %s", exc, exc_info=True)
+                return
+        put_nowait = getattr(opaque, "put_nowait", None)
+        if callable(put_nowait):
+            try:
+                put_nowait(payload)
+                return
+            except Exception as exc:  # noqa: BLE001 -- must not break dispatch
+                LOG.warning("auth opaque put_nowait failed: %s", exc, exc_info=True)
+                return
+        put = getattr(opaque, "put", None)
+        if callable(put):
+            try:
+                put(payload)
+            except Exception as exc:  # noqa: BLE001 -- must not break dispatch
+                LOG.warning("auth opaque put failed: %s", exc, exc_info=True)
+
+    threading.Thread(target=_deliver, name="e27-auth-opaque", daemon=True).start()
 
 
 def _apply_auth_csm_updates(

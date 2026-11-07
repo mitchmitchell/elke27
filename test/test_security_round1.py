@@ -120,6 +120,9 @@ class _FakeSession:
     def connect(self) -> SessionInfo:
         return self.info
 
+    def bind_loop(self, *_args: object, **_kwargs: object) -> None:
+        return None
+
     def enable_outbound_queue(self, **_kwargs: object) -> None:
         return None
 

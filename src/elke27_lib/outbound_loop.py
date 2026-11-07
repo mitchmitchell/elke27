@@ -7,10 +7,10 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 
-class OutboundPriority(str, Enum):
+class OutboundPriority(StrEnum):
     HIGH = "high"
     NORMAL = "normal"
 
@@ -153,7 +153,7 @@ class OutboundQueue:
             def _run() -> None:
                 try:
                     done.set_result(_cancel_on_loop())
-                except BaseException as exc:  # noqa: BLE001
+                except BaseException as exc:  # noqa: BLE001 -- preserve broad except handling intentionally
                     done.set_exception(exc)
 
             self._loop.call_soon_threadsafe(_run)
@@ -183,7 +183,7 @@ class OutboundQueue:
                 if item.on_fail is not None:
                     try:
                         item.on_fail(exc)
-                    except Exception as fail_exc:  # noqa: BLE001
+                    except Exception as fail_exc:  # noqa: BLE001 -- preserve broad except handling intentionally
                         self._log.warning(
                             "Outbound on_fail callback failed: seq=%s kind=%s error=%s",
                             item.seq,
@@ -225,7 +225,7 @@ class OutboundQueue:
                         len(item.payload),
                         waited,
                     )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 -- preserve broad except handling intentionally
                 if item.on_fail is not None:
                     item.on_fail(exc)
                 self._log.warning(

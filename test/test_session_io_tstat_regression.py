@@ -464,6 +464,7 @@ async def test_single_disconnect_with_asyncio_recv_and_daemon_join() -> None:
     disconnects: list[Exception | None] = []
     sess.on_disconnected = lambda err: disconnects.append(err)
     sess.on_message = lambda _msg: None
+    cast(Any, sess)._loop_ref = asyncio.get_running_loop()
     try:
         sess._start_receiver()
         deadline = time.monotonic() + 3.0

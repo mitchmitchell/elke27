@@ -7,7 +7,7 @@ from typing import cast
 
 import pytest
 
-from elke27_lib import discovery
+from elke27_lib import discovery, discovery_socket_thread
 
 
 def test_decode_data_invalid() -> None:
@@ -74,8 +74,8 @@ async def test_async_run_scan_respects_future() -> None:
     await scanner._async_run_scan(
         cast(asyncio.DatagramTransport, _Transport()),
         [("255.255.255.255", 2362), ("192.0.2.255", 2362)],
-        1,
-        fut,
+        scan_duration_s=1,
+        found_all_future=fut,
     )
     assert sent == [
         (scanner.DISCOVER_MESSAGE, ("255.255.255.255", 2362)),
@@ -95,7 +95,7 @@ def test_destinations_from_address_uses_broadcast_interfaces(
 ) -> None:
     scanner = discovery.AIOELKDiscovery()
     monkeypatch.setattr(
-        discovery,
+        discovery_socket_thread,
         "_ipv4_broadcast_addresses",
         lambda: ["10.0.0.255", "192.0.2.255"],
     )
@@ -109,7 +109,7 @@ def test_destinations_from_address_falls_back_to_generic_broadcast(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scanner = discovery.AIOELKDiscovery()
-    monkeypatch.setattr(discovery, "_ipv4_broadcast_addresses", lambda: [])
+    monkeypatch.setattr(discovery_socket_thread, "_ipv4_broadcast_addresses", lambda: [])
     assert scanner._destinations_from_address(None) == [
         (scanner.BROADCAST_ADDRESS, scanner.DISCOVERY_PORT),
     ]
@@ -121,7 +121,7 @@ def test_discover_message_matches_panel_expected_wire_format() -> None:
 
 
 def test_create_udp_socket_nonblocking() -> None:
-    sock = discovery.create_udp_socket()
+    sock = discovery_socket_thread.create_udp_socket()
     try:
         assert isinstance(sock, socket.socket)
         assert sock.getblocking() is False
@@ -178,8 +178,8 @@ async def test_async_run_scan_zero_timeout() -> None:
     await scanner._async_run_scan(
         cast(asyncio.DatagramTransport, _Transport()),
         [("255.255.255.255", 2362), ("192.0.2.255", 2362)],
-        0,
-        fut,
+        scan_duration_s=0,
+        found_all_future=fut,
     )
     assert sent == [
         (scanner.DISCOVER_MESSAGE, ("255.255.255.255", 2362)),
@@ -210,8 +210,8 @@ async def test_async_run_scan_timeout_retry(monkeypatch: pytest.MonkeyPatch) -> 
     await scanner._async_run_scan(
         cast(asyncio.DatagramTransport, _Transport()),
         [("255.255.255.255", 2362), ("192.0.2.255", 2362)],
-        1,
-        fut,
+        scan_duration_s=1,
+        found_all_future=fut,
     )
     assert len(sent) >= 4
 

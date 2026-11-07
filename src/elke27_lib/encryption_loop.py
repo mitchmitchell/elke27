@@ -31,10 +31,10 @@ try:
 
     _has_crypto = True
 except ImportError:
-    Cipher = None  # type: ignore[assignment]
-    algorithms = None  # type: ignore[assignment]
-    modes = None  # type: ignore[assignment]
-    default_backend = None  # type: ignore[assignment]
+    Cipher = None  # type: ignore[assignment] -- optional cryptography import
+    algorithms = None  # type: ignore[assignment] -- optional cryptography import
+    modes = None  # type: ignore[assignment] -- optional cryptography import
+    default_backend = None  # type: ignore[assignment] -- optional cryptography import
     _has_crypto = False
 
 API_LINK_IV: Final[bytes] = bytes(range(16))  # 00 01 02 ... 0f (Java initVectorBytes)

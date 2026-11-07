@@ -40,6 +40,9 @@ class _FakeSession:
         self.state = session_mod.SessionState.ACTIVE
         return self.info
 
+    def bind_loop(self, *_args: object, **_kwargs: object) -> None:
+        return None
+
     def enable_outbound_queue(self, **_kwargs: object) -> None:
         return None
 

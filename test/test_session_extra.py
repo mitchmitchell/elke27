@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import socket as stdlib_socket
 import threading
 from types import SimpleNamespace
 from typing import Any, cast
@@ -128,7 +129,18 @@ def test_connect_starts_receiver_when_configured(monkeypatch: pytest.MonkeyPatch
     cfg = SessionConfig(host="example", auto_receive=True)
     sess = Session(cfg, client_identity=_identity(), link_key_hex="00")
     fake_socket = _FakeSocket()
-    monkeypatch.setattr(session_mod.socket, "socket", lambda *_a, **_k: fake_socket)
+    _real_socket = stdlib_socket.socket
+
+    def _socket_for_session(*args: Any, **kwargs: Any) -> Any:
+        if (
+            len(args) >= 2
+            and args[0] == stdlib_socket.AF_INET
+            and args[1] == stdlib_socket.SOCK_STREAM
+        ):
+            return fake_socket
+        return _real_socket(*args, **kwargs)
+
+    monkeypatch.setattr(session_mod.socket, "socket", _socket_for_session)
     monkeypatch.setattr(
         session_mod,
         "perform_hello",
@@ -139,8 +151,13 @@ def test_connect_starts_receiver_when_configured(monkeypatch: pytest.MonkeyPatch
         sess, "_start_receiver", lambda: started.__setitem__("count", started["count"] + 1)
     )
     sess.on_message = lambda _msg: None
-    sess.connect()
-    assert started["count"] == 1
+    loop = asyncio.new_event_loop()
+    sess.bind_loop(loop)
+    try:
+        sess.connect()
+        assert started["count"] == 1
+    finally:
+        loop.close()
 
 
 def test_close_stops_outbound_queue() -> None:
@@ -368,28 +385,37 @@ def test_pump_once_handles_errors(monkeypatch: pytest.MonkeyPatch) -> None:
         sess.pump_once(timeout_s=0.01)
 
 
-def test_start_and_stop_receiver(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.asyncio
+async def test_start_and_stop_receiver(monkeypatch: pytest.MonkeyPatch) -> None:
+    loop = asyncio.get_running_loop()
+    main_ident = threading.get_ident()
     sess = _ready_session()
-    sess.on_message = lambda _msg: None
+    sess.cfg = SessionConfig(  # type: ignore[misc]
+        host="example",
+        auto_receive=True,
+        io_timeout_s=sess.cfg.io_timeout_s,
+    )
+    sess.enable_outbound_queue(loop=loop, min_interval_s=0.0, max_burst=1)
 
-    async def _dummy_thread(*_a, **_k):  # type: ignore[no-untyped-def]
-        return None
+    done = asyncio.Event()
 
-    class _Loop:
-        def create_task(self, coro):  # type: ignore[no-untyped-def]
-            assert asyncio.iscoroutine(coro)
-            coro.close()
-            return "task"
+    def _on_message(_msg: dict[str, object]) -> None:
+        assert threading.get_ident() == main_ident
+        done.set()
 
-    monkeypatch.setattr(session_mod.asyncio, "get_running_loop", lambda: _Loop())
-    monkeypatch.setattr(session_mod.asyncio, "to_thread", lambda *_a, **_k: _dummy_thread())
+    sess.on_message = _on_message
+
+    def _fake_recv_loop(_stop_event: threading.Event) -> None:
+        assert threading.get_ident() != main_ident
+        sess._deliver_message({"k": 1})
+
+    monkeypatch.setattr(sess, "_recv_loop", _fake_recv_loop)
 
     sess._start_receiver()
-    assert sess._recv_task == "task"
+    assert sess._recv_thread is not None
+    assert sess._recv_thread is not threading.current_thread()
 
-    sess._recv_task = "task"  # type: ignore[assignment]
-    sess._stop_receiver()
-    assert sess._recv_task is None
+    await asyncio.wait_for(done.wait(), timeout=2.0)
 
     class _Thread:
         def __init__(self) -> None:

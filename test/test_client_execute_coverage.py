@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+import concurrent.futures
 import queue
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -632,12 +633,17 @@ def test_request_authenticate_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     bad = client.request(("control", "authenticate"), opaque=object())
     assert bad.ok is False
 
-    class _ImmediateEmpty:
-        def get(self, *_a: Any, **_k: Any) -> dict[str, object]:
-            raise queue.Empty
+    class _ImmediateCancelled:
+        def result(self, *_a: Any, **_k: Any) -> dict[str, object]:
+            raise concurrent.futures.TimeoutError
 
     monkeypatch.setattr(client._kernel, "request", lambda *_a, **_k: 5)
-    result = client.request(("control", "authenticate"), opaque=_ImmediateEmpty())
+    result = client.request(("control", "authenticate"), opaque=_ImmediateCancelled())
+    assert result.ok is False
+    assert isinstance(result.error, E27Timeout)
+
+    monkeypatch.setattr(client._kernel, "request", lambda *_a, **_k: 5)
+    result = client.request(("control", "authenticate"), opaque=queue.Queue(maxsize=1))
     assert result.ok is False
     assert isinstance(result.error, E27Timeout)
 
@@ -646,6 +652,7 @@ def test_request_authenticate_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     result = client.request(("control", "authenticate"), opaque=queue.Queue(maxsize=1))
     assert result.ok is False
+    assert isinstance(result.error, ConnectionLost)
 
     monkeypatch.setattr(client._kernel, "request", lambda *_a, **_k: 6)
     auth_queue = queue.Queue(maxsize=1)

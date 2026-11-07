@@ -44,6 +44,9 @@ class _SessionDisconnectOnAutoReceive:
     def connect(self) -> session_mod.SessionInfo:
         return self.info
 
+    def bind_loop(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
     def enable_outbound_queue(self, **_kwargs: Any) -> None:
         return None
 

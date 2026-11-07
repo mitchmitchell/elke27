@@ -63,6 +63,9 @@ class _FakeSession:
     def connect(self) -> session_mod.SessionInfo:
         return self.info
 
+    def bind_loop(self, *_args: object, **_kwargs: object) -> None:  # type: ignore[no-untyped-def]
+        return None
+
     def enable_outbound_queue(self, **_kwargs) -> None:  # type: ignore[no-untyped-def]
         self.outbound_enabled = True
 
@@ -169,7 +172,7 @@ async def test_link_validation_and_success(monkeypatch: pytest.MonkeyPatch) -> N
         passphrase = "abcd"
 
     panel = {"host": "1.2.3.4", "port": 2101}
-    monkeypatch.setattr(kernel_mod.socket, "socket", lambda *_a, **_k: _FakeSocket())
+    monkeypatch.setattr(linking.socket, "socket", lambda *_a, **_k: _FakeSocket())
     monkeypatch.setattr(linking, "wait_for_discovery_nonce", lambda *_a, **_k: "nonce")
     monkeypatch.setattr(
         linking,

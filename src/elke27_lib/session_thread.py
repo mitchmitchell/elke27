@@ -27,7 +27,7 @@ import time
 from collections import deque
 from collections.abc import Callable, Container, Mapping
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any, cast
 
 from . import linking_thread as linking
@@ -78,7 +78,7 @@ class SessionInfo:
     session_hmac_hex: str = field(repr=False)
 
 
-class SessionState(str, Enum):
+class SessionState(StrEnum):
     """Internal connection lifecycle states.
 
     This is intentionally mechanical and policy-free.
@@ -174,8 +174,8 @@ class Session:
         self._recv_lock = threading.Lock()
         self._send_lock = threading.Lock()
         self._disconnect_lock = threading.Lock()
-        self._recv_task: asyncio.Task[None] | None = None
-        self._recv_loop_ref: asyncio.AbstractEventLoop | None = None
+        self._loop_ref: asyncio.AbstractEventLoop | None = None
+        self._loop_thread_id: int | None = None
         self._outbound: OutboundQueue | None = None
 
         # Event hooks (optional)
@@ -183,6 +183,45 @@ class Session:
         self.on_message: Callable[[dict[str, Any]], None] | None = None
         self.on_disconnected: Callable[[Exception | None], None] | None = None
         self.on_idle: Callable[[], None] | None = None
+        self._recv_join_thread: threading.Thread | None = None
+
+    def _running_loop_is_bound(self) -> bool:
+        """True when close/teardown runs on the thread Session.bind_loop used."""
+        if self._loop_ref is None or self._loop_thread_id is None:
+            return False
+        return threading.get_ident() == self._loop_thread_id
+
+    def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        self._loop_ref = loop
+        self._loop_thread_id = threading.get_ident()
+
+    def _invoke_on_loop(self, fn: Callable[..., Any], /, *args: Any) -> None:
+        loop = self._loop_ref
+        if loop is None:
+            fn(*args)
+            return
+        try:
+            loop.call_soon_threadsafe(fn, *args)
+        except RuntimeError:
+            return
+
+    def _deliver_message(self, obj: dict[str, Any]) -> None:
+        cb = self.on_message
+        if cb is None:
+            return
+        self._invoke_on_loop(cb, obj)
+
+    def _notify_idle(self) -> None:
+        cb = self.on_idle
+        if cb is None:
+            return
+        self._invoke_on_loop(cb)
+
+    def _notify_disconnected(self, err: Exception | None) -> None:
+        cb = self.on_disconnected
+        if cb is None:
+            return
+        self._invoke_on_loop(cb, err)
 
     # --------------------------
     # Connection lifecycle
@@ -256,7 +295,8 @@ class Session:
             self.on_connected(self.info)
 
         if self.cfg.auto_receive and self.on_message is not None:
-            self._start_receiver()
+            if self._loop_ref is not None or self.cfg.auto_receive_thread_fallback:
+                self._start_receiver()
 
         return self.info
 
@@ -266,7 +306,23 @@ class Session:
         """
         self._closing = True
         try:
-            self._stop_receiver()
+            in_recv_thread = (
+                self._recv_thread is not None and threading.current_thread() is self._recv_thread
+            )
+            on_loop = self._running_loop_is_bound() and self._loop_ref is not None
+            if self._loop_ref is not None:
+                on_loop = on_loop and self._loop_ref.is_running()
+
+            prev_join = self._recv_join_thread
+            if prev_join is not None:
+                if on_loop:
+                    self._recv_join_thread = None
+                else:
+                    prev_join.join(timeout=2.0)
+                    self._recv_join_thread = None
+
+            self._set_recv_stop_flag()
+
             if self._outbound is not None:
                 self._outbound.stop(fail_exc=SessionIOError("Session closed."))
                 self._outbound = None
@@ -278,6 +334,29 @@ class Session:
             self._pending_frames = deque()
             self.info = None
             self.state = SessionState.DISCONNECTED
+
+            recv_t = self._recv_thread
+            if recv_t is not None and not in_recv_thread:
+                if on_loop:
+                    reap_target = recv_t
+
+                    def _join_recv() -> None:
+                        rt = reap_target
+                        if rt is not None and rt is not threading.current_thread():
+                            rt.join(timeout=1.0)
+                        if self._recv_thread is rt:
+                            self._recv_thread = None
+                            self._recv_stop = None
+
+                    jt = threading.Thread(target=_join_recv, name="e27-recv-join", daemon=True)
+                    self._recv_join_thread = jt
+                    jt.start()
+                else:
+                    self._join_recv_thread(recv_t)
+                    self._recv_thread = None
+                    self._recv_stop = None
+            elif in_recv_thread:
+                self._recv_stop = None
         finally:
             self._closing = False
 
@@ -487,7 +566,7 @@ class Session:
                 # keep pumping until overall deadline; allow idle hooks for retries
                 if self.on_idle:
                     with contextlib.suppress(Exception):
-                        self.on_idle()
+                        self._notify_idle()
                 continue
 
             # Byte count only: the frame is not yet decoded, so we cannot tell whether
@@ -563,6 +642,8 @@ class Session:
         min_interval_s: float,
         max_burst: int,
     ) -> None:
+        self._loop_ref = loop
+        self._loop_thread_id = threading.get_ident()
         self._outbound = OutboundQueue(
             loop=loop,
             send_fn=self._send_all,
@@ -609,7 +690,7 @@ class Session:
             while True:
                 if self.on_idle and time.monotonic() >= idle_check_at:
                     with contextlib.suppress(Exception):
-                        self.on_idle()
+                        self._notify_idle()
                     idle_check_at = time.monotonic() + timeout_s
                 frame_no_crc = self._recv_one_frame_no_crc(timeout_s=timeout_s)
                 if len(frame_no_crc) < 3:
@@ -715,7 +796,7 @@ class Session:
             obj = self.recv_json(timeout_s=timeout_s)
         except TimeoutError:
             if self.on_idle:
-                self.on_idle()
+                self._notify_idle()
             return None
         except SessionNotReadyError:
             # Caller attempted to pump without a connected session.
@@ -746,28 +827,16 @@ class Session:
             raise
 
         if self.on_message:
-            self.on_message(obj)
+            self._deliver_message(obj)
 
         return obj
 
     def _start_receiver(self) -> None:
-        if self._recv_thread is not None or self._recv_task is not None:
+        if self._recv_thread is not None:
+            return
+        if self._loop_ref is None and not self.cfg.auto_receive_thread_fallback:
             return
         self._recv_stop = threading.Event()
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-
-        if loop is not None:
-            # Prefer asyncio.to_thread when a loop is running (HA async contexts).
-            self._recv_loop_ref = loop
-            self._recv_task = loop.create_task(asyncio.to_thread(self._recv_loop, self._recv_stop))
-            return
-
-        if not self.cfg.auto_receive_thread_fallback:
-            return
-
         self._recv_thread = threading.Thread(
             target=self._recv_loop,
             args=(self._recv_stop,),
@@ -789,26 +858,21 @@ class Session:
     def _join_recv_thread(self, thread: threading.Thread) -> None:
         if thread is threading.current_thread():
             return
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            thread.join(timeout=1.0)
-            return
-        threading.Thread(
-            target=lambda: thread.join(timeout=1.0),
-            name="e27-recv-join",
-            daemon=True,
-        ).start()
+        thread.join(timeout=1.0)
+
+    def _set_recv_stop_flag(self) -> None:
+        if self._recv_stop is not None:
+            self._recv_stop.set()
 
     def _stop_receiver(self) -> None:
         if self._recv_stop is not None:
             self._recv_stop.set()
-        if self._recv_thread is not None and self._recv_thread is not threading.current_thread():
-            self._join_recv_thread(self._recv_thread)
-        if self._recv_task is not None:
-            # Let the to_thread worker exit via stop_event; no hard cancel needed.
-            self._recv_task = None
-            self._recv_loop_ref = None
+        if self._recv_thread is None:
+            self._recv_stop = None
+            return
+        if self._recv_thread is threading.current_thread():
+            return
+        self._join_recv_thread(self._recv_thread)
         self._recv_thread = None
         self._recv_stop = None
 
@@ -835,7 +899,7 @@ class Session:
             except TimeoutError:
                 if self.on_idle:
                     with contextlib.suppress(Exception):
-                        self.on_idle()
+                        self._notify_idle()
                 continue
             except SessionNotReadyError:
                 break
@@ -848,7 +912,7 @@ class Session:
                     break
                 self._handle_disconnect(e)
                 break
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:  # noqa: BLE001 -- preserve broad except handling intentionally
                 if stop_event.is_set() or self._is_disconnect_handled() or self._closing:
                     break
                 self._handle_disconnect(e)
@@ -856,7 +920,7 @@ class Session:
                 break
 
             if self.on_message:
-                self.on_message(obj)
+                self._deliver_message(obj)
 
     def _handle_disconnect(self, err: Exception | None) -> None:
         if not self._try_begin_disconnect_teardown():
@@ -894,7 +958,7 @@ class Session:
             self.close()
         finally:
             if self.on_disconnected:
-                self.on_disconnected(err)
+                self._notify_disconnected(err)
 
     @staticmethod
     def _extract_domain_key(obj: dict[str, Any]) -> str | None:

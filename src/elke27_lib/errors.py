@@ -13,7 +13,7 @@ Aligned decisions:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from .const import E27ErrorCode as PanelErrorCode
@@ -26,7 +26,7 @@ else:
         return func
 
 
-class E27ErrorCode(str, Enum):
+class E27ErrorCode(StrEnum):
     """Stable error codes for logging and external mapping."""
 
     PROVISIONING_REQUIRED = "provisioning_required"

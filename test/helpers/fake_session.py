@@ -34,8 +34,11 @@ class FakePanelSession:
     def connect(self) -> session_mod.SessionInfo:
         return self.info
 
-    def enable_outbound_queue(self, **_kwargs: object) -> None:
-        return None
+    def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        self._loop_ref = loop
+
+    def enable_outbound_queue(self, *, loop: asyncio.AbstractEventLoop, **_kwargs: object) -> None:
+        self._loop_ref = loop
 
     def start_auto_receive(self) -> None:
         return None
