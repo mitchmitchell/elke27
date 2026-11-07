@@ -229,7 +229,7 @@ PRIVATE_ACCESS_CEILING: dict[str, int] = {
     "test/test_e27_seq.py": 2,
     "test/test_e27_session.py": 22,
     "test/test_e27_zone_status_string.py": 1,
-    "test/test_encryption.py": 9,
+    "test/test_encryption.py": 5,
     "test/test_events_errors_framing.py": 2,
     "test/test_generators_registry.py": 1,
     "test/test_handlers_area_extra.py": 50,
