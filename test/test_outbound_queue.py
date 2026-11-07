@@ -24,7 +24,7 @@ async def test_outbound_queue_throttle() -> None:
         if len(release_times) >= 5:
             done.set()
 
-    queue._throttle = _recording_throttle  # type: ignore[method-assign]
+    queue._throttle = _recording_throttle  # type: ignore[method-assign] -- instance wrap records throttle release times
     queue.start()
 
     for i in range(5):
