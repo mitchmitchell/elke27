@@ -7,23 +7,53 @@ import pytest
 from elke27_lib.outbound_loop import OutboundItem, OutboundPriority, OutboundQueue
 
 
+class _RecordingOutboundQueue(OutboundQueue):
+    _release_times: list[float]
+    _throttle_done: asyncio.Event
+
+    def __init__(
+        self,
+        *,
+        release_times: list[float],
+        throttle_done: asyncio.Event,
+        loop: asyncio.AbstractEventLoop,
+        send_fn: Callable[[bytes], None],
+        min_interval_s: float,
+        max_burst: int,
+    ) -> None:
+        super().__init__(
+            loop=loop,
+            send_fn=send_fn,
+            min_interval_s=min_interval_s,
+            max_burst=max_burst,
+        )
+        self._release_times = release_times
+        self._throttle_done = throttle_done
+
+    async def _throttle(self) -> None:
+        await super()._throttle()
+        self._release_times.append(self._loop.time())
+        if len(self._release_times) >= 5:
+            self._throttle_done.set()
+
+
 @pytest.mark.asyncio
 async def test_outbound_queue_throttle() -> None:
     loop = asyncio.get_running_loop()
-    send_starts: list[float] = []
+    release_times: list[float] = []
     done = asyncio.Event()
 
     def _send(payload: bytes) -> None:
         del payload
 
-        def _record_start() -> None:
-            send_starts.append(loop.time())
-            if len(send_starts) >= 5:
-                done.set()
-
-        loop.call_soon_threadsafe(_record_start)
-
-    queue = OutboundQueue(loop=loop, send_fn=_send, min_interval_s=0.05, max_burst=1)
+    queue = _RecordingOutboundQueue(
+        release_times=release_times,
+        throttle_done=done,
+        loop=loop,
+        send_fn=_send,
+        min_interval_s=0.05,
+        max_burst=1,
+    )
     queue.start()
 
     for i in range(5):
@@ -38,7 +68,7 @@ async def test_outbound_queue_throttle() -> None:
         )
 
     await asyncio.wait_for(done.wait(), timeout=2.0)
-    deltas = [b - a for a, b in zip(send_starts, send_starts[1:], strict=False)]
+    deltas = [b - a for a, b in zip(release_times, release_times[1:], strict=False)]
     assert all(delta >= 0.04 for delta in deltas)
 
 
