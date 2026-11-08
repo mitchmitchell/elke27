@@ -1,5 +1,10 @@
   Unreleased
 
+  Developer note (keepalive check, #93)
+
+  - The keepalive reply ``except Exception`` in ``kernel_loop`` now documents why
+    the catch-all is intentional (probe failures must not stop the loop).
+
   Developer note (encryption / cryptography, #114)
 
   - ``encryption_loop`` imports ``cryptography`` directly (required

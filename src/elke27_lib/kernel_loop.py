@@ -1054,7 +1054,7 @@ class E27Kernel:
                     stats.rescued += 1
                     self._log.debug("E27 keepalive reply missing; later traffic kept the link")
                 return rescued
-            except Exception as exc:  # noqa: BLE001 -- preserve broad except handling intentionally
+            except Exception as exc:  # noqa: BLE001 -- keepalive probe must not crash the loop
                 self._log.warning(
                     "E27 keepalive check failed: seq=%s session_id=%s error=%s",
                     seq,
