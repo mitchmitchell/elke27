@@ -9,8 +9,6 @@ from typing import Any, cast
 
 from .const import REDACT_DIAGNOSTICS
 
-# Single shared set of secret field names (lowercase). The kernel's log
-# redaction imports this set; extend it here only.
 SECRET_KEYS: frozenset[str] = frozenset(
     {
         "passphrase",
@@ -35,7 +33,7 @@ SECRET_KEYS: frozenset[str] = frozenset(
 )
 
 
-def _should_redact(key: str) -> bool:
+def should_redact(key: str) -> bool:
     """
     Return whether a diagnostics mapping key should be replaced with '***'.
 
@@ -70,7 +68,7 @@ def _redact_mapping(data: Mapping[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key, value in data.items():
         key_str = str(key)
-        if _should_redact(key_str):
+        if should_redact(key_str):
             out[key_str] = "***"
         else:
             out[key_str] = redact_for_diagnostics(value)

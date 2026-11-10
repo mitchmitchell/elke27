@@ -262,7 +262,7 @@ PRIVATE_ACCESS_CEILING: dict[str, int] = {
     "test/test_presentation_errors.py": 10,
     "test/test_public_api_imports.py": 5,
     "test/test_raw_passthrough.py": 17,
-    "test/test_redact.py": 20,
+    "test/test_redact.py": 5,
     "test/test_root_error_envelope.py": 1,
     "test/test_rule_get_rules_paging.py": 6,
     "test/test_session_extra.py": 51,

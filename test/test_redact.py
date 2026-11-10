@@ -19,21 +19,21 @@ class _Inner:
 
 
 def test_should_redact() -> None:
-    assert redact._should_redact("passphrase") is True
-    assert redact._should_redact("apiToken") is True
-    assert redact._should_redact("secret_key") is True
-    assert redact._should_redact("monkey") is False
-    assert redact._should_redact("cloud_pw") is True
-    assert redact._should_redact("CLOUD_URL") is True
-    assert redact._should_redact("pw") is True
-    assert redact._should_redact("pwd") is True
-    assert redact._should_redact("relay_pw") is True
-    assert redact._should_redact("access") is True
-    assert redact._should_redact("lat") is True
-    assert redact._should_redact("long") is True
-    assert redact._should_redact("long_name") is False
-    assert redact._should_redact("paperwork") is False
-    assert redact._should_redact("password_required") is True
+    assert redact.should_redact("passphrase") is True
+    assert redact.should_redact("apiToken") is True
+    assert redact.should_redact("secret_key") is True
+    assert redact.should_redact("monkey") is False
+    assert redact.should_redact("cloud_pw") is True
+    assert redact.should_redact("CLOUD_URL") is True
+    assert redact.should_redact("pw") is True
+    assert redact.should_redact("pwd") is True
+    assert redact.should_redact("relay_pw") is True
+    assert redact.should_redact("access") is True
+    assert redact.should_redact("lat") is True
+    assert redact.should_redact("long") is True
+    assert redact.should_redact("long_name") is False
+    assert redact.should_redact("paperwork") is False
+    assert redact.should_redact("password_required") is True
 
 
 SYSTEM_GET_ATTRIBS_DUMMY: dict[str, object] = {

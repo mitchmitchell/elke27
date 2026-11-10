@@ -82,7 +82,7 @@ from .events import (
 from .handlers.area import clear_all_area_exit_delay_pending
 from .outbound_loop import OutboundPriority
 from .pending_loop import PendingResponseManager
-from .redact import _should_redact, redact_for_diagnostics
+from .redact import redact_for_diagnostics, should_redact
 from .states import PanelState
 
 RequestBuilder = Callable[..., Mapping[str, Any] | bool]  # returns payload dict or flag
@@ -265,7 +265,7 @@ def _redact_value(value: Any) -> Any:
     if isinstance(value, Mapping):
         mapping = cast(Mapping[str, Any], value)
         return {
-            key: ("***" if _should_redact(str(key)) else _redact_value(val))
+            key: ("***" if should_redact(str(key)) else _redact_value(val))
             for key, val in mapping.items()
         }
     if isinstance(value, list):
