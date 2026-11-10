@@ -48,7 +48,6 @@ _CONNECT_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
 from . import discovery
 from . import linking_thread as linking
 from . import session_thread as session_mod
-from .const import REDACT_DIAGNOSTICS
 from .dispatcher_loop import (
     DispatchContext,
     Dispatcher,
@@ -82,7 +81,7 @@ from .events import (
 from .handlers.area import clear_all_area_exit_delay_pending
 from .outbound_loop import OutboundPriority
 from .pending_loop import PendingResponseManager
-from .redact import redact_for_diagnostics, should_redact
+from .redact import redact_for_diagnostics
 from .states import PanelState
 
 RequestBuilder = Callable[..., Mapping[str, Any] | bool]  # returns payload dict or flag
@@ -257,24 +256,6 @@ def _as_mapping(obj: object) -> Mapping[str, Any] | None:
     if isinstance(obj, Mapping):
         return cast(Mapping[str, Any], obj)
     return None
-
-
-def _redact_value(value: Any) -> Any:
-    if not REDACT_DIAGNOSTICS:
-        return value
-    if isinstance(value, Mapping):
-        mapping = cast(Mapping[str, Any], value)
-        return {
-            key: ("***" if should_redact(str(key)) else _redact_value(val))
-            for key, val in mapping.items()
-        }
-    if isinstance(value, list):
-        items = cast(list[object], value)
-        return [_redact_value(item) for item in items]
-    if isinstance(value, tuple):
-        items = cast(tuple[object, ...], value)
-        return tuple(_redact_value(item) for item in items)
-    return value
 
 
 def _panel_host_port(panel: discovery.E27System | Mapping[str, Any]) -> tuple[str, int]:
@@ -2244,11 +2225,16 @@ class E27Kernel:
     def _log_outbound(self, domain: str, name: str, msg: Mapping[str, Any]) -> None:
         if domain == "control" and name == "r_u_alive":
             return
-        if msg.get("seq") in self._raw_passthrough_seqs:
-            return
         if not self._log.isEnabledFor(logging.DEBUG):
             return
-        redacted = _redact_value(msg)
+        if msg.get("seq") in self._raw_passthrough_seqs:
+            domain_obj = msg.get(domain)
+            if isinstance(domain_obj, Mapping):
+                domain_map = cast(Mapping[str, Any], domain_obj)
+                verb_val = domain_map.get(name)
+                if not isinstance(verb_val, Mapping):
+                    return
+        redacted = redact_for_diagnostics(msg)
         payload = json.dumps(redacted, sort_keys=True, separators=(",", ":"))
         if name in {"get_attribs", "get_configured"}:
             self._log.debug("Outbound request meta: route=%s.%s payload=%s", domain, name, payload)

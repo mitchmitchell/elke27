@@ -31,6 +31,7 @@ from elke27_lib.linking_thread import E27LinkKeys
 from elke27_lib.presentation_loop import encrypt_schema0_envelope
 from elke27_lib.provisioning import Credentials
 from elke27_lib.session_thread import Session, SessionConfig, SessionInfo
+from elke27_lib.states import AreaState
 from elke27_lib.types import ClientConfig, LinkKeys
 from test.helpers.diagnostics_dummies import SYSTEM_GET_ATTRIBS_DUMMY
 
@@ -299,20 +300,6 @@ async def test_inbound_debug_log_redacts_system_get_attribs(
     await client.async_disconnect()
 
 
-@pytest.mark.asyncio
-async def test_outbound_debug_log_redacts_secrets_on_send(
-    panel: _FakePanel, caplog: pytest.LogCaptureFixture
-) -> None:
-    client, _ = await _connected()
-    caplog.set_level(logging.DEBUG)
-    await client.async_execute("control_authenticate", pin=DUMMY_PIN)
-    log_text = caplog.text
-    assert str(DUMMY_PIN) not in log_text
-    assert "Outbound request" in log_text
-    assert "***" in log_text
-    await client.async_disconnect()
-
-
 # ---------------------------------------------------------------- D4
 
 
@@ -329,6 +316,41 @@ async def _connected(
 async def _authenticate(client: Elke27Client) -> bool:
     result = await client.async_execute("control_authenticate", pin=DUMMY_PIN)
     return result.ok
+
+
+@pytest.mark.asyncio
+async def test_outbound_debug_log_redacts_system_attribs_raw_request(
+    panel: _FakePanel, caplog: pytest.LogCaptureFixture
+) -> None:
+    kernel = E27Kernel()
+    kernel.state.areas[1] = AreaState(area_id=1, arm_state="DISARMED")
+    client = Elke27Client(
+        ClientConfig(request_timeout_s=5.0),
+        kernel=kernel,
+        enable_raw_passthrough=True,
+    )
+    await client.async_connect(HOST, 2101, KEYS)
+    caplog.set_level(logging.DEBUG)
+    attribs = dict(SYSTEM_GET_ATTRIBS_DUMMY)
+    await client.async_raw_request(
+        {"system": {"set_attribs": attribs}},
+        allow_installer=True,
+    )
+    outbound = [
+        r
+        for r in caplog.records
+        if "Outbound request" in r.getMessage() and "system.set_attribs" in r.getMessage()
+    ]
+    assert outbound
+    log_text = outbound[0].getMessage()
+    assert str(attribs["cloud_pw"]) not in log_text
+    assert str(attribs["access"]) not in log_text
+    assert str(attribs["long"]) not in log_text
+    assert str(attribs["relay_pw"]) not in log_text
+    assert "***" in log_text
+    assert "password_required" in log_text
+    assert '"password_required":false' in log_text
+    await client.async_disconnect()
 
 
 async def _drop_and_reconnect(

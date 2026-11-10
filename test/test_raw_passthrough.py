@@ -220,7 +220,11 @@ async def test_no_message_or_reply_content_in_logs(caplog: pytest.LogCaptureFixt
     text = "\n".join(r.getMessage() for r in caplog.records)
     assert str(FAKE_PIN) not in text
     assert FAKE_LINKKEY not in text
-    assert "net_dev_id" not in text
+    outbound = [r for r in caplog.records if "Outbound request" in r.getMessage()]
+    assert len(outbound) == 1
+    outbound_text = outbound[0].getMessage()
+    assert '"pin":"***"' in outbound_text
+    assert "net_dev_id" in outbound_text
     summary = [r.getMessage() for r in caplog.records if "Raw pass-through" in r.getMessage()]
     assert len(summary) == 1
     assert "route=net_dev.set_creds outcome=ok" in summary[0]
