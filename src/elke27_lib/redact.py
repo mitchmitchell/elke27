@@ -36,8 +36,23 @@ SECRET_KEYS: frozenset[str] = frozenset(
 
 
 def _should_redact(key: str) -> bool:
+    """
+    Return whether a diagnostics mapping key should be replaced with '***'.
+
+    Rules use a lowercase form of the key. SECRET_KEYS membership redacts. Exact
+    names access, lat, long, cloud_url, pw, pwd, and cloud_pw redact. Keys whose
+    lowercase form ends with the suffix _pw redact (for example relay_pw). Keys
+    containing pass, token, or secret redact (so password_required redacts). Keys
+    containing key redact unless monkey appears (monkey is exempt). long_name and
+    similar keys are not redacted: long and lat match exact names only, not as
+    substrings inside longer key names.
+    """
     key_l = key.lower()
     if key_l in SECRET_KEYS:
+        return True
+    if key_l in {"access", "lat", "long", "cloud_url", "pw", "pwd", "cloud_pw"}:
+        return True
+    if key_l.endswith("_pw"):
         return True
     if "pass" in key_l or "token" in key_l or "secret" in key_l:
         return True

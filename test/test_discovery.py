@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import socket
-from typing import cast
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -258,3 +260,74 @@ async def test_async_scan_uses_socket_factory(monkeypatch: pytest.MonkeyPatch) -
     assert created.get("factory_used") is True
     assert created.get("ran") is True
     assert created.get("closed") is True
+
+
+@pytest.mark.asyncio
+async def test_async_scan_debug_log_redacts_udp_reply(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    secret_mac = "DD:MM:YY:SE:CR:ET"
+    secret_serial = "DUMMY-SERIAL-0001"
+    raw = json.dumps(
+        {
+            "MAC_ADDR": secret_mac,
+            "IPV4_ADDR": "192.0.2.5",
+            "LISTEN_PORT": 2101,
+            "ENCRYPTED_LISTEN_PORT": 2601,
+            "NAME": "Demo",
+            "SERIAL": secret_serial,
+            "MAGIC": "ELKWC2017",
+        }
+    ).encode("utf-8")
+
+    stored_callbacks: list[Any] = []
+    original_elk = discovery.ELKDiscovery
+
+    class _CaptureELKDiscovery(original_elk):
+        def __init__(self, *args: Any, on_response: Any = None, **kwargs: Any) -> None:
+            if on_response is not None:
+                stored_callbacks.append(on_response)
+            super().__init__(*args, on_response=on_response, **kwargs)
+
+    monkeypatch.setattr(discovery, "ELKDiscovery", _CaptureELKDiscovery)
+
+    scanner = discovery.AIOELKDiscovery()
+
+    async def _fast_scan(
+        self: discovery.AIOELKDiscovery,
+        transport: Any,
+        destinations: list[tuple[str, int]],
+        scan_duration_s: float,
+        found_all_future: asyncio.Future[bool],
+    ) -> None:
+        for destination in destinations:
+            transport.sendto(self.DISCOVER_MESSAGE, destination)
+        if stored_callbacks:
+            stored_callbacks[-1](raw, ("192.0.2.5", discovery.AIOELKDiscovery.DISCOVERY_PORT))
+        if not found_all_future.done():
+            found_all_future.set_result(True)
+
+    monkeypatch.setattr(discovery.AIOELKDiscovery, "_async_run_scan", _fast_scan)
+
+    loop = asyncio.get_running_loop()
+
+    async def _fake_endpoint(protocol_factory: Any, *, sock: Any = None) -> tuple[Any, Any]:
+        return (
+            SimpleNamespace(sendto=lambda *a: None, close=lambda: None),
+            protocol_factory(),
+        )
+
+    monkeypatch.setattr(loop, "create_datagram_endpoint", _fake_endpoint)
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        await scanner.async_scan(timeout=0.1, address="192.0.2.5", sock=sock)
+    finally:
+        sock.close()
+
+    log_text = caplog.text
+    assert secret_mac not in log_text
+    assert secret_serial not in log_text
+    assert "discover:" in log_text
+    assert f"<bytes:{len(raw)}>" in log_text

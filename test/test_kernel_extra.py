@@ -110,6 +110,72 @@ def test_redact_value(monkeypatch: pytest.MonkeyPatch) -> None:
     assert kernel_mod._redact_value(data) is data
 
 
+_SYSTEM_GET_ATTRIBS: dict[str, object] = {
+    "name": "Demo Panel Alpha",
+    "lat": 40.123456,
+    "long": -105.654321,
+    "cloud_pw": "dummy-cloud-pw-value",
+    "cloud_url": "https://example.invalid/cloud",
+    "access": "dummy-access-token",
+    "pw": "dummy-pw",
+    "pwd": "dummy-pwd",
+    "relay_pw": "dummy-relay-pw",
+    "tz_offset": -7,
+    "flags": 0,
+    "error_code": 0,
+    "long_name": "Lobby entry",
+    "password_required": False,
+}
+
+
+def test_redact_value_system_get_attribs_matches_redact_for_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from elke27_lib import redact
+
+    monkeypatch.setattr(kernel_mod, "REDACT_DIAGNOSTICS", True)
+    msg = {"system": {"get_attribs": dict(_SYSTEM_GET_ATTRIBS)}}
+    assert kernel_mod._redact_value(msg) == redact.redact_for_diagnostics(msg)
+
+
+def test_outbound_log_redacts_system_get_attribs(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    monkeypatch.setattr(kernel_mod, "REDACT_DIAGNOSTICS", True)
+    kernel = E27Kernel()
+    msg = {
+        "seq": 1,
+        "session_id": 2,
+        "system": {"get_attribs": dict(_SYSTEM_GET_ATTRIBS)},
+    }
+    kernel._log_outbound("system", "get_attribs", msg)
+    log_text = caplog.text
+    assert "dummy-cloud-pw-value" not in log_text
+    assert "https://example.invalid/cloud" not in log_text
+    assert "dummy-access-token" not in log_text
+    assert "-105.654321" not in log_text
+    assert '"cloud_pw":"***"' in log_text
+
+
+def test_inbound_log_redacts_system_get_attribs(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    monkeypatch.setattr(kernel_mod, "REDACT_DIAGNOSTICS", True)
+    kernel = E27Kernel()
+    log = logging.getLogger("elke27.test.inbound-redact")
+    log.setLevel(logging.DEBUG)
+    kernel._log = log
+    seq_msg = {"seq": 9, "system": {"get_attribs": dict(_SYSTEM_GET_ATTRIBS)}}
+    kernel._on_message(seq_msg)
+    log_text = caplog.text
+    assert "dummy-cloud-pw-value" not in log_text
+    assert "-105.654321" not in log_text
+    assert "Inbound message" in log_text
+    assert "Demo Panel Alpha" in log_text
+
+
 def test_panel_host_port_variants() -> None:
     panel = discovery.E27System(
         panel_mac="m",

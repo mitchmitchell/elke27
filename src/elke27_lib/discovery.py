@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from .errors import Elke27InvalidArgument
+from .redact import redact_for_diagnostics
 from .types import DiscoveredPanel
 
 _LOGGER = logging.getLogger(__name__)
@@ -222,7 +223,7 @@ class AIOELKDiscovery:
         response_list: dict[tuple[str, int], E27System] = {}
 
         def _on_response(data: bytes, addr: tuple[str, int]) -> None:
-            _LOGGER.debug("discover: %s <= %s", addr, data)
+            _LOGGER.debug("discover: %s <= %s", addr, redact_for_diagnostics(data))
             if self._process_response(data, addr, address, response_list):
                 found_all_future.set_result(True)
 
