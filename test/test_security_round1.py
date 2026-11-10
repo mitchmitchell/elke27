@@ -319,7 +319,7 @@ async def _authenticate(client: Elke27Client) -> bool:
 
 
 @pytest.mark.asyncio
-async def test_outbound_debug_log_redacts_system_attribs_raw_request(
+async def test_raw_request_emits_no_outbound_debug_log(
     panel: _FakePanel, caplog: pytest.LogCaptureFixture
 ) -> None:
     kernel = E27Kernel()
@@ -330,12 +330,35 @@ async def test_outbound_debug_log_redacts_system_attribs_raw_request(
         enable_raw_passthrough=True,
     )
     await client.async_connect(HOST, 2101, KEYS)
+    assert await client.wait_ready(2.0)
+    await _settle()
     caplog.set_level(logging.DEBUG)
+    caplog.clear()
     attribs = dict(SYSTEM_GET_ATTRIBS_DUMMY)
     await client.async_raw_request(
         {"system": {"set_attribs": attribs}},
         allow_installer=True,
     )
+    assert not [r for r in caplog.records if "Outbound request" in r.getMessage()]
+    await client.async_disconnect()
+
+
+@pytest.mark.asyncio
+async def test_outbound_debug_log_redacts_system_attribs_on_execute(
+    panel: _FakePanel, caplog: pytest.LogCaptureFixture
+) -> None:
+    kernel = E27Kernel()
+    kernel.state.areas[1] = AreaState(area_id=1, arm_state="DISARMED")
+    client = Elke27Client(ClientConfig(request_timeout_s=5.0), kernel=kernel)
+    await client.async_connect(HOST, 2101, KEYS)
+    assert await client.wait_ready(2.0)
+    await _settle()
+    assert await _authenticate(client)
+    caplog.set_level(logging.DEBUG)
+    caplog.clear()
+    attribs = dict(SYSTEM_GET_ATTRIBS_DUMMY)
+    result = await client.async_execute("system_set_attribs", pin=DUMMY_PIN, **attribs)
+    assert result.ok
     outbound = [
         r
         for r in caplog.records

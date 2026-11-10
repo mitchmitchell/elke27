@@ -1,12 +1,14 @@
   Unreleased
 
-  Developer note (log redaction, #110, #112)
+  Developer note (log redaction, #110, #112, #128)
 
-  - Diagnostics ``redact_for_diagnostics`` and kernel inbound/outbound debug
-    logs now share one redaction rule via the public ``redact.should_redact``.
+  - Non-raw kernel inbound and outbound debug logs share one rule via
+    ``redact.should_redact`` and ``redact_for_diagnostics``.
   - That rule also redacts ``access``, ``lat``, ``long``, ``cloud_url``, ``pw``,
     ``pwd``, ``cloud_pw``, and any key whose lowercase form ends with ``_pw``.
     The exact key ``password_required`` is exempt so boolean flags stay visible.
+  - Raw pass-through (decision 34) still omits message and reply bodies in both
+    directions; only the one-line outcome summary is logged.
   - The discovery scanner debug line logs ``redact_for_diagnostics(data)``
     instead of the raw UDP reply.
 

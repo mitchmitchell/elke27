@@ -2909,8 +2909,9 @@ class Elke27Client:
         sending unless ``allow_installer=True``. This method never authenticates;
         elevate first with ``async_execute("control_authenticate", pin=...)``.
 
-        Message and reply contents are never logged; only the route, outcome,
-        panel error code, elapsed time and the ``allow_installer`` flag. A sent
+        Message and reply bodies are never logged at any level, including inbound
+        and outbound debug lines. Only the one-line summary records the route,
+        outcome, panel error code, elapsed time and the ``allow_installer`` flag. A sent
         message with no reply is reported as ``Elke27CommandOutcomeUnknownError``;
         re-read state instead of retrying.
         """

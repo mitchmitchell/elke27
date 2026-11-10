@@ -2211,9 +2211,10 @@ class E27Kernel:
         return msg
 
     def mark_raw_passthrough(self, seq: int) -> None:
-        """Suppress logging, handler dispatch and retries for this seq (decision 34).
+        """Suppress raw pass-through logging, dispatch and retries (decision 34).
 
-        In-flight seqs are never evicted; see ``finish_raw_passthrough``.
+        Inbound and outbound debug logs never include the message or reply body for
+        marked seqs. In-flight seqs are never evicted; see ``finish_raw_passthrough``.
         """
         self._raw_passthrough_seqs.mark(seq)
 
@@ -2225,15 +2226,10 @@ class E27Kernel:
     def _log_outbound(self, domain: str, name: str, msg: Mapping[str, Any]) -> None:
         if domain == "control" and name == "r_u_alive":
             return
+        if msg.get("seq") in self._raw_passthrough_seqs:
+            return
         if not self._log.isEnabledFor(logging.DEBUG):
             return
-        if msg.get("seq") in self._raw_passthrough_seqs:
-            domain_obj = msg.get(domain)
-            if isinstance(domain_obj, Mapping):
-                domain_map = cast(Mapping[str, Any], domain_obj)
-                verb_val = domain_map.get(name)
-                if not isinstance(verb_val, Mapping):
-                    return
         redacted = redact_for_diagnostics(msg)
         payload = json.dumps(redacted, sort_keys=True, separators=(",", ":"))
         if name in {"get_attribs", "get_configured"}:
