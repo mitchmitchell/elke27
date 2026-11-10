@@ -1,5 +1,14 @@
   Unreleased
 
+  Developer note (log redaction, #110, #112)
+
+  - Diagnostics ``redact_for_diagnostics`` and kernel inbound/outbound debug
+    logs now share one redaction rule via the public ``redact.should_redact``.
+  - That rule also redacts ``access``, ``lat``, ``long``, ``cloud_url``, ``pw``,
+    ``pwd``, ``cloud_pw``, and any key whose lowercase form ends with ``_pw``.
+  - The discovery scanner debug line logs ``redact_for_diagnostics(data)``
+    instead of the raw UDP reply.
+
   Developer note (keepalive check, #93)
 
   - The keepalive reply ``except Exception`` in ``kernel_loop`` now documents why
