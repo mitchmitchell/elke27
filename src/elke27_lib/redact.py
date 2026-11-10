@@ -9,6 +9,8 @@ from typing import Any, cast
 
 from .const import REDACT_DIAGNOSTICS
 
+_DIAGNOSTICS_EXEMPT_KEYS: frozenset[str] = frozenset({"password_required"})
+
 SECRET_KEYS: frozenset[str] = frozenset(
     {
         "passphrase",
@@ -40,12 +42,15 @@ def should_redact(key: str) -> bool:
     Rules use a lowercase form of the key. SECRET_KEYS membership redacts. Exact
     names access, lat, long, cloud_url, pw, pwd, and cloud_pw redact. Keys whose
     lowercase form ends with the suffix _pw redact (for example relay_pw). Keys
-    containing pass, token, or secret redact (so password_required redacts). Keys
-    containing key redact unless monkey appears (monkey is exempt). long_name and
-    similar keys are not redacted: long and lat match exact names only, not as
-    substrings inside longer key names.
+    containing pass, token, or secret redact except keys in _DIAGNOSTICS_EXEMPT_KEYS
+    (password_required is exempt so booleans stay visible). Keys containing key
+    redact unless monkey appears (monkey is exempt). long_name and similar keys are
+    not redacted: long and lat match exact names only, not as substrings inside
+    longer key names.
     """
     key_l = key.lower()
+    if key_l in _DIAGNOSTICS_EXEMPT_KEYS:
+        return False
     if key_l in SECRET_KEYS:
         return True
     if key_l in {"access", "lat", "long", "cloud_url", "pw", "pwd", "cloud_pw"}:

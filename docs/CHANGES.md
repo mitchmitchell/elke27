@@ -6,6 +6,7 @@
     logs now share one redaction rule via the public ``redact.should_redact``.
   - That rule also redacts ``access``, ``lat``, ``long``, ``cloud_url``, ``pw``,
     ``pwd``, ``cloud_pw``, and any key whose lowercase form ends with ``_pw``.
+    The exact key ``password_required`` is exempt so boolean flags stay visible.
   - The discovery scanner debug line logs ``redact_for_diagnostics(data)``
     instead of the raw UDP reply.
 

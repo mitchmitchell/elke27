@@ -32,6 +32,7 @@ from elke27_lib.presentation_loop import encrypt_schema0_envelope
 from elke27_lib.provisioning import Credentials
 from elke27_lib.session_thread import Session, SessionConfig, SessionInfo
 from elke27_lib.types import ClientConfig, LinkKeys
+from test.helpers.diagnostics_dummies import SYSTEM_GET_ATTRIBS_DUMMY
 
 DUMMY_A = "DUMMYSECRETAAAA1111"
 DUMMY_B = "DUMMYSECRETBBBB2222"
@@ -273,6 +274,42 @@ async def test_inbound_log_not_built_without_debug(
     monkeypatch.setattr(kernel_mod, "redact_for_diagnostics", lambda m: calls.append(m) or m)
     panel.session.on_message({"user": {"get_attribs": {"user_id": 1, "pin": 1}}})
     assert calls == []
+    await client.async_disconnect()
+
+
+@pytest.mark.asyncio
+async def test_inbound_debug_log_redacts_system_get_attribs(
+    panel: _FakePanel, caplog: pytest.LogCaptureFixture
+) -> None:
+    kernel = E27Kernel()
+    client = Elke27Client(kernel=kernel)
+    await client.async_connect(HOST, 2101, KEYS)
+    caplog.set_level(logging.DEBUG)
+    attribs = dict(SYSTEM_GET_ATTRIBS_DUMMY)
+    panel.session.on_message({"seq": 1, "system": {"get_attribs": attribs}})
+    log_text = caplog.text
+    assert str(attribs["cloud_pw"]) not in log_text
+    assert str(attribs["cloud_url"]) not in log_text
+    assert str(attribs["access"]) not in log_text
+    assert str(attribs["long"]) not in log_text
+    assert "Inbound message" in log_text
+    assert "***" in log_text
+    assert "password_required" in log_text
+    assert "password_required': False" in log_text
+    await client.async_disconnect()
+
+
+@pytest.mark.asyncio
+async def test_outbound_debug_log_redacts_secrets_on_send(
+    panel: _FakePanel, caplog: pytest.LogCaptureFixture
+) -> None:
+    client, _ = await _connected()
+    caplog.set_level(logging.DEBUG)
+    await client.async_execute("control_authenticate", pin=DUMMY_PIN)
+    log_text = caplog.text
+    assert str(DUMMY_PIN) not in log_text
+    assert "Outbound request" in log_text
+    assert "***" in log_text
     await client.async_disconnect()
 
 
@@ -614,6 +651,39 @@ async def test_discovery_non_object_reply_ignored(monkeypatch: pytest.MonkeyPatc
     _patch_endpoint(monkeypatch, [(b'["ELKWC2017"]', (HOST, 2362))])
     found = await AIOELKDiscovery().async_scan(timeout=0.2, address=HOST, sock=_no_socket())
     assert found == []
+
+
+_DISCOVERY_SECRET_MAC = "DD:MM:YY:SE:CR:ET"
+_DISCOVERY_SECRET_SERIAL = "DUMMY-SERIAL-0001"
+
+
+def _discovery_reply_with_secrets(ipv4: str = HOST) -> bytes:
+    return json.dumps(
+        {
+            "MAC_ADDR": _DISCOVERY_SECRET_MAC,
+            "SERIAL": _DISCOVERY_SECRET_SERIAL,
+            "IPV4_ADDR": ipv4,
+            "LISTEN_PORT": 2101,
+            "ENCRYPTED_LISTEN_PORT": 2601,
+            "NAME": "Dummy",
+            "MAGIC": "ELKWC2017",
+        }
+    ).encode()
+
+
+@pytest.mark.asyncio
+async def test_discovery_scan_debug_log_redacts_udp_reply(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    raw = _discovery_reply_with_secrets()
+    _patch_endpoint(monkeypatch, [(raw, (HOST, 2362))])
+    await AIOELKDiscovery().async_scan(timeout=0.2, address=HOST, sock=_no_socket())
+    log_text = caplog.text
+    assert _DISCOVERY_SECRET_MAC not in log_text
+    assert _DISCOVERY_SECRET_SERIAL not in log_text
+    assert "discover:" in log_text
+    assert f"<bytes:{len(raw)}>" in log_text
 
 
 # ---------------------------------------------------------------- D6

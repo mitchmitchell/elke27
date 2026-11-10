@@ -6,6 +6,7 @@ from enum import Enum
 import pytest
 
 from elke27_lib import redact
+from test.helpers.diagnostics_dummies import SYSTEM_GET_ATTRIBS_DUMMY
 
 
 class _Color(Enum):
@@ -33,25 +34,10 @@ def test_should_redact() -> None:
     assert redact.should_redact("long") is True
     assert redact.should_redact("long_name") is False
     assert redact.should_redact("paperwork") is False
-    assert redact.should_redact("password_required") is True
-
-
-SYSTEM_GET_ATTRIBS_DUMMY: dict[str, object] = {
-    "name": "Demo Panel Alpha",
-    "lat": 40.123456,
-    "long": -105.654321,
-    "cloud_pw": "dummy-cloud-pw-value",
-    "cloud_url": "https://example.invalid/cloud",
-    "access": "dummy-access-token",
-    "pw": "dummy-pw",
-    "pwd": "dummy-pwd",
-    "relay_pw": "dummy-relay-pw",
-    "tz_offset": -7,
-    "flags": 0,
-    "error_code": 0,
-    "long_name": "Lobby entry",
-    "password_required": False,
-}
+    assert redact.should_redact("password_required") is False
+    assert redact.should_redact("password") is True
+    assert redact.should_redact("pass") is True
+    assert redact.should_redact("user_pass") is True
 
 
 def test_redact_system_get_attribs_reply_shape() -> None:
@@ -69,7 +55,7 @@ def test_redact_system_get_attribs_reply_shape() -> None:
         assert out[sensitive] == "***"
     assert out["name"] == "Demo Panel Alpha"
     assert out["long_name"] == "Lobby entry"
-    assert out["password_required"] == "***"
+    assert out["password_required"] is False
 
 
 def test_normalize_for_diagnostics() -> None:
