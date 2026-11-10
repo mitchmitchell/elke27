@@ -9,8 +9,8 @@ from typing import Any, cast
 
 from .const import REDACT_DIAGNOSTICS
 
-# Single shared set of secret field names (lowercase). The kernel's log
-# redaction imports this set; extend it here only.
+_DIAGNOSTICS_EXEMPT_KEYS: frozenset[str] = frozenset({"password_required"})
+
 SECRET_KEYS: frozenset[str] = frozenset(
     {
         "passphrase",
@@ -35,9 +35,27 @@ SECRET_KEYS: frozenset[str] = frozenset(
 )
 
 
-def _should_redact(key: str) -> bool:
+def should_redact(key: str) -> bool:
+    """
+    Return whether a diagnostics mapping key should be replaced with '***'.
+
+    Rules use a lowercase form of the key. SECRET_KEYS membership redacts. Exact
+    names access, lat, long, cloud_url, pw, pwd, and cloud_pw redact. Keys whose
+    lowercase form ends with the suffix _pw redact (for example relay_pw). Keys
+    containing pass, token, or secret redact except keys in _DIAGNOSTICS_EXEMPT_KEYS
+    (password_required is exempt so booleans stay visible). Keys containing key
+    redact unless monkey appears (monkey is exempt). long_name and similar keys are
+    not redacted: long and lat match exact names only, not as substrings inside
+    longer key names.
+    """
     key_l = key.lower()
+    if key_l in _DIAGNOSTICS_EXEMPT_KEYS:
+        return False
     if key_l in SECRET_KEYS:
+        return True
+    if key_l in {"access", "lat", "long", "cloud_url", "pw", "pwd", "cloud_pw"}:
+        return True
+    if key_l.endswith("_pw"):
         return True
     if "pass" in key_l or "token" in key_l or "secret" in key_l:
         return True
@@ -55,7 +73,7 @@ def _redact_mapping(data: Mapping[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key, value in data.items():
         key_str = str(key)
-        if _should_redact(key_str):
+        if should_redact(key_str):
             out[key_str] = "***"
         else:
             out[key_str] = redact_for_diagnostics(value)

@@ -48,7 +48,6 @@ _CONNECT_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
 from . import discovery
 from . import linking_thread as linking
 from . import session_thread as session_mod
-from .const import REDACT_DIAGNOSTICS
 from .dispatcher_loop import (
     DispatchContext,
     Dispatcher,
@@ -82,7 +81,7 @@ from .events import (
 from .handlers.area import clear_all_area_exit_delay_pending
 from .outbound_loop import OutboundPriority
 from .pending_loop import PendingResponseManager
-from .redact import SECRET_KEYS, redact_for_diagnostics
+from .redact import redact_for_diagnostics
 from .states import PanelState
 
 RequestBuilder = Callable[..., Mapping[str, Any] | bool]  # returns payload dict or flag
@@ -257,24 +256,6 @@ def _as_mapping(obj: object) -> Mapping[str, Any] | None:
     if isinstance(obj, Mapping):
         return cast(Mapping[str, Any], obj)
     return None
-
-
-def _redact_value(value: Any) -> Any:
-    if not REDACT_DIAGNOSTICS:
-        return value
-    if isinstance(value, Mapping):
-        mapping = cast(Mapping[str, Any], value)
-        return {
-            key: ("***" if str(key).lower() in SECRET_KEYS else _redact_value(val))
-            for key, val in mapping.items()
-        }
-    if isinstance(value, list):
-        items = cast(list[object], value)
-        return [_redact_value(item) for item in items]
-    if isinstance(value, tuple):
-        items = cast(tuple[object, ...], value)
-        return tuple(_redact_value(item) for item in items)
-    return value
 
 
 def _panel_host_port(panel: discovery.E27System | Mapping[str, Any]) -> tuple[str, int]:
@@ -2230,9 +2211,10 @@ class E27Kernel:
         return msg
 
     def mark_raw_passthrough(self, seq: int) -> None:
-        """Suppress logging, handler dispatch and retries for this seq (decision 34).
+        """Suppress raw pass-through logging, dispatch and retries (decision 34).
 
-        In-flight seqs are never evicted; see ``finish_raw_passthrough``.
+        Inbound and outbound debug logs never include the message or reply body for
+        marked seqs. In-flight seqs are never evicted; see ``finish_raw_passthrough``.
         """
         self._raw_passthrough_seqs.mark(seq)
 
@@ -2248,7 +2230,7 @@ class E27Kernel:
             return
         if not self._log.isEnabledFor(logging.DEBUG):
             return
-        redacted = _redact_value(msg)
+        redacted = redact_for_diagnostics(msg)
         payload = json.dumps(redacted, sort_keys=True, separators=(",", ":"))
         if name in {"get_attribs", "get_configured"}:
             self._log.debug("Outbound request meta: route=%s.%s payload=%s", domain, name, payload)
