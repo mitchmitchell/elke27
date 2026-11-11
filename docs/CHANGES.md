@@ -1,5 +1,10 @@
   Unreleased
 
+  Developer note (all areas disarmed, #109)
+
+  - ``_all_areas_disarmed`` uses ``arm_mode_from_panel_string`` only; unknown,
+    ``ALARM_MEM``, and missing ``arm_state`` never count as disarmed.
+
   Developer note (log redaction, #110, #112, #128)
 
   - Non-raw kernel inbound and outbound debug logs share one rule via
