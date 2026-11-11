@@ -43,6 +43,7 @@ from .linking_thread import (
     send_unframed_json,
 )
 from .presentation_loop import decrypt_key_field_with_linkkey
+from .redact import redact_for_diagnostics
 
 LOG = logging.getLogger(__name__)
 
@@ -126,7 +127,7 @@ def perform_hello(
         try:
             predata = sock.recv(4096)
             if predata:
-                LOG.debug("Pre-HELLO bytes received: %s", predata.hex())
+                LOG.debug("Pre-HELLO bytes received: %s", redact_for_diagnostics(predata))
                 try:
                     pre_batch = recv_cleartext_json_objects_from_bytes(predata)
                     pre_objs = [cast(Mapping[str, object], obj) for obj in pre_batch]
@@ -167,11 +168,15 @@ def perform_hello(
             break
 
     if not any("hello" in o for o in objs):
-        raw_preview = json.dumps(objs, separators=(",", ":"), ensure_ascii=True)
-        LOG.debug("HELLO response missing 'hello': %s", raw_preview)
+        redacted_preview = json.dumps(
+            redact_for_diagnostics(objs),
+            separators=(",", ":"),
+            ensure_ascii=True,
+        )
+        LOG.debug("HELLO response missing 'hello': %s", redacted_preview)
         raise E27HelloTimeout(
             "Hello response not found in cleartext JSON stream.",
-            context=E27ErrorContext(phase="hello_recv", detail=f"objs={raw_preview}"),
+            context=E27ErrorContext(phase="hello_recv", detail=f"objs={redacted_preview}"),
         )
 
     hello_obj = _select_hello_object(objs)
