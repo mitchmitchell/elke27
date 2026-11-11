@@ -3909,9 +3909,7 @@ class Elke27Client:
             return False
         for area in areas:
             state = area.arm_state or area.armed_state
-            if not isinstance(state, str):
-                return False
-            if state.lower() != "disarmed":
+            if Elke27Client.arm_mode_from_panel_string(state) is not ArmMode.DISARMED:
                 return False
         return True
 
