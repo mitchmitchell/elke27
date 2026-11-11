@@ -992,8 +992,6 @@ def test_default_event_queue_full_with_subscriber_logs_no_warning(
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
-# ---------------------------------------------------------------- #127 HELLO diagnostics redaction
-
 _HELLO_LOG = "elke27_lib.hello_thread"
 _DUMMY_HELLO_TOKEN = "dummy-token-127"
 _DUMMY_HELLO_PW = "dummy-pw-123"
@@ -1169,12 +1167,19 @@ def test_missing_hello_debug_log_redacts_received_json(
     )
     with pytest.raises(session_mod.SessionProtocolError) as ei:
         s.connect()
-    assert isinstance(ei.value.__cause__, E27HelloTimeout)
-    assert payload["pw"] not in caplog.text
-    assert payload["cloud_pw"] not in caplog.text
-    assert payload["access"] not in caplog.text
+    hello_err = ei.value.__cause__
+    assert isinstance(hello_err, E27HelloTimeout)
+    ctx = hello_err.context
+    assert ctx is not None
+    assert ctx.detail is not None
+    for secret in (payload["pw"], payload["cloud_pw"], payload["access"], payload["pwd"]):
+        assert secret not in caplog.text
+        assert secret not in str(hello_err)
+        assert secret not in str(ei.value)
+        assert secret not in ctx.detail
     assert "HELLO response missing 'hello'" in caplog.text
     assert "***" in caplog.text
+    assert "***" in ctx.detail
 
 
 def test_missing_hello_debug_log_redaction_mutation_would_leak_secrets(
@@ -1194,6 +1199,10 @@ def test_missing_hello_debug_log_redaction_mutation_would_leak_secrets(
     s = session_mod.Session(
         _session_connect_cfg(), client_identity=_hello_identity(), link_key_hex="cc" * 16
     )
-    with pytest.raises(session_mod.SessionProtocolError):
+    with pytest.raises(session_mod.SessionProtocolError) as ei:
         s.connect()
-    assert payload["pw"] in caplog.text
+    hello_err = ei.value.__cause__
+    assert isinstance(hello_err, E27HelloTimeout)
+    ctx = hello_err.context
+    assert ctx is not None and ctx.detail is not None
+    assert payload["pw"] in caplog.text or payload["pw"] in ctx.detail
