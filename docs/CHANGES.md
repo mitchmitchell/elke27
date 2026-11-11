@@ -43,7 +43,7 @@
     (not ``mn``, ``sn``, ``fwver``, ``hwver``, or ``osver`` values). Pre-HELLO
     JSON parse failures log exception type and position, not parse input.
   - Session wire-log DEBUG lines for framed TX and deframed RX ciphertext log
-    ``<bytes:N>`` only (no hex dumps).
+  length only (no hex dumps or frame bytes).
 
   Developer note (deep imports / logging, #120)
 

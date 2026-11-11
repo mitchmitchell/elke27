@@ -261,8 +261,7 @@ def test_tx_wire_hex_suppressed(
     framed = sess._encode_json(obj)
     text = caplog.text
     if dumped:
-        assert "TX framed" in text
-        assert f"<bytes:{len(framed)}>" in text
+        assert f"TX framed ({len(framed)} bytes)" in text
         assert framed.hex() not in text
     else:
         assert "TX framed" not in text
@@ -292,7 +291,7 @@ def test_rx_wire_hex_suppressed(
     caplog.set_level(logging.DEBUG)
     sess.recv_json(timeout_s=0.0)
     if dumped:
-        assert f"<bytes:{len(_FRAME)}>" in caplog.text
+        assert f"RX frame_no_crc ({len(_FRAME)} bytes)" in caplog.text
         assert _FRAME.hex() not in caplog.text
     else:
         assert "RX frame_no_crc" not in caplog.text

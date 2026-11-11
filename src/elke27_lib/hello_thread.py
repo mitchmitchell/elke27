@@ -53,6 +53,8 @@ LOG = logging.getLogger(__name__)
 #   11008 ELKERR_NOAUTH
 HELLO_LINK_REQUIRED_ERROR_CODES: frozenset[int] = frozenset({11006, 11008})
 
+_HELLO_REQUEST_FIELDS: tuple[str, ...] = ("mn", "sn", "fwver", "hwver", "osver")
+
 
 @dataclass(frozen=True, slots=True)
 class SessionKeys:
@@ -72,13 +74,7 @@ def build_hello_request(*, seq: int, client_identity: E27Identity) -> str:
     """
     msg = {
         "seq": int(seq),
-        "hello": {
-            "mn": client_identity.mn,
-            "sn": client_identity.sn,
-            "fwver": client_identity.fwver,
-            "hwver": client_identity.hwver,
-            "osver": client_identity.osver,
-        },
+        "hello": {name: getattr(client_identity, name) for name in _HELLO_REQUEST_FIELDS},
     }
     return json.dumps(msg, separators=(",", ":"))
 
@@ -131,38 +127,21 @@ def perform_hello(
                 try:
                     pre_batch = recv_cleartext_json_objects_from_bytes(predata)
                     pre_objs = [cast(Mapping[str, object], obj) for obj in pre_batch]
-                except (ValueError, json.JSONDecodeError) as e:
-                    if isinstance(e, json.JSONDecodeError):
-                        LOG.warning(
-                            "Pre-HELLO JSON parse failed: %s line=%s column=%s",
-                            type(e).__name__,
-                            e.lineno,
-                            e.colno,
-                        )
-                    else:
-                        LOG.warning("Pre-HELLO JSON parse failed: %s", type(e).__name__)
+                except json.JSONDecodeError as e:
+                    LOG.warning(
+                        "Pre-HELLO JSON parse failed: %s line=%s column=%s",
+                        type(e).__name__,
+                        e.lineno,
+                        e.colno,
+                    )
+                except ValueError as e:
+                    LOG.warning("Pre-HELLO JSON parse failed: %s", type(e).__name__)
         except (TimeoutError, BlockingIOError):
             pass
     finally:
         sock.settimeout(prev_timeout)
 
-    try:
-        parsed_req = json.loads(req)
-    except json.JSONDecodeError:
-        LOG.debug("Hello request payload: unparsable")
-    else:
-        hello_fields: object = None
-        if isinstance(parsed_req, Mapping):
-            hello = _as_mapping(parsed_req.get("hello"))
-            if hello is not None:
-                hello_fields = sorted(str(k) for k in hello)
-            LOG.debug(
-                "Hello request payload: seq=%s hello=%s",
-                parsed_req.get("seq") if isinstance(parsed_req, Mapping) else None,
-                hello_fields,
-            )
-        else:
-            LOG.debug("Hello request payload: type=%s", type(parsed_req).__name__)
+    LOG.debug("Hello request payload: seq=%s hello=%s", seq, sorted(_HELLO_REQUEST_FIELDS))
     send_unframed_json(sock, req)
 
     # Receive clear, UNFRAMED JSON (may be concatenated objects). Some panels emit

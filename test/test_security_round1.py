@@ -1298,24 +1298,24 @@ def test_session_wire_log_debug_hides_frame_hex(
     s.recv_json(timeout_s=1)
     text = caplog.text
     assert frame.hex() not in text
-    assert "RX frame_no_crc" in text
-    assert "<bytes:" in text
+    assert "RX frame_no_crc (" in text
+    assert " bytes)" in text
 
 
 def test_session_wire_log_debug_redaction_mutation_would_leak_hex(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     frame = _frame(4)
+    original_debug = session_mod.logger.debug
 
-    def _passthrough_bytes(obj: object) -> object:
-        if isinstance(obj, (bytes, bytearray)):
-            return obj.hex()
-        return obj
+    def _debug_with_hex_leak(msg: str, *args: Any, **kwargs: Any) -> None:
+        if msg == "RX frame_no_crc (%d bytes)":
+            original_debug("RX frame_no_crc (%d bytes): %s", args[0], frame.hex(), **kwargs)
+            return
+        original_debug(msg, *args, **kwargs)
 
-    monkeypatch.setattr(session_mod, "redact_for_diagnostics", _passthrough_bytes)
+    monkeypatch.setattr(session_mod.logger, "debug", _debug_with_hex_leak)
     caplog.set_level(logging.DEBUG, logger=_SESSION_LOG)
     s = _connected_session(monkeypatch, [frame], wire_log=True)
     s.recv_json(timeout_s=1)
-    rx_wire = [r.getMessage() for r in caplog.records if "RX frame_no_crc" in r.getMessage()]
-    assert len(rx_wire) == 1
-    assert "<bytes:" not in rx_wire[0]
+    assert frame.hex() in caplog.text
