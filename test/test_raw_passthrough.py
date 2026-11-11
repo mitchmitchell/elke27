@@ -260,8 +260,12 @@ def test_tx_wire_hex_suppressed(
     caplog.set_level(logging.DEBUG)
     framed = sess._encode_json(obj)
     text = caplog.text
-    assert ("TX framed" in text) is dumped
-    assert (framed.hex() in text) is dumped
+    if dumped:
+        assert "TX framed" in text
+        assert f"<bytes:{len(framed)}>" in text
+        assert framed.hex() not in text
+    else:
+        assert "TX framed" not in text
 
 
 @pytest.mark.parametrize(
@@ -287,7 +291,11 @@ def test_rx_wire_hex_suppressed(
     )
     caplog.set_level(logging.DEBUG)
     sess.recv_json(timeout_s=0.0)
-    assert (_FRAME.hex() in caplog.text) is dumped
+    if dumped:
+        assert f"<bytes:{len(_FRAME)}>" in caplog.text
+        assert _FRAME.hex() not in caplog.text
+    else:
+        assert "RX frame_no_crc" not in caplog.text
 
 
 def test_rx_raw_chunk_never_hex_dumped(

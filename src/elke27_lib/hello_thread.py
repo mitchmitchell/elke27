@@ -132,14 +132,37 @@ def perform_hello(
                     pre_batch = recv_cleartext_json_objects_from_bytes(predata)
                     pre_objs = [cast(Mapping[str, object], obj) for obj in pre_batch]
                 except (ValueError, json.JSONDecodeError) as e:
-                    LOG.warning("Pre-HELLO JSON parse failed: %s", e)
+                    if isinstance(e, json.JSONDecodeError):
+                        LOG.warning(
+                            "Pre-HELLO JSON parse failed: %s line=%s column=%s",
+                            type(e).__name__,
+                            e.lineno,
+                            e.colno,
+                        )
+                    else:
+                        LOG.warning("Pre-HELLO JSON parse failed: %s", type(e).__name__)
         except (TimeoutError, BlockingIOError):
             pass
     finally:
         sock.settimeout(prev_timeout)
 
-    # Send clear, UNFRAMED JSON
-    LOG.debug("Hello request payload: %s", req)
+    try:
+        parsed_req = json.loads(req)
+    except json.JSONDecodeError:
+        LOG.debug("Hello request payload: unparsable")
+    else:
+        hello_fields: object = None
+        if isinstance(parsed_req, Mapping):
+            hello = _as_mapping(parsed_req.get("hello"))
+            if hello is not None:
+                hello_fields = sorted(str(k) for k in hello)
+            LOG.debug(
+                "Hello request payload: seq=%s hello=%s",
+                parsed_req.get("seq") if isinstance(parsed_req, Mapping) else None,
+                hello_fields,
+            )
+        else:
+            LOG.debug("Hello request payload: type=%s", type(parsed_req).__name__)
     send_unframed_json(sock, req)
 
     # Receive clear, UNFRAMED JSON (may be concatenated objects). Some panels emit

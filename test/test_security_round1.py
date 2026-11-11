@@ -782,17 +782,19 @@ class _FrameSocket:
         return None
 
 
-def _connected_session(monkeypatch: pytest.MonkeyPatch, frames: list[bytes]) -> Session:
+def _connected_session(
+    monkeypatch: pytest.MonkeyPatch, frames: list[bytes], *, wire_log: bool = False
+) -> Session:
     """A Session that ran connect() (HELLO faked) and will receive ``frames``."""
     sock = _FrameSocket(frames)
-    monkeypatch.setattr(session_mod.socket, "socket", lambda *_a, **_k: sock)
+    monkeypatch.setattr(socket, "socket", lambda *_a, **_k: sock)
     monkeypatch.setattr(
         session_mod,
         "perform_hello",
         lambda **_k: SessionKeys(session_id=1, session_key_hex=_KEY.hex(), hmac_key_hex="00" * 32),
     )
     s = Session(
-        SessionConfig(host=HOST, auto_receive=False),
+        SessionConfig(host=HOST, auto_receive=False, wire_log=wire_log),
         client_identity=linking.E27Identity("1", "2", "0", "0", "0"),
         link_key_hex="00" * 16,
     )
@@ -993,8 +995,15 @@ def test_default_event_queue_full_with_subscriber_logs_no_warning(
 
 
 _HELLO_LOG = "elke27_lib.hello_thread"
+_SESSION_LOG = "elke27_lib.session_thread"
 _DUMMY_HELLO_TOKEN = "dummy-token-127"
 _DUMMY_HELLO_PW = "dummy-pw-123"
+_DUMMY_HELLO_MN = "dummy-mn-130"
+_DUMMY_HELLO_SN = "dummy-sn-130"
+_DUMMY_HELLO_FWVER = "dummy-fwver-130"
+_DUMMY_HELLO_HWVER = "dummy-hwver-130"
+_DUMMY_HELLO_OSVER = "dummy-osver-130"
+_DUMMY_PREHELLO_JUNK = "dummy-prehello-junk-130"
 
 
 class _HelloConnSocket:
@@ -1042,6 +1051,16 @@ def _session_connect_cfg(*, hello_timeout_s: float = 1.0) -> SessionConfig:
 
 def _hello_identity() -> linking.E27Identity:
     return linking.E27Identity(mn="0222", sn="001122334455", fwver="1.0", hwver="1.0", osver="1.0")
+
+
+def _hello_identity_diagnostics() -> linking.E27Identity:
+    return linking.E27Identity(
+        mn=_DUMMY_HELLO_MN,
+        sn=_DUMMY_HELLO_SN,
+        fwver=_DUMMY_HELLO_FWVER,
+        hwver=_DUMMY_HELLO_HWVER,
+        osver=_DUMMY_HELLO_OSVER,
+    )
 
 
 def _wire_hello_session_connect(
@@ -1206,3 +1225,97 @@ def test_missing_hello_debug_log_redaction_mutation_would_leak_secrets(
     ctx = hello_err.context
     assert ctx is not None and ctx.detail is not None
     assert payload["pw"] in caplog.text or payload["pw"] in ctx.detail
+
+
+def test_hello_request_payload_debug_log_hides_identity_values(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    sock = _HelloConnSocket()
+    _wire_hello_session_connect(
+        monkeypatch,
+        sock=sock,
+        recv_batches=[
+            [{"hello": {"session_id": 3, "sk": "aa", "shm": "bb", "error_code": 0}}],
+        ],
+    )
+    _successful_hello_patches(monkeypatch)
+    monkeypatch.setattr(hello_mod.time, "monotonic", lambda: 0.0)
+    caplog.set_level(logging.DEBUG, logger=_HELLO_LOG)
+    s = session_mod.Session(
+        _session_connect_cfg(),
+        client_identity=_hello_identity_diagnostics(),
+        link_key_hex="cc" * 16,
+    )
+    s.connect()
+    text = caplog.text
+    for secret in (
+        _DUMMY_HELLO_MN,
+        _DUMMY_HELLO_SN,
+        _DUMMY_HELLO_FWVER,
+        _DUMMY_HELLO_HWVER,
+        _DUMMY_HELLO_OSVER,
+    ):
+        assert secret not in text
+    assert "Hello request payload" in text
+
+
+def test_pre_hello_json_parse_failure_log_hides_input(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    pre = _DUMMY_PREHELLO_JUNK.encode()
+    sock = _HelloConnSocket(predata=pre)
+
+    def _raise_decode(_data: bytes) -> list[dict[str, Any]]:
+        raise json.JSONDecodeError(_DUMMY_PREHELLO_JUNK, _DUMMY_PREHELLO_JUNK, 0)
+
+    _wire_hello_session_connect(
+        monkeypatch,
+        sock=sock,
+        recv_batches=[
+            [{"hello": {"session_id": 3, "sk": "aa", "shm": "bb", "error_code": 0}}],
+        ],
+    )
+    monkeypatch.setattr(hello_mod, "recv_cleartext_json_objects_from_bytes", _raise_decode)
+    _successful_hello_patches(monkeypatch)
+    monkeypatch.setattr(hello_mod.time, "monotonic", lambda: 0.0)
+    caplog.set_level(logging.DEBUG, logger=_HELLO_LOG)
+    s = session_mod.Session(
+        _session_connect_cfg(),
+        client_identity=_hello_identity(),
+        link_key_hex="cc" * 16,
+    )
+    s.connect()
+    assert _DUMMY_PREHELLO_JUNK not in caplog.text
+    assert "Pre-HELLO JSON parse failed" in caplog.text
+
+
+def test_session_wire_log_debug_hides_frame_hex(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    frame = _frame(3)
+    caplog.set_level(logging.DEBUG, logger=_SESSION_LOG)
+    s = _connected_session(monkeypatch, [frame], wire_log=True)
+    s.recv_json(timeout_s=1)
+    text = caplog.text
+    assert frame.hex() not in text
+    assert "RX frame_no_crc" in text
+    assert "<bytes:" in text
+
+
+def test_session_wire_log_debug_redaction_mutation_would_leak_hex(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    frame = _frame(4)
+
+    def _passthrough_bytes(obj: object) -> object:
+        if isinstance(obj, (bytes, bytearray)):
+            return obj.hex()
+        return obj
+
+    monkeypatch.setattr(session_mod, "redact_for_diagnostics", _passthrough_bytes)
+    caplog.set_level(logging.DEBUG, logger=_SESSION_LOG)
+    s = _connected_session(monkeypatch, [frame], wire_log=True)
+    s.recv_json(timeout_s=1)
+    rx_wire = [r.getMessage() for r in caplog.records if "RX frame_no_crc" in r.getMessage()]
+    assert len(rx_wire) == 1
+    assert "<bytes:" not in rx_wire[0]

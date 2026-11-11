@@ -36,6 +36,7 @@ from .framing_loop import DeframeState, deframe_feed, frame_build
 from .hello_thread import perform_hello
 from .outbound_loop import OutboundItem, OutboundPriority, OutboundQueue
 from .presentation_loop import decrypt_schema0_envelope, encrypt_schema0_envelope
+from .redact import redact_for_diagnostics
 
 logger = logging.getLogger(__name__)
 
@@ -676,7 +677,7 @@ class Session:
             and logger.isEnabledFor(logging.DEBUG)
             and not self.wire_log_suppressed(obj)
         ):
-            logger.debug("TX framed (%d bytes): %s", len(framed), framed.hex())
+            logger.debug("TX framed (%d bytes): %s", len(framed), redact_for_diagnostics(framed))
         return framed
 
     def recv_json(self, *, timeout_s: float = 5.0) -> dict[str, Any]:
@@ -766,7 +767,9 @@ class Session:
                     and not self.wire_log_suppressed(obj)
                 ):
                     logger.debug(
-                        "RX frame_no_crc (%d bytes): %s", len(frame_no_crc), frame_no_crc.hex()
+                        "RX frame_no_crc (%d bytes): %s",
+                        len(frame_no_crc),
+                        redact_for_diagnostics(frame_no_crc),
                     )
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(
