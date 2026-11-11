@@ -28,6 +28,23 @@
   - ``python devtools/lint.py`` and ``make lint`` now run loopcheck on ``src``;
     any ELK finding fails lint like ruff or basedpyright.
 
+  Developer note (HELLO diagnostics redaction, #127, #129)
+
+  - Pre-HELLO bytes at DEBUG log as ``<bytes:N>`` via ``redact_for_diagnostics``
+    instead of raw hex.
+  - When the cleartext JSON stream has no ``hello`` object, the DEBUG line and
+    ``E27HelloTimeout`` context ``detail`` are built from
+    ``redact_for_diagnostics`` on the parsed objects so secrets in pre-HELLO or
+    mis-routed JSON are not echoed.
+
+  Developer note (HELLO / session wire log redaction, #130)
+
+  - The HELLO request DEBUG line logs ``seq`` and the ``hello`` field names only
+    (not ``mn``, ``sn``, ``fwver``, ``hwver``, or ``osver`` values). Pre-HELLO
+    JSON parse failures log exception type and position, not parse input.
+  - Session wire-log DEBUG lines for framed TX and deframed RX ciphertext log
+  length only (no hex dumps or frame bytes).
+
   Developer note (deep imports / logging, #120)
 
   - Internal protocol modules were renamed to ``*_loop.py`` (asyncio loop
