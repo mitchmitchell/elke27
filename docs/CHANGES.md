@@ -1,3 +1,13 @@
+  Unreleased
+
+  Developer note (discovery blocking import, #136)
+
+  - ``discovery`` eagerly imports ``discovery_socket_thread`` at module load
+    instead of ``importlib.import_module`` on the event loop, so Home Assistant
+    does not log blocking-call warnings during ``async_discover_host``.
+  - ``discovery_socket_thread`` exports ``UDP_IPV4_FAMILY`` and ``UDP_DGRAM``
+    for asyncio ``getaddrinfo`` from loop code without importing ``socket``.
+
   Loop Module Renames, Diagnostics Redaction, Loopcheck (0.5.0)
 
   - Breaking (#120): internal modules renamed to ``*_loop`` / ``*_thread``.
