@@ -1,11 +1,23 @@
-  Unreleased
+  Loop Module Renames, Diagnostics Redaction, Loopcheck (0.5.0)
 
-  Developer note (all areas disarmed, #109)
+  - Breaking (#120): internal modules renamed to ``*_loop`` / ``*_thread``;
+    direct imports (for example ``elke27_lib.kernel_loop``) and logger names
+    (for example ``"elke27_lib.session_thread"``) must use the new names.
+  - Breaking (#121): ``ArmMode``, ``EventType`` and ``E27ErrorCode`` are now
+    ``StrEnum``, so ``str()`` and f-strings yield the value (for example
+    ``"disarmed"``); a synchronous ``control.authenticate`` called on the kernel
+    loop thread now raises ``ProtocolError``.
+  - Breaking (#126): ``redact.should_redact`` is now public;
+    ``redact_for_diagnostics`` also redacts ``access``, ``lat``, ``long``,
+    ``cloud_url``, ``pw``, ``pwd``, ``cloud_pw`` and ``*_pw`` keys
+    (``password_required`` is exempt).
+
+  Developer note (all areas disarmed, #109) (#132)
 
   - ``_all_areas_disarmed`` uses ``arm_mode_from_panel_string`` only; unknown,
     ``ALARM_MEM``, and missing ``arm_state`` never count as disarmed.
 
-  Developer note (log redaction, #110, #112, #128)
+  Developer note (log redaction, #110, #112, #128) (#126)
 
   - Non-raw kernel inbound and outbound debug logs share one rule via
     ``redact.should_redact`` and ``redact_for_diagnostics``.
@@ -17,23 +29,23 @@
   - The discovery scanner debug line logs ``redact_for_diagnostics(data)``
     instead of the raw UDP reply.
 
-  Developer note (keepalive check, #93)
+  Developer note (keepalive check, #93) (#125)
 
   - The keepalive reply ``except Exception`` in ``kernel_loop`` now documents why
     the catch-all is intentional (probe failures must not stop the loop).
 
-  Developer note (encryption / cryptography, #114)
+  Developer note (encryption / cryptography, #114) (#123)
 
   - ``encryption_loop`` imports ``cryptography`` directly (required
     dependency); the optional-import fallback and ``default_backend()`` call
     were removed.
 
-  Developer note (local lint / loopcheck)
+  Developer note (local lint / loopcheck, #96, #122)
 
   - ``python devtools/lint.py`` and ``make lint`` now run loopcheck on ``src``;
     any ELK finding fails lint like ruff or basedpyright.
 
-  Developer note (HELLO diagnostics redaction, #127, #129)
+  Developer note (HELLO diagnostics redaction, #127) (#129)
 
   - Pre-HELLO bytes at DEBUG log as ``<bytes:N>`` via ``redact_for_diagnostics``
     instead of raw hex.
@@ -42,13 +54,13 @@
     ``redact_for_diagnostics`` on the parsed objects so secrets in pre-HELLO or
     mis-routed JSON are not echoed.
 
-  Developer note (HELLO / session wire log redaction, #130)
+  Developer note (HELLO / session wire log redaction, #130) (#131)
 
   - The HELLO request DEBUG line logs ``seq`` and the ``hello`` field names only
     (not ``mn``, ``sn``, ``fwver``, ``hwver``, or ``osver`` values). Pre-HELLO
     JSON parse failures log exception type and position, not parse input.
   - Session wire-log DEBUG lines for framed TX and deframed RX ciphertext log
-  length only (no hex dumps or frame bytes).
+    length only (no hex dumps or frame bytes).
 
   Developer note (deep imports / logging, #120)
 
@@ -57,6 +69,28 @@
     deep imports (``elke27_lib.kernel``, etc.) or
     ``logging.getLogger("elke27_lib.<name>")`` must use the new module names
     (``kernel_loop``, ``session_thread``, and so on).
+
+  Developer note (loop module fixes, #121)
+
+  - ``ArmMode``, ``EventType`` and ``E27ErrorCode`` are ``StrEnum``; ``str()``
+    and f-strings yield the enum value string, not the member name.
+  - Synchronous ``control.authenticate`` on the kernel's bound asyncio loop
+    thread raises ``ProtocolError`` so inbound dispatch is not blocked.
+  - New ``Elke27Client.bind_kernel_loop_thread_for_tests`` records the kernel
+    loop on the current thread for offline tests.
+  - Auto-receive session callbacks are dispatched on the kernel loop via
+    ``call_soon_threadsafe``.
+  - ``Session.close()`` on the bound loop no longer joins the receive thread;
+    stale receive-join helpers are generation-bound so reconnect cannot clear a
+    new receiver.
+  - Discovery ``async_scan`` runs UDP socket work in ``asyncio.to_thread`` so
+    the asyncio loop is not blocked.
+
+  Developer note (disarmed-gate execute tests, #133) (#134)
+
+  - Test-only: tightened offline coverage for the installer disarmed permission
+    gate via ``async_raw_request`` (parametrized blocked ``arm_state`` cases,
+    installer send assertion on the allows path).
 
   Arm Modes, Area Troubles, Triggered Alarms, Keepalive Stats (0.4.0)
 
