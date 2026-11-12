@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
 import json
 import logging
 import math
@@ -12,6 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
+from . import discovery_socket_thread
 from .errors import Elke27InvalidArgument
 from .redact import redact_for_diagnostics
 from .types import DiscoveredPanel
@@ -24,10 +24,6 @@ else:
 
     def override(func):  # type: ignore[no-redef] -- typing_extensions only in TYPE_CHECKING
         return func
-
-
-def _discovery_sock_thread() -> Any:
-    return importlib.import_module("elke27_lib.discovery_socket_thread")
 
 
 @dataclass
@@ -140,7 +136,7 @@ class AIOELKDiscovery:
         self.found_devices: list[E27System] = []
 
     def _destinations_from_address(self, address: str | None) -> list[tuple[str, int]]:
-        return _discovery_sock_thread().destinations_from_broadcasts(self.DISCOVERY_PORT, address)
+        return discovery_socket_thread.destinations_from_broadcasts(self.DISCOVERY_PORT, address)
 
     def _process_response(
         self,
@@ -212,11 +208,10 @@ class AIOELKDiscovery:
     ) -> list[E27System]:
         """Discover ELK devices."""
         if sock is None:
-            ds = _discovery_sock_thread()
             sock = (
                 socket_factory()
                 if socket_factory is not None
-                else await asyncio.to_thread(ds.create_udp_socket)
+                else await asyncio.to_thread(discovery_socket_thread.create_udp_socket)
             )
         destinations = await asyncio.to_thread(self._destinations_from_address, address)
         found_all_future: asyncio.Future[bool] = asyncio.Future()
@@ -288,9 +283,13 @@ async def async_discover_host(
         raise Elke27InvalidArgument("timeout must be a finite positive number.")
     host = host.strip()
     loop = asyncio.get_running_loop()
-    _socket = importlib.import_module("socket")
     try:
-        infos = await loop.getaddrinfo(host, None, family=_socket.AF_INET, type=_socket.SOCK_DGRAM)
+        infos = await loop.getaddrinfo(
+            host,
+            None,
+            family=discovery_socket_thread.UDP_IPV4_FAMILY,
+            type=discovery_socket_thread.UDP_DGRAM,
+        )
         address = str(infos[0][4][0])
     except (OSError, IndexError) as exc:
         _LOGGER.debug("discover_host: cannot resolve %s: %s", host, exc)
