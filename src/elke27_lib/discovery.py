@@ -284,8 +284,12 @@ async def async_discover_host(
     host = host.strip()
     loop = asyncio.get_running_loop()
     try:
-        _sock = discovery_socket_thread.socket
-        infos = await loop.getaddrinfo(host, None, family=_sock.AF_INET, type=_sock.SOCK_DGRAM)
+        infos = await loop.getaddrinfo(
+            host,
+            None,
+            family=discovery_socket_thread.UDP_IPV4_FAMILY,
+            type=discovery_socket_thread.UDP_DGRAM,
+        )
         address = str(infos[0][4][0])
     except (OSError, IndexError) as exc:
         _LOGGER.debug("discover_host: cannot resolve %s: %s", host, exc)
