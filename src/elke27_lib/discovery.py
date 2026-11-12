@@ -6,7 +6,6 @@ import asyncio
 import json
 import logging
 import math
-import socket
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -285,7 +284,8 @@ async def async_discover_host(
     host = host.strip()
     loop = asyncio.get_running_loop()
     try:
-        infos = await loop.getaddrinfo(host, None, family=socket.AF_INET, type=socket.SOCK_DGRAM)
+        _sock = discovery_socket_thread.socket
+        infos = await loop.getaddrinfo(host, None, family=_sock.AF_INET, type=_sock.SOCK_DGRAM)
         address = str(infos[0][4][0])
     except (OSError, IndexError) as exc:
         _LOGGER.debug("discover_host: cannot resolve %s: %s", host, exc)
