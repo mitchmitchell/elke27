@@ -1,8 +1,9 @@
   Loop Module Renames, Diagnostics Redaction, Loopcheck (0.5.0)
 
-  - Breaking (#120): internal modules renamed to ``*_loop`` / ``*_thread``;
-    direct imports (for example ``elke27_lib.kernel_loop``) and logger names
-    (for example ``"elke27_lib.session_thread"``) must use the new names.
+  - Breaking (#120): internal modules renamed to ``*_loop`` / ``*_thread``.
+    Deep imports (for example ``elke27_lib.kernel``) and logger names (for
+    example ``"elke27_lib.session"``) must use the new names (``kernel_loop``,
+    ``session_thread``, and so on). There are no compatibility shims.
   - Breaking (#121): ``ArmMode``, ``EventType`` and ``E27ErrorCode`` are now
     ``StrEnum``, so ``str()`` and f-strings yield the value (for example
     ``"disarmed"``); a synchronous ``control.authenticate`` called on the kernel
@@ -24,8 +25,8 @@
   - That rule also redacts ``access``, ``lat``, ``long``, ``cloud_url``, ``pw``,
     ``pwd``, ``cloud_pw``, and any key whose lowercase form ends with ``_pw``.
     The exact key ``password_required`` is exempt so boolean flags stay visible.
-  - Raw pass-through (decision 34) still omits message and reply bodies in both
-    directions; only the one-line outcome summary is logged.
+  - Raw pass-through still omits message and reply bodies in both directions;
+    only the one-line outcome summary is logged.
   - The discovery scanner debug line logs ``redact_for_diagnostics(data)``
     instead of the raw UDP reply.
 
@@ -42,8 +43,9 @@
 
   Developer note (local lint / loopcheck, #96, #122)
 
-  - ``python devtools/lint.py`` and ``make lint`` now run loopcheck on ``src``;
-    any ELK finding fails lint like ruff or basedpyright.
+  - ``devtools/loopcheck.py`` is a stdlib-only AST checker for loop-module
+    rules (ELK001-005, ELK101-110). ``python devtools/lint.py`` and ``make lint``
+    now run it on ``src``; any ELK finding fails lint like ruff or basedpyright.
 
   Developer note (HELLO diagnostics redaction, #127) (#129)
 
@@ -56,9 +58,9 @@
 
   Developer note (HELLO / session wire log redaction, #130) (#131)
 
-  - The HELLO request DEBUG line logs ``seq`` and the ``hello`` field names only
-    (not ``mn``, ``sn``, ``fwver``, ``hwver``, or ``osver`` values). Pre-HELLO
-    JSON parse failures log exception type and position, not parse input.
+  - The HELLO request DEBUG line logs ``seq`` and the ``hello`` field names only,
+    not identity values. Pre-HELLO JSON parse failures log exception type and
+    position, not parse input.
   - Session wire-log DEBUG lines for framed TX and deframed RX ciphertext log
     length only (no hex dumps or frame bytes).
 
