@@ -1,8 +1,5 @@
   Unreleased
 
-  - Disarmed-gate execute tests assert outbound installer traffic and blocked
-    errors via ``async_raw_request`` (#133).
-
   Developer note (all areas disarmed, #109)
 
   - ``_all_areas_disarmed`` uses ``arm_mode_from_panel_string`` only; unknown,

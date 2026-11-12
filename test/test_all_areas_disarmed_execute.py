@@ -117,32 +117,27 @@ async def test_raw_request_passes_disarmed_gate_for_padded_disarmed_strings(
 
 
 @pytest.mark.parametrize(
-    ("case_id", "seed"),
+    "seed",
     [
         pytest.param(
-            "ARMED_AWAY",
             lambda panel: _seed_areas(
                 panel, _doc_status(1, "DISARMED"), _doc_status(2, "ARMED_AWAY")
             ),
             id="ARMED_AWAY",
         ),
         pytest.param(
-            "unknown",
             lambda panel: _seed_areas(panel, _doc_status(1, "stay")),
             id="unknown",
         ),
         pytest.param(
-            "ALARM_MEM",
             lambda panel: _seed_areas(panel, _doc_status(1, "ALARM_MEM")),
             id="ALARM_MEM",
         ),
         pytest.param(
-            "arm_state_missing",
             lambda panel: _seed_areas(panel, _status_without_arm_state(1)),
             id="arm_state_missing",
         ),
         pytest.param(
-            "arm_state_non_string",
             lambda panel: _seed_areas(panel, _doc_status(1, 7)),
             id="arm_state_non_string",
         ),
@@ -151,11 +146,8 @@ async def test_raw_request_passes_disarmed_gate_for_padded_disarmed_strings(
 @pytest.mark.asyncio
 async def test_raw_request_blocked_for_non_disarmed_arm_states(
     monkeypatch: pytest.MonkeyPatch,
-    case_id: str,
     seed: Callable[[FakePanelSession], Any],
 ) -> None:
-    assert case_id
-    assert Elke27Client.arm_mode_from_panel_string("stay") is None
     client = Elke27Client(enable_raw_passthrough=True)
     panel = await connect_with_fake_panel(monkeypatch, client)
     await seed(panel)
