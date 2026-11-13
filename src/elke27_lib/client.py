@@ -2648,7 +2648,7 @@ class Elke27Client:
             raise Elke27StayInstantRequiredError()
         if after.arm_mode is ArmMode.ARMED_NIGHT:
             return
-        if after.arm_mode is ArmMode.DISARMED and after.arm_cmd_mode is ArmMode.ARMED_NIGHT:
+        if after.arming and after.arm_cmd_mode is ArmMode.ARMED_NIGHT:
             return
         raise Elke27StayInstantRequiredError()
 
