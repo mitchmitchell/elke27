@@ -2,37 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from elke27_lib.states import AreaState
-    from elke27_lib.types import ArmMode
-
-
-@dataclass(frozen=True, slots=True)
-class DelayStateNone:
-    """No entry or exit delay is active."""
-
-
-@dataclass(frozen=True, slots=True)
-class DelayStateEntry:
-    """Entry delay while armed after a zone trip."""
-
-    seconds: int
-    zone: str
-
-
-@dataclass(frozen=True, slots=True)
-class DelayStateExit:
-    """Exit delay before the commanded arm mode takes effect."""
-
-    seconds: int
-
-
-DelayState = DelayStateNone | DelayStateEntry | DelayStateExit
-
-DELAY_NONE = DelayStateNone()
+from elke27_lib.arm_panel import arm_mode_from_panel_string
+from elke27_lib.handlers.area import area_alarm_active
+from elke27_lib.states import AreaState
+from elke27_lib.types import (
+    DELAY_NONE,
+    ArmMode,
+    DelayState,
+    DelayStateEntry,
+    DelayStateExit,
+)
 
 
 def ee_timer_blank(value: int | None) -> bool:
@@ -49,32 +28,14 @@ def alarm_zone_blank(value: str | None) -> bool:
     return not str(value).strip()
 
 
-def _panel_arm_mode(value: str | None) -> ArmMode | None:
-    from elke27_lib.types import ArmMode
-
-    if not isinstance(value, str):
-        return None
-    return {
-        "DISARMED": ArmMode.DISARMED,
-        "ARMED_STAY": ArmMode.ARMED_STAY,
-        "ARMED_STAY_INST": ArmMode.ARMED_STAY,
-        "ARMED_AWAY": ArmMode.ARMED_AWAY,
-        "ARMED_VACATION": ArmMode.ARMED_VACATION,
-        "ARMED_NIGHT": ArmMode.ARMED_NIGHT,
-    }.get(value.strip().upper())
-
-
 def delay_state_from_area_status(area: AreaState) -> DelayState:
     """Map one reconciled area state to a :class:`DelayState` (pure, no I/O)."""
-    from elke27_lib.handlers.area import area_alarm_active
-    from elke27_lib.types import ArmMode
-
     if area_alarm_active(area):
         return DELAY_NONE
 
     arm_value = area.arm_state or area.armed_state
-    arm_mode = _panel_arm_mode(arm_value)
-    cmd_mode = _panel_arm_mode(area.arm_cmd_state)
+    arm_mode = arm_mode_from_panel_string(arm_value)
+    cmd_mode = arm_mode_from_panel_string(area.arm_cmd_state)
 
     if (
         arm_mode is not None
@@ -82,11 +43,9 @@ def delay_state_from_area_status(area: AreaState) -> DelayState:
         and not ee_timer_blank(area.ee_timer)
         and not alarm_zone_blank(area.alarm_zone)
     ):
-        seconds = area.ee_timer
-        zone = area.alarm_zone
-        if seconds is None or zone is None:
-            return DELAY_NONE
-        return DelayStateEntry(seconds=seconds, zone=zone.strip())
+        assert area.ee_timer is not None
+        assert area.alarm_zone is not None
+        return DelayStateEntry(seconds=area.ee_timer, zone=area.alarm_zone.strip())
 
     if ee_timer_blank(area.ee_timer):
         return DELAY_NONE
@@ -96,7 +55,5 @@ def delay_state_from_area_status(area: AreaState) -> DelayState:
         return DELAY_NONE
     if arm_mode == cmd_mode:
         return DELAY_NONE
-    seconds = area.ee_timer
-    if seconds is None:
-        return DELAY_NONE
-    return DelayStateExit(seconds=seconds)
+    assert area.ee_timer is not None
+    return DelayStateExit(seconds=area.ee_timer)

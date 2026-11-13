@@ -6,13 +6,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from .hub_loop import Elke27Hub
 
-from .area_delay import (
-    DelayState,
-    DelayStateEntry,
-    DelayStateExit,
-    DelayStateNone,
-    delay_state_from_area_status,
-)
+from .area_delay import delay_state_from_area_status
 from .discovery import async_discover_host, normalize_panel_mac
 from .errors import (
     Elke27AuthError,
@@ -41,6 +35,10 @@ from .types import (
     ClientConfig,
     CommandResult,
     CsmSnapshot,
+    DelayState,
+    DelayStateEntry,
+    DelayStateExit,
+    DelayStateNone,
     DiscoveredPanel,
     Elke27Event,
     EventType,

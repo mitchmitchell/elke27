@@ -64,6 +64,7 @@ else:
 from . import discovery as discovery_mod
 from . import linking_thread as linking_mod
 from .area_delay import delay_state_from_area_status
+from .arm_panel import arm_mode_from_panel_string as _arm_mode_from_panel_string
 from .command_kinds import is_read_only_route
 from .const import E27ErrorCode as PanelErrorCode
 from .dispatcher_loop import PagedBlock, RouteKey
@@ -285,14 +286,6 @@ _CLIENT_EXCEPTIONS = (
 # has Away and Stay arming; it has no Night mode.
 _SUPPORTED_ARM_MODES: frozenset[ArmMode] = frozenset({ArmMode.ARMED_AWAY, ArmMode.ARMED_STAY})
 
-_ARM_STATE_TO_MODE: Mapping[str, ArmMode] = {
-    "DISARMED": ArmMode.DISARMED,
-    "ARMED_STAY": ArmMode.ARMED_STAY,
-    "ARMED_STAY_INST": ArmMode.ARMED_STAY,
-    "ARMED_AWAY": ArmMode.ARMED_AWAY,
-    "ARMED_VACATION": ArmMode.ARMED_VACATION,
-    "ARMED_NIGHT": ArmMode.ARMED_NIGHT,
-}
 _NON_ARM_STATES: frozenset[str] = frozenset({"ALARM_MEM"})
 
 
@@ -1065,9 +1058,7 @@ class Elke27Client:
         warns once per connection-owning client when it sees one
         (https://github.com/mitchmitchell/elke27/issues/100).
         """
-        if not isinstance(value, str):
-            return None
-        return _ARM_STATE_TO_MODE.get(value.strip().upper())
+        return _arm_mode_from_panel_string(value)
 
     def _build_panel_info(self) -> PanelInfo:
         panel = self._kernel.state.panel

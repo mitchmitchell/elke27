@@ -6,17 +6,13 @@ import copy
 
 import pytest
 
-from elke27_lib.area_delay import (
-    DELAY_NONE,
-    DelayStateEntry,
-    DelayStateExit,
-    delay_state_from_area_status,
-)
+from elke27_lib.area_delay import delay_state_from_area_status
+from elke27_lib.arm_panel import arm_mode_from_panel_string
 from elke27_lib.client import Elke27Client
 from elke27_lib.const import E27ErrorCode
 from elke27_lib.handlers.area import make_area_get_status_handler
 from elke27_lib.states import AreaState, PanelState
-from elke27_lib.types import ArmMode
+from elke27_lib.types import DELAY_NONE, ArmMode, DelayStateEntry, DelayStateExit
 from test.helpers.dispatch import make_ctx
 from test.helpers.fake_session import connect_with_fake_panel
 
@@ -161,6 +157,41 @@ def test_entry_delay_input_variation(mutation: dict[str, object], expect_entry: 
 def test_exit_end_input_variation() -> None:
     armed_done = _exit_frame(arm_state="ARMED_AWAY", arm_cmd_state="ARMED_AWAY", ee_timer=1)
     assert delay_state_from_area_status(_area_from_payload(armed_done)) is DELAY_NONE
+
+
+def test_armed_stay_inst_exit_delay_via_shared_arm_mapping() -> None:
+    exit_frame = {
+        "area_id": 1,
+        "arm_state": "DISARMED",
+        "arm_cmd_state": "ARMED_STAY_INST",
+        "ee_timer": 30,
+        "alarm_zone": "",
+        "alarms": "",
+        "alrm_snd": "",
+        "error_code": 0,
+    }
+    state = delay_state_from_area_status(_area_from_payload(exit_frame))
+    assert isinstance(state, DelayStateExit)
+    assert state.seconds == 30
+    assert arm_mode_from_panel_string("DISARMED") is not arm_mode_from_panel_string(
+        "ARMED_STAY_INST"
+    )
+
+
+def test_armed_stay_inst_complete_is_not_delay() -> None:
+    inst = "ARMED_STAY_INST"
+    assert arm_mode_from_panel_string(inst) == arm_mode_from_panel_string(inst)
+    armed = {
+        "area_id": 1,
+        "arm_state": inst,
+        "arm_cmd_state": inst,
+        "ee_timer": 1,
+        "alarm_zone": "",
+        "alarms": "",
+        "alrm_snd": "",
+        "error_code": 0,
+    }
+    assert delay_state_from_area_status(_area_from_payload(armed)) is DELAY_NONE
 
 
 @pytest.mark.asyncio

@@ -7,8 +7,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 
-from elke27_lib.area_delay import DELAY_NONE, DelayState, DelayStateEntry, DelayStateExit
-
 
 @dataclass(frozen=True, slots=True)
 class ClientConfig:
@@ -125,6 +123,31 @@ class ArmMode(StrEnum):
     ARMED_AWAY = "armed_away"
     ARMED_NIGHT = "armed_night"
     ARMED_VACATION = "armed_vacation"
+
+
+@dataclass(frozen=True, slots=True)
+class DelayStateNone:
+    """No entry or exit delay is active."""
+
+
+@dataclass(frozen=True, slots=True)
+class DelayStateEntry:
+    """Entry delay while armed after a zone trip."""
+
+    seconds: int
+    zone: str
+
+
+@dataclass(frozen=True, slots=True)
+class DelayStateExit:
+    """Exit delay before the commanded arm mode takes effect."""
+
+    seconds: int
+
+
+DelayState = DelayStateNone | DelayStateEntry | DelayStateExit
+
+DELAY_NONE = DelayStateNone()
 
 
 @dataclass(frozen=True, slots=True)
