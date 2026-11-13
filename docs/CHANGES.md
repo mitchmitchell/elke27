@@ -1,6 +1,6 @@
-  Unreleased
+  Discovery Blocking Import (0.5.1, 2026-11-12)
 
-  Developer note (discovery blocking import, #136)
+  Developer note (discovery blocking import, #136) (#137)
 
   - ``discovery`` eagerly imports ``discovery_socket_thread`` at module load
     instead of ``importlib.import_module`` on the event loop, so Home Assistant
