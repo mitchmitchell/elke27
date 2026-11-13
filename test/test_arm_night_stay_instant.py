@@ -12,7 +12,7 @@ from elke27_lib.const import E27ErrorCode
 from elke27_lib.firmware_version import NIGHT_ARM_MIN_APP_FIELD, pack_application_firmware
 from elke27_lib.handlers.control import make_control_get_version_info_handler
 from elke27_lib.states import PanelState
-from test.test_panel_errors_ready_night import drive_until_done, make_client_with_app_version
+from test.helpers.panel_command_driver import connect_with_app_firmware, drive_until_done
 
 
 def test_panel_get_version_info_stores_application_firmware() -> None:
@@ -47,26 +47,47 @@ def test_panel_arm_state_maps_to_public_arm_mode(arm_state: str, expected: ArmMo
 
 
 @pytest.mark.asyncio
-async def test_high_ssp_low_app_does_not_enable_night() -> None:
-    client, session = make_client_with_app_version(
-        pack_application_firmware(0, 0, 5, 36), ssp="99.99.99"
+async def test_arm_night_rejected_when_application_firmware_too_old(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, panel = await connect_with_app_firmware(
+        monkeypatch, pack_application_firmware(0, 0, 5, 36)
     )
+    sent_before = len(panel.sent)
     with pytest.raises(Elke27InvalidArgument, match="0.5.37"):
         await client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234")
-    assert session.sent == []
+    assert panel.sent[sent_before:] == []
 
 
 @pytest.mark.asyncio
-async def test_arm_night_sends_stay_inst_and_updates_snapshot() -> None:
-    client, session = make_client_with_app_version(NIGHT_ARM_MIN_APP_FIELD)
+async def test_high_ssp_low_app_does_not_enable_night(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, panel = await connect_with_app_firmware(
+        monkeypatch, pack_application_firmware(0, 0, 5, 36), ssp="99.99.99"
+    )
+    sent_before = len(panel.sent)
+    with pytest.raises(Elke27InvalidArgument, match="0.5.37"):
+        await client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234")
+    assert panel.sent[sent_before:] == []
+
+
+@pytest.mark.asyncio
+async def test_arm_night_sends_stay_inst_and_updates_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, panel = await connect_with_app_firmware(monkeypatch, NIGHT_ARM_MIN_APP_FIELD)
 
     await drive_until_done(
         client,
-        session,
+        panel,
         client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234"),
     )
 
-    assert session.sent[0]["area"]["set_arm_state"]["arm_state"] == "ARMED_STAY_INST"
+    arm_msgs = [
+        msg["area"]["set_arm_state"]
+        for msg in panel.sent
+        if isinstance(msg.get("area"), dict) and "set_arm_state" in msg["area"]
+    ]
+    assert arm_msgs[0]["arm_state"] == "ARMED_STAY_INST"
     area = client.snapshot.areas[1]
     assert area.arm_mode is ArmMode.ARMED_NIGHT
     assert area.night_arm_supported is True
@@ -74,13 +95,15 @@ async def test_arm_night_sends_stay_inst_and_updates_snapshot() -> None:
 
 
 @pytest.mark.asyncio
-async def test_arm_night_panel_error_stays_panel_error_not_stay_instant() -> None:
-    client, session = make_client_with_app_version(NIGHT_ARM_MIN_APP_FIELD)
+async def test_arm_night_panel_error_stays_panel_error_not_stay_instant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, panel = await connect_with_app_firmware(monkeypatch, NIGHT_ARM_MIN_APP_FIELD)
 
     with pytest.raises(Elke27PanelError, match="not ready"):
         await drive_until_done(
             client,
-            session,
+            panel,
             client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234"),
             custom_replies={
                 0: {
@@ -96,13 +119,15 @@ async def test_arm_night_panel_error_stays_panel_error_not_stay_instant() -> Non
 
 
 @pytest.mark.asyncio
-async def test_arm_night_ignored_raises_stay_instant_error() -> None:
-    client, session = make_client_with_app_version(NIGHT_ARM_MIN_APP_FIELD)
+async def test_arm_night_ignored_raises_stay_instant_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, panel = await connect_with_app_firmware(monkeypatch, NIGHT_ARM_MIN_APP_FIELD)
 
     with pytest.raises(Elke27StayInstantRequiredError):
         await drive_until_done(
             client,
-            session,
+            panel,
             client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234"),
             custom_replies={
                 0: {
@@ -127,7 +152,7 @@ async def test_arm_night_ignored_raises_stay_instant_error() -> None:
 async def test_arm_night_refresh_failure_raises_command_outcome_unknown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    client, _session = make_client_with_app_version(NIGHT_ARM_MIN_APP_FIELD)
+    client, _panel = await connect_with_app_firmware(monkeypatch, NIGHT_ARM_MIN_APP_FIELD)
 
     from elke27_lib import Elke27CommandOutcomeUnknownError
     from elke27_lib.client import Result

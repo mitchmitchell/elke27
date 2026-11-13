@@ -17,7 +17,6 @@ from elke27_lib import session_thread as session_mod
 from elke27_lib.client import ArmMode, Elke27Client
 from elke27_lib.const import E27ErrorCode
 from elke27_lib.errors import Elke27InvalidArgument
-from elke27_lib.firmware_version import format_application_firmware, pack_application_firmware
 from test.helpers.fake_panel_replies import synthetic_success_reply
 from test.helpers.internal import get_kernel, get_private
 
@@ -82,59 +81,10 @@ async def _reply(
     return await task
 
 
-def make_client_with_app_version(
-    app: int, *, arm_state: str = "DISARMED", ssp: str | None = "2.6.1"
-) -> tuple[Elke27Client, _FakeSession]:
-    client, session = _make_client()
-    kernel = get_kernel(client)
-    kernel.state.panel.app_version = app
-    kernel.state.panel.application_firmware = format_application_firmware(app)
-    if ssp is not None:
-        kernel.state.panel.firmware = ssp
-    kernel.state.get_or_create_area(1).arm_state = arm_state
-    return client, session
-
-
-async def drive_until_done(
-    client: Elke27Client,
-    session: _FakeSession,
-    call: Coroutine[Any, Any, Any],
-    *,
-    custom_replies: dict[int, dict[str, Any]] | None = None,
-    max_replies: int | None = None,
-) -> Any:
-    task = asyncio.create_task(call)
-    on_message = get_private(get_kernel(client), "_on_message")
-    client._event_loop = asyncio.get_running_loop()
-    seen = 0
-    while not task.done():
-        await asyncio.sleep(0)
-        if max_replies is not None and seen >= max_replies:
-            continue
-        while seen < len(session.sent):
-            sent = session.sent[seen]
-            if custom_replies is not None and seen in custom_replies:
-                reply = dict(custom_replies[seen])
-                reply["seq"] = sent["seq"]
-                on_message(reply)
-            else:
-                on_message(synthetic_success_reply(sent, sent_history=session.sent[:seen]))
-            seen += 1
-    return await task
-
-
 @pytest.mark.asyncio
 async def test_arm_night_rejected_with_clear_error_before_send() -> None:
     client, session = _make_client()
     with pytest.raises(Elke27InvalidArgument, match="unknown"):
-        await client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234")
-    assert session.sent == []
-
-
-@pytest.mark.asyncio
-async def test_arm_night_rejected_when_application_firmware_too_old() -> None:
-    client, session = make_client_with_app_version(pack_application_firmware(0, 0, 5, 36))
-    with pytest.raises(Elke27InvalidArgument, match="0.5.37"):
         await client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234")
     assert session.sent == []
 
