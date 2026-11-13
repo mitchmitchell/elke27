@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from elke27_lib.states import AreaState
-
-_TROUBLE_ONLY_ALARMS = frozenset({"FIRE TROUBLE", "CO TROUBLE"})
+    from elke27_lib.types import ArmMode
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,109 +49,54 @@ def alarm_zone_blank(value: str | None) -> bool:
     return not str(value).strip()
 
 
-def _arm_disarmed(arm_state: str | None) -> bool:
-    if arm_state is None:
-        return True
-    return arm_state.strip().upper() == "DISARMED"
+def _panel_arm_mode(value: str | None) -> ArmMode | None:
+    from elke27_lib.types import ArmMode
+
+    if not isinstance(value, str):
+        return None
+    return {
+        "DISARMED": ArmMode.DISARMED,
+        "ARMED_STAY": ArmMode.ARMED_STAY,
+        "ARMED_STAY_INST": ArmMode.ARMED_STAY,
+        "ARMED_AWAY": ArmMode.ARMED_AWAY,
+        "ARMED_VACATION": ArmMode.ARMED_VACATION,
+        "ARMED_NIGHT": ArmMode.ARMED_NIGHT,
+    }.get(value.strip().upper())
 
 
-def _alarms_populated(
-    *,
-    alarms: str | list[str] | None,
-    alrm_snd: str | bool | None,
-    alarm_state: str | None,
-) -> bool:
-    raw = alarms
-    entries = [raw] if isinstance(raw, str) else list(raw or [])
-    for entry in entries:
-        name = str(entry).strip().upper()
-        if name and name not in _TROUBLE_ONLY_ALARMS:
-            return True
-    sound = alrm_snd
-    if sound is True:
-        return True
-    if isinstance(sound, str):
-        name = sound.strip().upper()
-        if name and name not in _TROUBLE_ONLY_ALARMS:
-            return True
-    if alarm_state is not None and str(alarm_state).lower() not in {
-        "no_alarm_active",
-        "none",
-        "",
-    }:
-        return True
-    return False
+def delay_state_from_area_status(area: AreaState) -> DelayState:
+    """Map one reconciled area state to a :class:`DelayState` (pure, no I/O)."""
+    from elke27_lib.handlers.area import area_alarm_active
+    from elke27_lib.types import ArmMode
 
-
-def _fields_from_snapshot(
-    snapshot: Mapping[str, Any] | AreaState,
-) -> tuple[
-    str | None,
-    str | None,
-    int | None,
-    str | None,
-    str | list[str] | None,
-    str | bool | None,
-    str | None,
-]:
-    if isinstance(snapshot, Mapping):
-        arm_state = snapshot.get("arm_state") or snapshot.get("armed_state")
-        arm_cmd = snapshot.get("arm_cmd_state")
-        ee_timer = snapshot.get("ee_timer") if isinstance(snapshot.get("ee_timer"), int) else None
-        alarm_zone = (
-            snapshot.get("alarm_zone") if isinstance(snapshot.get("alarm_zone"), str) else None
-        )
-        alarms_raw = snapshot.get("alarms")
-        if isinstance(alarms_raw, (str, list)) or alarms_raw is None:
-            alarms = alarms_raw
-        else:
-            alarms = None
-        alrm_snd_raw = snapshot.get("alrm_snd")
-        if isinstance(alrm_snd_raw, (str, bool)) or alrm_snd_raw is None:
-            alrm_snd = alrm_snd_raw
-        else:
-            alrm_snd = None
-        alarm_state = (
-            snapshot.get("alarm_state") if isinstance(snapshot.get("alarm_state"), str) else None
-        )
-        arm_state_s = arm_state if isinstance(arm_state, str) else None
-        arm_cmd_s = arm_cmd if isinstance(arm_cmd, str) else None
-        return arm_state_s, arm_cmd_s, ee_timer, alarm_zone, alarms, alrm_snd, alarm_state
-    from elke27_lib.states import AreaState
-
-    if isinstance(snapshot, AreaState):
-        return (
-            snapshot.arm_state or snapshot.armed_state,
-            snapshot.arm_cmd_state,
-            snapshot.ee_timer,
-            snapshot.alarm_zone,
-            snapshot.alarms,
-            snapshot.alrm_snd,
-            snapshot.alarm_state,
-        )
-    raise TypeError("expected Mapping or AreaState")
-
-
-def delay_state_from_area_status(snapshot: Mapping[str, Any] | AreaState) -> DelayState:
-    """Map one area status snapshot to a :class:`DelayState` (pure, no I/O)."""
-    arm_state, arm_cmd_state, ee_timer, alarm_zone, alarms, alrm_snd, alarm_state = (
-        _fields_from_snapshot(snapshot)
-    )
-    if _alarms_populated(alarms=alarms, alrm_snd=alrm_snd, alarm_state=alarm_state):
+    if area_alarm_active(area):
         return DELAY_NONE
+
+    arm_value = area.arm_state or area.armed_state
+    arm_mode = _panel_arm_mode(arm_value)
+    cmd_mode = _panel_arm_mode(area.arm_cmd_state)
+
     if (
-        not _arm_disarmed(arm_state)
-        and not ee_timer_blank(ee_timer)
-        and not alarm_zone_blank(alarm_zone)
+        arm_mode is not None
+        and arm_mode is not ArmMode.DISARMED
+        and not ee_timer_blank(area.ee_timer)
+        and not alarm_zone_blank(area.alarm_zone)
     ):
-        assert ee_timer is not None
-        assert alarm_zone is not None
-        return DelayStateEntry(seconds=ee_timer, zone=alarm_zone.strip())
-    if ee_timer_blank(ee_timer):
+        seconds = area.ee_timer
+        zone = area.alarm_zone
+        if seconds is None or zone is None:
+            return DELAY_NONE
+        return DelayStateEntry(seconds=seconds, zone=zone.strip())
+
+    if ee_timer_blank(area.ee_timer):
         return DELAY_NONE
-    if arm_state is None or arm_cmd_state is None:
+    if cmd_mode is None or cmd_mode is ArmMode.DISARMED:
         return DELAY_NONE
-    if arm_state == arm_cmd_state:
+    if arm_mode is None:
         return DELAY_NONE
-    assert ee_timer is not None
-    return DelayStateExit(seconds=ee_timer)
+    if arm_mode == cmd_mode:
+        return DELAY_NONE
+    seconds = area.ee_timer
+    if seconds is None:
+        return DELAY_NONE
+    return DelayStateExit(seconds=seconds)

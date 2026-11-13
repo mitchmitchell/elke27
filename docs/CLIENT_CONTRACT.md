@@ -71,8 +71,10 @@ a breaking change.
     delay while `arm_state` lags `arm_cmd_state` with non-zero `ee_timer`). Blank
     `ee_timer` means missing, zero, or non-positive; blank `alarm_zone` means
     missing or empty. Entry delay ends on `DISARMED` or populated `alarms`;
-    exit delay ends on the frame where `ee_timer` is `1` and `arm_state` equals
-    `arm_cmd_state` (armed). Partial status payloads clear exit-delay fields not
+    exit delay ends when typed `arm_mode` and `arm_cmd_mode` match (including the
+    final armed frame where `ee_timer` may still be `1`); `ee_timer` is not
+    cleared on that frame. `arming` can remain true during stay→away command
+    changes while `ee_timer` is still reported. Partial status payloads clear exit-delay fields not
     present (except allowed `ee_timer`-only ticks after a complete four-field
     payload: `0 < new <= previous`, ignore late `new > previous`, clear on
     `new == 0`; a restarted timer needs a full status read). Reconnect /

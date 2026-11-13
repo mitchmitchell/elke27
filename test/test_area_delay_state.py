@@ -1,4 +1,4 @@
-"""Entry/exit delay ``DelayState`` (#92): table, mutation, and public client paths."""
+"""Entry/exit delay ``DelayState`` (#92): table, input checks, and public client paths."""
 
 from __future__ import annotations
 
@@ -13,8 +13,9 @@ from elke27_lib.area_delay import (
     delay_state_from_area_status,
 )
 from elke27_lib.client import Elke27Client
+from elke27_lib.const import E27ErrorCode
 from elke27_lib.handlers.area import make_area_get_status_handler
-from elke27_lib.states import PanelState
+from elke27_lib.states import AreaState, PanelState
 from elke27_lib.types import ArmMode
 from test.helpers.dispatch import make_ctx
 from test.helpers.fake_session import connect_with_fake_panel
@@ -31,7 +32,7 @@ ELK_ENTRY_CAPTURE: dict[str, object] = {
     "alrm_snd": "",
     "troubles": "",
     "aud_tbl": 0,
-    "alarm_zone": "ID:6 - 3 Car Garage OHD 1",
+    "alarm_zone": "ID:6 - Zone 6",
     "zones_bypassed": 0,
     "xzn_time": 0,
     "xzn_id": 0,
@@ -39,6 +40,15 @@ ELK_ENTRY_CAPTURE: dict[str, object] = {
     "chime_count": 0,
     "error_code": 0,
 }
+
+
+def _area_from_payload(payload: dict[str, object]) -> AreaState:
+    state = PanelState()
+    handler = make_area_get_status_handler(state, lambda _e, _c: None, now=lambda: 1.0)
+    assert handler({"area": {"get_status": payload}}, make_ctx()) is True
+    area_id = payload["area_id"]
+    assert isinstance(area_id, int)
+    return state.areas[area_id]
 
 
 def _exit_frame(**overrides: object) -> dict[str, object]:
@@ -59,7 +69,7 @@ def _exit_frame(**overrides: object) -> dict[str, object]:
         "xzn_id": 0,
         "auto_arm_timer": 0,
         "chime_count": 0,
-        "error_code": 0,
+        "error_code": E27ErrorCode.ELKERR_NONE,
     }
     base.update(overrides)
     return base
@@ -87,7 +97,7 @@ def _exit_frame(**overrides: object) -> dict[str, object]:
             {
                 **ELK_ENTRY_CAPTURE,
                 "alarms": "BURG",
-                "alrm_snd": "BURG",
+                "alrm_snd": "",
             },
             "none",
         ),
@@ -101,10 +111,15 @@ def _exit_frame(**overrides: object) -> dict[str, object]:
             _exit_frame(arm_state="ARMED_AWAY", arm_cmd_state="ARMED_AWAY", ee_timer=0),
             "none",
         ),
+        (
+            _exit_frame(arm_cmd_state="DISARMED", ee_timer=20),
+            "none",
+        ),
     ],
 )
 def test_delay_state_table(payload: dict[str, object], expected_kind: str) -> None:
-    state = delay_state_from_area_status(payload)
+    area = _area_from_payload(payload)
+    state = delay_state_from_area_status(area)
     if expected_kind == "none":
         assert state is DELAY_NONE
     elif expected_kind == "entry":
@@ -117,12 +132,10 @@ def test_delay_state_table(payload: dict[str, object], expected_kind: str) -> No
 
 
 def test_chime_capital_c_parsed_on_get_status() -> None:
-    panel = PanelState()
-    handler = make_area_get_status_handler(panel, lambda _e, _c: None, now=lambda: 1.0)
     payload = dict(ELK_ENTRY_CAPTURE)
     payload["Chime"] = True
-    assert handler({"area": {"get_status": payload}}, make_ctx()) is True
-    assert panel.areas[1].chime is True
+    area = _area_from_payload(payload)
+    assert area.chime is True
 
 
 def _mutate(base: dict[str, object], **changes: object) -> dict[str, object]:
@@ -139,15 +152,15 @@ def _mutate(base: dict[str, object], **changes: object) -> dict[str, object]:
         ({"alarm_zone": ""}, False),
     ],
 )
-def test_entry_delay_mutation_proof(mutation: dict[str, object], expect_entry: bool) -> None:
+def test_entry_delay_input_variation(mutation: dict[str, object], expect_entry: bool) -> None:
     payload = _mutate(ELK_ENTRY_CAPTURE, **mutation)
-    state = delay_state_from_area_status(payload)
+    state = delay_state_from_area_status(_area_from_payload(payload))
     assert isinstance(state, DelayStateEntry) is expect_entry
 
 
-def test_exit_end_rule_mutation_proof() -> None:
+def test_exit_end_input_variation() -> None:
     armed_done = _exit_frame(arm_state="ARMED_AWAY", arm_cmd_state="ARMED_AWAY", ee_timer=1)
-    assert delay_state_from_area_status(armed_done) is DELAY_NONE
+    assert delay_state_from_area_status(_area_from_payload(armed_done)) is DELAY_NONE
 
 
 @pytest.mark.asyncio
@@ -179,7 +192,7 @@ async def test_entry_ends_in_alarm_public_client(monkeypatch: pytest.MonkeyPatch
     panel = await connect_with_fake_panel(monkeypatch, client)
     await panel.deliver({"seq": 0, "area": {"get_status": ELK_ENTRY_CAPTURE}})
     assert client.snapshot.areas[1].entry_delay is True
-    alarm = dict(ELK_ENTRY_CAPTURE, alarms="BURG", alrm_snd="BURG")
+    alarm = dict(ELK_ENTRY_CAPTURE, alarms="BURG", alrm_snd="")
     await panel.deliver({"seq": 1, "area": {"get_status": alarm}})
     snap = client.snapshot.areas[1]
     assert snap.entry_delay is False
@@ -204,3 +217,4 @@ async def test_exit_delay_sequence_public_client(monkeypatch: pytest.MonkeyPatch
     assert snapshots[1].arming is True
     assert snapshots[2].arming is False
     assert snapshots[2].delay_state is DELAY_NONE
+    assert snapshots[2].ee_timer == 1

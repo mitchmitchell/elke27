@@ -113,8 +113,9 @@ The library exposes read-only accessors for:
     state in order: `alarm_active` → TRIGGERED, `entry_delay` → PENDING, `arming`
     → ARMING. `entry_delay` is true while armed with non-zero `ee_timer` and
     non-empty `alarm_zone`; `arming` is true during exit delay (`ee_timer` while
-    `arm_state` ≠ `arm_cmd_state`). Exit delay ends when `ee_timer` is `1` and
-    `arm_state` equals `arm_cmd_state`. Partial payloads clear absent exit-delay
+    typed `arm_mode` ≠ `arm_cmd_mode`, excluding commanded `DISARMED`). Exit
+    delay ends when those modes match; `ee_timer` may remain `1` on that frame.
+    Partial payloads clear absent exit-delay
     fields except `ee_timer`-only ticks after a complete four-field read
     (`0 < new <= previous`, ignore out-of-order increases, clear on zero; timer
     restarts need a full read). Reconnect / snapshot reset clears pending
