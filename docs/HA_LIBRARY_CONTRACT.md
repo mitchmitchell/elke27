@@ -107,17 +107,22 @@ The library exposes read-only accessors for:
 - panel_info
 - table_info / capabilities
 - areas
-  - Area snapshots surface `arm_mode`, optional `arm_cmd_mode`, `ee_timer`, and
-    `alarm_zone` from `area.get_status` / status broadcasts. `arming` is `True`
-    only when all four fields are present on the snapshot, `alarm_zone == ""`
-    (not missing), `ee_timer` > 0, disarmed, and pending away/stay. Partial
-    payloads clear absent exit-delay fields except `ee_timer`-only ticks after a
-    complete four-field read (`0 < new <= previous`, ignore out-of-order
-    increases, clear on zero; timer restarts need a full read). Reconnect /
-    snapshot reset clears
-    pending exit-delay state. Stay→away without a full status payload leaves
-    `arming` false; HA should run skip/entry logic only after a fresh full
-    `get_status`, not on partial broadcasts alone.
+  - Area snapshots surface `arm_mode`, optional `arm_cmd_mode`, `ee_timer`,
+    `alarm_zone`, and `delay_state` (`DelayStateNone`, `DelayStateEntry`, or
+    `DelayStateExit`) from documented `area.get_status` fields. Map HA alarm panel
+    state in order: `alarm_active` → TRIGGERED, `entry_delay` → PENDING, `arming`
+    → ARMING. `entry_delay` is true while armed with non-zero `ee_timer` and
+    non-empty `alarm_zone`; `arming` is true during exit delay (`ee_timer` while
+    `arm_state` ≠ `arm_cmd_state`). Exit delay ends when `ee_timer` is `1` and
+    `arm_state` equals `arm_cmd_state`. Partial payloads clear absent exit-delay
+    fields except `ee_timer`-only ticks after a complete four-field read
+    (`0 < new <= previous`, ignore out-of-order increases, clear on zero; timer
+    restarts need a full read). Reconnect / snapshot reset clears pending
+    exit-delay state. Stay→away without a full status payload leaves `arming`
+    false; HA should run skip/entry logic only after a fresh full `get_status`,
+    not on partial broadcasts alone. The undocumented `entry_delay_active` key is
+    not read (#92). Entry delay is simulator-proven; live entry capture needs
+    explicit owner approval before release claims hardware verification.
 - zones
 - outputs
 - lights

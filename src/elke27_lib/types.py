@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 
+from elke27_lib.area_delay import DELAY_NONE, DelayState, DelayStateEntry, DelayStateExit
+
 
 @dataclass(frozen=True, slots=True)
 class ClientConfig:
@@ -219,23 +221,17 @@ class AreaState:
     ready_status: str | None = None
     alarm_memory: bool | None = None
     trouble_status: str | None = None
+    delay_state: DelayState = DELAY_NONE
 
     @property
     def arming(self) -> bool:
-        """True only during an active exit delay (disarmed, pending arm, timer running)."""
-        if self.arm_mode is not ArmMode.DISARMED:
-            return False
-        if self.arm_cmd_mode not in (
-            ArmMode.ARMED_AWAY,
-            ArmMode.ARMED_STAY,
-            ArmMode.ARMED_VACATION,
-        ):
-            return False
-        if self.ee_timer is None or self.ee_timer <= 0:
-            return False
-        if self.alarm_zone != "":
-            return False
-        return True
+        """True during exit delay (panel ``ee_timer`` while ``arm_state`` lags ``arm_cmd_state``)."""
+        return isinstance(self.delay_state, DelayStateExit)
+
+    @property
+    def entry_delay(self) -> bool:
+        """True during entry delay (armed, non-zero ``ee_timer``, non-empty ``alarm_zone``)."""
+        return isinstance(self.delay_state, DelayStateEntry)
 
 
 @dataclass(frozen=True, slots=True)

@@ -76,8 +76,6 @@ class AreaState:
     away: bool | None = None
     bypass: bool | None = None
     chime: bool | None = None
-    entry_delay_active: bool | None = None
-    exit_delay_active: bool | None = None
     trouble_status: str | None = None
 
     # Common counts (if reported)

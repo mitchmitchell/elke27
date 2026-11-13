@@ -1,3 +1,17 @@
+  Unreleased
+
+  - Entry/exit delay (#92): public ``AreaState`` exposes ``delay_state``
+    (``DelayStateNone``, ``DelayStateEntry``, or ``DelayStateExit``) derived from
+    documented ``area.get_status`` fields via ``delay_state_from_area_status``.
+    ``entry_delay`` is ``True`` during entry delay; ``arming`` is ``True`` during
+    exit delay. Remaining seconds follow the panel's five-second broadcasts only
+    (no local countdown). The undocumented ``entry_delay_active`` key is no longer
+    read.     Entry delay is simulator-proven only; hardware entry testing needs explicit
+    approval before it is claimed in release notes beyond that.
+  - Being armed no longer clears ``ee_timer`` / ``alarm_zone`` on unrelated
+    partial payloads; fields clear only when a payload that touches them omits
+    them or sends the wrong type.
+
   Discovery Blocking Import (0.5.1, 2026-11-12)
 
   Developer note (discovery blocking import, #136) (#137)

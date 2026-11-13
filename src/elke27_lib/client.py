@@ -63,6 +63,7 @@ else:
 
 from . import discovery as discovery_mod
 from . import linking_thread as linking_mod
+from .area_delay import delay_state_from_area_status
 from .command_kinds import is_read_only_route
 from .const import E27ErrorCode as PanelErrorCode
 from .dispatcher_loop import PagedBlock, RouteKey
@@ -1093,6 +1094,7 @@ class Elke27Client:
         out: dict[int, V2AreaState] = {}
         for area_id, area in self._kernel.state.areas.items():
             arm_value = area.arm_state or area.armed_state
+            delay_state = delay_state_from_area_status(area)
             out[area_id] = V2AreaState(
                 area_id=area_id,
                 name=area.name,
@@ -1106,6 +1108,7 @@ class Elke27Client:
                 ready_status=area.ready_status,
                 alarm_memory=_area_alarm_memory(area.alarm_mem, arm_value),
                 trouble_status=area.trouble_status,
+                delay_state=delay_state,
             )
         return types_mod.MappingProxyType(out)
 

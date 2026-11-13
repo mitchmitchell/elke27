@@ -21,6 +21,20 @@ This repository also includes:
 - **Command execution**: Send API requests and receive responses using a strict one-in-flight model (request/response sequencing).
 - **Snapshots**: Provide read-only state “snapshots” for Home Assistant (or other clients) to read stable views of current panel state.
 
+### Area entry and exit delay (simulator-proven)
+
+During **entry delay** (armed, zone tripped), the panel broadcasts `area.get_status`
+every five seconds with a non-zero `ee_timer` and a non-empty `alarm_zone`. During
+**exit delay** (arming in progress), `ee_timer` counts down while `arm_state` still
+differs from `arm_cmd_state`. Public `AreaState` exposes:
+
+- `delay_state`: `DelayStateNone`, `DelayStateEntry(seconds, zone)`, or `DelayStateExit(seconds)`
+- `entry_delay` / `arming` booleans for HA mappings (PENDING / ARMING)
+
+Remaining seconds come only from those panel broadcasts (no client-side countdown).
+**Entry delay on real hardware is simulator-proven until an approved TEST capture**;
+exit-delay simulator coverage is included in the test suite.
+
 ### Stable public surface for Home Assistant
 Home Assistant is intended to import and use **only** the public client API defined in:
 
