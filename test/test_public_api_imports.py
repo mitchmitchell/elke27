@@ -231,7 +231,15 @@ async def test_async_connect_disconnect_and_wait_ready(monkeypatch: MonkeyPatch)
                 (),
                 {
                     "panel": type(
-                        "_Panel", (), {"model": None, "firmware": None, "serial": None}
+                        "_Panel",
+                        (),
+                        {
+                            "model": None,
+                            "firmware": None,
+                            "application_firmware": None,
+                            "app_version": None,
+                            "serial": None,
+                        },
                     )(),
                     "table_info_by_domain": {
                         "area": {"table_elements": None},

@@ -39,6 +39,8 @@ class PanelMetaState:
     panel_name: str | None = None
     model: str | None = None
     firmware: str | None = None
+    application_firmware: str | None = None
+    app_version: int | None = None
     serial: str | None = None
     mac: str | None = None
 
@@ -54,7 +56,6 @@ class AreaState:
 
     # Identity/config
     name: str | None = None
-    stay_instant_enabled: bool | None = None
 
     # Core status (strings depend on API enums; keep as str for now)
     armed_state: str | None = None

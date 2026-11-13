@@ -3,11 +3,13 @@
   - Arm night (`ArmMode.ARMED_NIGHT`) sends `area.set_arm_state` with
     `arm_state` `ARMED_STAY_INST`; `ARMED_STAY_INST` status maps to
     `armed_night` instead of `armed_stay` (#139).
-  - Arm night requires panel firmware 0.5.37+ (numeric compare).
-    `PanelInfo.firmware` and per-area `AreaState.night_arm_supported` /
-    `stay_instant_enabled` expose capability on the public snapshot.
-  - Rejected or ignored Stay Instant commands raise
-    `Elke27StayInstantRequiredError` (no optimistic arm state).
+  - Arm night requires panel application firmware 0.5.37+ (from
+    `control.get_version_info` ``app``, not SSP). `PanelInfo.application_firmware`
+    and per-area `AreaState.night_arm_supported` expose capability on the public
+    snapshot.
+  - Panel rejections raise `Elke27PanelError`; ignored Stay Instant (accepted
+    write, state unchanged) raises `Elke27StayInstantRequiredError`. A failed
+    post-command status refresh raises `Elke27CommandOutcomeUnknownError`.
 
   Discovery Blocking Import (0.5.1, 2026-11-12)
 

@@ -228,10 +228,14 @@ If you are working on a Home Assistant integration:
   `auto_stay_cancel` and `exit_delay_cancel`.
 - **Arm night** (`ArmMode.ARMED_NIGHT`) commands the panel's **Stay Instant**
   mode (`ARMED_STAY_INST` on the wire). Stay Instant has **no exit delay by
-  default**. Arm night is available when panel firmware is **0.5.37 or newer**
-  (`AreaState.night_arm_supported` / `PanelInfo.firmware`). If the panel
-  rejects or ignores the command, the client raises `Elke27StayInstantRequiredError`
-  without changing reported state.
+  default**. Arm night is offered when **application** firmware (the
+  `control.get_version_info` **`app`** field, exposed as
+  `PanelInfo.application_firmware`) is **0.5.37 or newer** (`SSP` in
+  `PanelInfo.firmware` is not used for this gate). Panel `error_code` rejections
+  raise `Elke27PanelError`; if the panel accepts the command but status still is
+  not Stay Instant, the client raises `Elke27StayInstantRequiredError` (no
+  optimistic arm state). If the post-command status refresh fails, the client
+  raises `Elke27CommandOutcomeUnknownError`.
 
 ---
 

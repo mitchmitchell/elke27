@@ -807,9 +807,7 @@ class Elke27InvalidArgument(ValueError):
 class Elke27StayInstantRequiredError(Elke27Error):
     """Arm night failed because Stay Instant is unavailable for the area."""
 
-    _DEFAULT_MESSAGE = (
-        "Stay Instant must be enabled in area settings (panel firmware 0.5.37 or newer)."
-    )
+    _DEFAULT_MESSAGE = "Stay Instant must be enabled in area settings."
 
     def __init__(self, message: str | None = None) -> None:
         super().__init__(

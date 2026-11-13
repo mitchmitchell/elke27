@@ -103,6 +103,8 @@ async def test_async_arm_disarm_calls_async_execute(monkeypatch: MonkeyPatch):
 
     await client.async_arm_area(1, mode=ArmMode.ARMED_AWAY, pin="1234")
     await client.async_arm_area(1, mode=ArmMode.ARMED_STAY, pin="1234")
+    with pytest.raises(Elke27InvalidArgument, match="unknown"):
+        await client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234")
     await client.async_set_zone_bypass(1, bypassed=True, pin="1234")
     await client.async_disarm_area(1, pin="1234")
     assert client.snapshot is before

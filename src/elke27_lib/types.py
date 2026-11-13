@@ -134,6 +134,7 @@ class PanelInfo:
     mac: str | None = None
     model: str | None = None
     firmware: str | None = None
+    application_firmware: str | None = None
     serial: str | None = None
     panel_name: str | None = None
 
@@ -219,7 +220,6 @@ class AreaState:
     ready_status: str | None = None
     alarm_memory: bool | None = None
     trouble_status: str | None = None
-    stay_instant_enabled: bool | None = None
     night_arm_supported: bool = False
 
     @property

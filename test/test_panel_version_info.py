@@ -152,8 +152,10 @@ def test_hardware_reply_maps_model_firmware_and_drops_placeholder_serial() -> No
     assert state.panel.mac is None  # MAC only comes from UDP discovery
     assert state.panel.model == "260"
     assert state.panel.firmware == "2.6.1"
+    assert state.panel.app_version == 1540
+    assert state.panel.application_firmware == "0.0.6.4"
     changed = [e.changed_fields for e in emitted if hasattr(e, "changed_fields")]
-    assert changed == [("firmware", "model")]
+    assert changed == [("app_version", "application_firmware", "firmware", "model")]
 
 
 @pytest.mark.parametrize(

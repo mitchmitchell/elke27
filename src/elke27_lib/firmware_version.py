@@ -1,30 +1,47 @@
-"""Numeric firmware version comparison for capability gating."""
+"""Numeric application firmware comparison for capability gating."""
 
 from __future__ import annotations
 
-NIGHT_ARM_MIN_FIRMWARE: tuple[int, ...] = (0, 5, 37)
+NIGHT_ARM_MIN_FIRMWARE: tuple[int, ...] = (0, 0, 5, 37)
 
 
-def parse_firmware_version(value: str | None) -> tuple[int, ...] | None:
-    if not isinstance(value, str):
+def pack_application_firmware(a: int, b: int, c: int, d: int) -> int:
+    return ((a & 0xFF) << 24) | ((b & 0xFF) << 16) | ((c & 0xFF) << 8) | (d & 0xFF)
+
+
+NIGHT_ARM_MIN_APP_FIELD: int = pack_application_firmware(0, 0, 5, 37)
+
+
+def application_firmware_tuple_from_app_field(app: int | None) -> tuple[int, ...] | None:
+    if isinstance(app, bool) or not isinstance(app, int):
         return None
-    text = value.strip()
-    if not text:
+    if app < 0:
         return None
-    parts: list[int] = []
-    for segment in text.split("."):
-        segment = segment.strip()
-        if not segment or not segment.isdigit():
-            return None
-        parts.append(int(segment))
-    return tuple(parts) if parts else None
+    return (
+        (app >> 24) & 0xFF,
+        (app >> 16) & 0xFF,
+        (app >> 8) & 0xFF,
+        app & 0xFF,
+    )
 
 
-def firmware_at_least(value: str | None, minimum: tuple[int, ...]) -> bool:
-    parsed = parse_firmware_version(value)
-    if parsed is None:
+def format_application_firmware(app: int) -> str | None:
+    parts = application_firmware_tuple_from_app_field(app)
+    if parts is None:
+        return None
+    return ".".join(str(p) for p in parts)
+
+
+def version_tuple_at_least(current: tuple[int, ...] | None, minimum: tuple[int, ...]) -> bool:
+    if current is None:
         return False
-    width = max(len(parsed), len(minimum))
-    left = parsed + (0,) * (width - len(parsed))
+    width = max(len(current), len(minimum))
+    left = current + (0,) * (width - len(current))
     right = minimum + (0,) * (width - len(minimum))
     return left >= right
+
+
+def night_arm_supported_from_app_field(app: int | None) -> bool:
+    return version_tuple_at_least(
+        application_firmware_tuple_from_app_field(app), NIGHT_ARM_MIN_FIRMWARE
+    )
