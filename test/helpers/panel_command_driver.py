@@ -14,18 +14,13 @@ from test.helpers.fake_panel_replies import synthetic_success_reply
 from test.helpers.fake_session import FakePanelSession, connect_with_fake_panel
 
 
-def suppress_connect_bootstrap(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "elke27_lib.kernel_loop.E27Kernel._bootstrap_requests",
-        lambda self: None,
-    )
-
-
 async def connect_panel(
     monkeypatch: pytest.MonkeyPatch, *, enable_raw_passthrough: bool = False
 ) -> tuple[Elke27Client, FakePanelSession]:
-    suppress_connect_bootstrap(monkeypatch)
-    client = Elke27Client(enable_raw_passthrough=enable_raw_passthrough)
+    client = Elke27Client(
+        enable_raw_passthrough=enable_raw_passthrough,
+        skip_connect_bootstrap=True,
+    )
     panel = await connect_with_fake_panel(monkeypatch, client)
     return client, panel
 

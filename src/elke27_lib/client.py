@@ -512,11 +512,13 @@ class Elke27Client:
         logger: logging.Logger | None = None,
         filter_attribs_to_configured: bool = True,
         enable_raw_passthrough: bool = False,
+        skip_connect_bootstrap: bool = False,
     ) -> None:
         self._log: logging.Logger = logger or logging.getLogger(__name__)
         # Raw API pass-through (decision 34) is off unless the caller opts in at
         # construction. The Home Assistant integration must never set this.
         self._raw_passthrough_enabled: bool = bool(enable_raw_passthrough)
+        self._skip_connect_bootstrap: bool = bool(skip_connect_bootstrap)
         self._connection_lost_logged = False
         self._warned_arm_states: set[str] = set()
         self._connect_failures_warning_logged = False
@@ -578,6 +580,7 @@ class Elke27Client:
                 outbound_min_interval_s=outbound_min_interval_s,
                 outbound_max_burst=outbound_max_burst,
                 filter_attribs_to_configured=filter_attribs_to_configured,
+                skip_connect_bootstrap=self._skip_connect_bootstrap,
             )
         else:
             self._kernel = kernel
@@ -2188,7 +2191,14 @@ class Elke27Client:
             return
         self._identity_panel_key = key
         panel = self._kernel.state.panel
-        for field in ("serial", "mac", "model", "firmware"):
+        for field in (
+            "serial",
+            "mac",
+            "model",
+            "firmware",
+            "app_version",
+            "application_firmware",
+        ):
             if hasattr(panel, field):
                 setattr(panel, field, None)
         # Publish the cleared identity; panel_info=None would keep the old PanelInfo.
@@ -2632,18 +2642,15 @@ class Elke27Client:
         area_id: int,
         response_payload: Mapping[str, object] | None,
     ) -> None:
-        if isinstance(response_payload, Mapping):
-            reported = response_payload.get("arm_state")
-            if reported is None:
-                reported = response_payload.get("armed_state")
-            if isinstance(reported, str):
-                normalized = reported.strip().upper()
-                if normalized and normalized != _PANEL_ARM_STATE_STAY_INST:
-                    raise Elke27StayInstantRequiredError()
+        del response_payload
         after = self.snapshot.areas.get(area_id)
-        after_arm = after.arm_mode if after is not None else None
-        if after_arm is not ArmMode.ARMED_NIGHT:
+        if after is None:
             raise Elke27StayInstantRequiredError()
+        if after.arm_mode is ArmMode.ARMED_NIGHT:
+            return
+        if after.arm_mode is ArmMode.DISARMED and after.arm_cmd_mode is ArmMode.ARMED_NIGHT:
+            return
+        raise Elke27StayInstantRequiredError()
 
     @overload
     async def async_arm_area(

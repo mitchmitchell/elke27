@@ -124,10 +124,15 @@ async def test_identity_cleared_when_connecting_to_a_different_panel(
     assert panel.serial == "A1"
 
     # A different panel must not inherit A's identity.
+    panel.app_version = 1540
+    panel.application_firmware = "0.0.6.4"
+
     await client.async_connect("panel-b", 2101, _KEYS)
     assert (panel.serial, panel.mac, panel.model, panel.firmware) == (None, None, None, None)
+    assert (panel.app_version, panel.application_firmware) == (None, None)
     snap = client.snapshot.panel
     assert (snap.serial, snap.mac, snap.model, snap.firmware) == (None, None, None, None)
+    assert (snap.application_firmware,) == (None,)
 
 
 # --- Hardware RC report 2026-10-13: placeholder serial, real field mapping ---
@@ -144,6 +149,46 @@ _HW_REPLY = {
     "db1ver": [1795, 65545, 66151],
     "error_code": 0,
 }
+
+
+@pytest.mark.parametrize("bad_app", ["1540", True, 15.4])
+def test_version_info_wrong_type_app_is_ignored(bad_app: object) -> None:
+    state, emitted = _run_handler({"app": bad_app, "SSP": "2.6.1", "error_code": 0})
+    assert state.panel.app_version is None
+    assert state.panel.application_firmware is None
+    warning_keys = [getattr(e, "keys", ()) for e in emitted]
+    assert any(any("'app' wrong type" in key for key in keys) for keys in warning_keys)
+    assert not any(
+        hasattr(e, "changed_fields") and "app_version" in e.changed_fields for e in emitted
+    )
+
+
+def test_version_info_app_changed_fields_once_and_repeat() -> None:
+    state = PanelState()
+    emitted_first: list[Any] = []
+    handler = make_control_get_version_info_handler(
+        state, lambda evt, _ctx: emitted_first.append(evt), lambda: 0.0
+    )
+    handler({"control": {"get_version_info": {"app": 1317, "error_code": 0}}}, cast(Any, object()))
+    assert state.panel.application_firmware == "0.0.5.37"
+    changed_first = [e.changed_fields for e in emitted_first if hasattr(e, "changed_fields")]
+    assert changed_first == [("app_version", "application_firmware")]
+
+    emitted_repeat: list[Any] = []
+    handler = make_control_get_version_info_handler(
+        state, lambda evt, _ctx: emitted_repeat.append(evt), lambda: 0.0
+    )
+    handler({"control": {"get_version_info": {"app": 1317, "error_code": 0}}}, cast(Any, object()))
+    changed_repeat = [e.changed_fields for e in emitted_repeat if hasattr(e, "changed_fields")]
+    assert changed_repeat == []
+
+    emitted_new: list[Any] = []
+    handler = make_control_get_version_info_handler(
+        state, lambda evt, _ctx: emitted_new.append(evt), lambda: 0.0
+    )
+    handler({"control": {"get_version_info": {"app": 1540, "error_code": 0}}}, cast(Any, object()))
+    changed_new = [e.changed_fields for e in emitted_new if hasattr(e, "changed_fields")]
+    assert changed_new == [("app_version", "application_firmware")]
 
 
 def test_hardware_reply_maps_model_firmware_and_drops_placeholder_serial() -> None:

@@ -51,13 +51,6 @@ async def _seed_areas(panel: FakePanelSession, *payloads: dict[str, object]) -> 
         await panel.deliver({"seq": 0, "area": {"get_status": payload}})
 
 
-def _suppress_connect_bootstrap(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "elke27_lib.kernel_loop.E27Kernel._bootstrap_requests",
-        lambda self: None,
-    )
-
-
 def _installer_raw_messages(sent: list[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
     return [msg for msg in sent if msg.get("net_dev", {}).get("del_attribs") is not None]
 
@@ -98,8 +91,7 @@ async def _assert_disarmed_gate_allows(client: Elke27Client, panel: FakePanelSes
 async def test_raw_request_passes_disarmed_gate_when_all_areas_disarmed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _suppress_connect_bootstrap(monkeypatch)
-    client = Elke27Client(enable_raw_passthrough=True)
+    client = Elke27Client(enable_raw_passthrough=True, skip_connect_bootstrap=True)
     panel = await connect_with_fake_panel(monkeypatch, client)
     await _seed_areas(panel, _doc_status(1, "DISARMED"), _doc_status(2, "DISARMED"))
     await _assert_disarmed_gate_allows(client, panel)
@@ -109,8 +101,7 @@ async def test_raw_request_passes_disarmed_gate_when_all_areas_disarmed(
 async def test_raw_request_passes_disarmed_gate_for_padded_disarmed_strings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _suppress_connect_bootstrap(monkeypatch)
-    client = Elke27Client(enable_raw_passthrough=True)
+    client = Elke27Client(enable_raw_passthrough=True, skip_connect_bootstrap=True)
     panel = await connect_with_fake_panel(monkeypatch, client)
     await _seed_areas(panel, _doc_status(1, " DISARMED "), _doc_status(2, "DISARMED"))
     await _assert_disarmed_gate_allows(client, panel)

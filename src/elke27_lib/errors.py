@@ -617,6 +617,10 @@ class Elke27CommandOutcomeUnknownError(Elke27TimeoutError):
     The panel may or may not have applied the command. Callers should re-read the
     affected entity instead of assuming failure. ``route`` is ``(domain, command)``.
     Timeouts before the frame was sent stay plain ``Elke27TimeoutError``.
+
+    Also raised when a command is accepted (``error_code`` 0) but the follow-up
+    status refresh fails or does not confirm the outcome; the write may still have
+    been applied on the panel.
     """
 
     def __init__(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, cast
 
 import pytest
@@ -12,7 +13,12 @@ from elke27_lib.const import E27ErrorCode
 from elke27_lib.firmware_version import NIGHT_ARM_MIN_APP_FIELD, pack_application_firmware
 from elke27_lib.handlers.control import make_control_get_version_info_handler
 from elke27_lib.states import PanelState
-from test.helpers.panel_command_driver import connect_with_app_firmware, drive_until_done
+from test.helpers.panel_command_driver import (
+    connect_panel,
+    connect_with_app_firmware,
+    drive_until_done,
+    seed_area_disarmed,
+)
 
 
 def test_panel_get_version_info_stores_application_firmware() -> None:
@@ -167,3 +173,175 @@ async def test_arm_night_refresh_failure_raises_command_outcome_unknown(
 
     with pytest.raises(Elke27CommandOutcomeUnknownError):
         await client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234")
+
+
+def _area_set_arm_messages(panel_sent: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        msg["area"]["set_arm_state"]
+        for msg in panel_sent
+        if isinstance(msg.get("area"), dict) and "set_arm_state" in msg["area"]
+    ]
+
+
+@pytest.mark.asyncio
+async def test_sim_arm_night_then_disarm_with_hardware_app_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, panel = await connect_with_app_firmware(monkeypatch, 1540)
+    assert client.snapshot.panel.application_firmware == "0.0.6.4"
+    assert client.snapshot.areas[1].night_arm_supported is True
+
+    await drive_until_done(
+        client,
+        panel,
+        client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234"),
+    )
+    arm_msgs = _area_set_arm_messages(panel.sent)
+    assert arm_msgs[-1]["arm_state"] == "ARMED_STAY_INST"
+    assert arm_msgs[-1]["area_id"] == 1
+    assert client.snapshot.areas[1].arm_mode is ArmMode.ARMED_NIGHT
+
+    await drive_until_done(
+        client,
+        panel,
+        client.async_disarm_area(1, pin="1234"),
+    )
+    assert client.snapshot.areas[1].arm_mode is ArmMode.DISARMED
+
+
+@pytest.mark.asyncio
+async def test_sim_arm_night_area_two_targets_area_two(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, panel = await connect_with_app_firmware(monkeypatch, NIGHT_ARM_MIN_APP_FIELD)
+    await seed_area_disarmed(panel, 2)
+
+    await drive_until_done(
+        client,
+        panel,
+        client.async_arm_area(2, mode=ArmMode.ARMED_NIGHT, pin="1234"),
+    )
+    arm_msgs = _area_set_arm_messages(panel.sent)
+    assert arm_msgs[-1]["area_id"] == 2
+    assert arm_msgs[-1]["arm_state"] == "ARMED_STAY_INST"
+    assert client.snapshot.areas[2].arm_mode is ArmMode.ARMED_NIGHT
+    assert client.snapshot.areas[1].arm_mode is ArmMode.DISARMED
+
+
+@pytest.mark.asyncio
+async def test_sim_arm_night_area_two_checks_armed_area_not_area_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, panel = await connect_with_app_firmware(monkeypatch, NIGHT_ARM_MIN_APP_FIELD)
+    await seed_area_disarmed(panel, 2)
+    await panel.deliver(
+        {
+            "seq": 0,
+            "session_id": panel.info.session_id,
+            "area": {
+                "get_status": {
+                    "area_id": 1,
+                    "arm_state": "ARMED_STAY_INST",
+                    "error_code": E27ErrorCode.ELKERR_NONE,
+                }
+            },
+        }
+    )
+
+    with pytest.raises(Elke27StayInstantRequiredError):
+        await drive_until_done(
+            client,
+            panel,
+            client.async_arm_area(2, mode=ArmMode.ARMED_NIGHT, pin="1234"),
+            custom_replies={
+                0: {
+                    "area": {
+                        "set_arm_state": {"area_id": 2, "error_code": E27ErrorCode.ELKERR_NONE}
+                    }
+                },
+                1: {
+                    "area": {
+                        "get_status": {
+                            "area_id": 2,
+                            "error_code": E27ErrorCode.ELKERR_NONE,
+                            "arm_state": "DISARMED",
+                        }
+                    }
+                },
+            },
+        )
+
+
+@pytest.mark.asyncio
+async def test_arm_night_exit_delay_pending_is_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, panel = await connect_with_app_firmware(monkeypatch, NIGHT_ARM_MIN_APP_FIELD)
+    await drive_until_done(
+        client,
+        panel,
+        client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234"),
+        custom_replies={
+            0: {"area": {"set_arm_state": {"area_id": 1, "error_code": E27ErrorCode.ELKERR_NONE}}},
+            1: {
+                "area": {
+                    "get_status": {
+                        "area_id": 1,
+                        "error_code": E27ErrorCode.ELKERR_NONE,
+                        "arm_state": "DISARMED",
+                        "arm_cmd_state": "ARMED_STAY_INST",
+                        "ee_timer": 30,
+                        "alarm_zone": "",
+                    }
+                }
+            },
+        },
+    )
+    area = client.snapshot.areas[1]
+    assert area.arm_mode is ArmMode.DISARMED
+    assert area.arm_cmd_mode is ArmMode.ARMED_NIGHT
+    assert area.arming is True
+
+
+@pytest.mark.asyncio
+async def test_night_arm_supported_false_for_old_app_on_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _panel = await connect_with_app_firmware(
+        monkeypatch, pack_application_firmware(0, 0, 5, 36)
+    )
+    area = client.snapshot.areas[1]
+    assert client.snapshot.panel.application_firmware == "0.0.5.36"
+    assert area.night_arm_supported is False
+
+
+@pytest.mark.asyncio
+async def test_night_arm_supported_false_when_app_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, panel = await connect_panel(monkeypatch)
+    await seed_area_disarmed(panel)
+    assert client.snapshot.areas[1].night_arm_supported is False
+
+
+@pytest.mark.asyncio
+async def test_vacation_arm_rejected_before_send(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, panel = await connect_with_app_firmware(monkeypatch, NIGHT_ARM_MIN_APP_FIELD)
+    sent_before = len(panel.sent)
+    with pytest.raises(Elke27InvalidArgument, match="does not support arm mode 'armed_vacation'"):
+        await client.async_arm_area(1, mode=ArmMode.ARMED_VACATION, pin="1234")
+    assert panel.sent[sent_before:] == []
+
+
+@pytest.mark.asyncio
+async def test_arm_stay_and_away_still_use_panel_arm_state_wire(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, panel = await connect_with_app_firmware(monkeypatch, NIGHT_ARM_MIN_APP_FIELD)
+    await drive_until_done(
+        client, panel, client.async_arm_area(1, mode=ArmMode.ARMED_STAY, pin="1234")
+    )
+    stay_msgs = _area_set_arm_messages(panel.sent)
+    assert stay_msgs[-1]["arm_state"] == "ARMED_STAY"
+
+    await drive_until_done(
+        client, panel, client.async_arm_area(1, mode=ArmMode.ARMED_AWAY, pin="1234")
+    )
+    away_msgs = _area_set_arm_messages(panel.sent)
+    assert away_msgs[-1]["arm_state"] == "ARMED_AWAY"

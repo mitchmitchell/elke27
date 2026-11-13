@@ -69,7 +69,10 @@ async def test_vacation_is_not_disarmed_or_away(monkeypatch: pytest.MonkeyPatch)
     assert area.arming is False
 
 
-@pytest.mark.parametrize("arm_cmd_state", ["ARMED_AWAY", "ARMED_STAY", "ARMED_VACATION"])
+@pytest.mark.parametrize(
+    "arm_cmd_state",
+    ["ARMED_AWAY", "ARMED_STAY", "ARMED_NIGHT", "ARMED_VACATION"],
+)
 @pytest.mark.asyncio
 async def test_exit_delay_is_arming_for_each_commanded_mode(
     monkeypatch: pytest.MonkeyPatch, arm_cmd_state: str
@@ -78,6 +81,17 @@ async def test_exit_delay_is_arming_for_each_commanded_mode(
         monkeypatch, _doc_status("DISARMED", arm_cmd_state=arm_cmd_state, ee_timer=30)
     )
     assert area.arm_mode is ArmMode.DISARMED
+    assert area.arming is True
+
+
+@pytest.mark.asyncio
+async def test_exit_delay_is_arming_when_cmd_is_stay_inst_wire_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    area = await _area_after(
+        monkeypatch, _doc_status("DISARMED", arm_cmd_state="ARMED_STAY_INST", ee_timer=30)
+    )
+    assert area.arm_cmd_mode is ArmMode.ARMED_NIGHT
     assert area.arming is True
 
 
