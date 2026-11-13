@@ -11,6 +11,7 @@ from elke27_lib import Elke27InvalidArgument, Elke27PanelError, Elke27StayInstan
 from elke27_lib.client import ArmMode, Elke27Client
 from elke27_lib.const import E27ErrorCode
 from elke27_lib.firmware_version import NIGHT_ARM_MIN_APP_FIELD, pack_application_firmware
+from elke27_lib.types import LinkKeys
 from elke27_lib.handlers.control import make_control_get_version_info_handler
 from elke27_lib.states import PanelState
 from test.helpers.panel_command_driver import (
@@ -302,6 +303,36 @@ async def test_arm_night_exit_delay_pending_is_accepted(
 
 
 @pytest.mark.asyncio
+async def test_arm_night_stay_with_stay_inst_cmd_raises_stay_instant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, panel = await connect_with_app_firmware(monkeypatch, NIGHT_ARM_MIN_APP_FIELD)
+    with pytest.raises(Elke27StayInstantRequiredError):
+        await drive_until_done(
+            client,
+            panel,
+            client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234"),
+            custom_replies={
+                0: {
+                    "area": {
+                        "set_arm_state": {"area_id": 1, "error_code": E27ErrorCode.ELKERR_NONE}
+                    }
+                },
+                1: {
+                    "area": {
+                        "get_status": {
+                            "area_id": 1,
+                            "error_code": E27ErrorCode.ELKERR_NONE,
+                            "arm_state": "ARMED_STAY",
+                            "arm_cmd_state": "ARMED_STAY_INST",
+                        }
+                    }
+                },
+            },
+        )
+
+
+@pytest.mark.asyncio
 async def test_night_arm_supported_false_for_old_app_on_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -311,6 +342,22 @@ async def test_night_arm_supported_false_for_old_app_on_snapshot(
     area = client.snapshot.areas[1]
     assert client.snapshot.panel.application_firmware == "0.0.5.36"
     assert area.night_arm_supported is False
+
+
+_LINK_KEYS = LinkKeys("aa", "bb", "cc")
+
+
+@pytest.mark.asyncio
+async def test_panel_switch_clears_night_arm_supported_on_areas(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _panel = await connect_with_app_firmware(monkeypatch, NIGHT_ARM_MIN_APP_FIELD)
+    assert client.snapshot.panel.application_firmware == "0.0.5.37"
+    assert client.snapshot.areas[1].night_arm_supported is True
+
+    await client.async_connect("panel-other", 2102, _LINK_KEYS)
+    assert client.snapshot.panel.application_firmware is None
+    assert client.snapshot.areas[1].night_arm_supported is False
 
 
 @pytest.mark.asyncio

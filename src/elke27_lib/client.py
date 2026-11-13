@@ -499,6 +499,9 @@ class Elke27Client:
     Stable client API for consumers (e.g., Home Assistant).
 
     This facade intentionally avoids HA-specific concepts.
+
+    ``skip_connect_bootstrap`` is for unit/simulator tests only; Home Assistant
+    integrations must never enable it.
     """
 
     def __init__(
@@ -2201,8 +2204,10 @@ class Elke27Client:
         ):
             if hasattr(panel, field):
                 setattr(panel, field, None)
-        # Publish the cleared identity; panel_info=None would keep the old PanelInfo.
-        self._replace_snapshot(panel_info=self._build_panel_info())
+        self._replace_snapshot(
+            panel_info=self._build_panel_info(),
+            areas=self._build_area_map(),
+        )
 
     def _request_panel_version_info(self) -> None:
         """Ask the panel for serial/MAC/model/firmware after HELLO (E1).
@@ -2637,12 +2642,7 @@ class Elke27Client:
             )
         return None
 
-    def _raise_if_night_arm_ignored(
-        self,
-        area_id: int,
-        response_payload: Mapping[str, object] | None,
-    ) -> None:
-        del response_payload
+    def _raise_if_night_arm_ignored(self, area_id: int) -> None:
         after = self.snapshot.areas.get(area_id)
         if after is None:
             raise Elke27StayInstantRequiredError()
@@ -2747,7 +2747,7 @@ class Elke27Client:
         if mode is ArmMode.ARMED_NIGHT:
             if result.status_refresh_ok is False:
                 raise Elke27CommandOutcomeUnknownError(("area", "set_arm_state"))
-            self._raise_if_night_arm_ignored(area_id, result.data)
+            self._raise_if_night_arm_ignored(area_id)
         if return_result:
             return CommandResult(
                 route="area_set_arm_state", status_refresh_ok=result.status_refresh_ok

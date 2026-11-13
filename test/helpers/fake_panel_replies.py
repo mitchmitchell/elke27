@@ -66,14 +66,15 @@ def synthetic_success_reply(
 
     if domain == "area" and command == "set_arm_state":
         area_id = request_payload.get("area_id", 1)
-        set_reply: dict[str, Any] = {
-            "area_id": area_id,
-            "error_code": E27ErrorCode.ELKERR_NONE,
+        return {
+            "seq": seq,
+            "area": {
+                "set_arm_state": {
+                    "area_id": area_id,
+                    "error_code": E27ErrorCode.ELKERR_NONE,
+                }
+            },
         }
-        wire_arm = request_payload.get("arm_state")
-        if isinstance(wire_arm, str):
-            set_reply["arm_state"] = wire_arm
-        return {"seq": seq, "area": {"set_arm_state": set_reply}}
 
     if domain == "area" and command == "get_status":
         area_id = request_payload.get("area_id", 1)
