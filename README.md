@@ -226,6 +226,12 @@ If you are working on a Home Assistant integration:
   panel session) to avoid exhausting panel resources.
 - Arm/disarm helpers support extended arm-state flags:
   `auto_stay_cancel` and `exit_delay_cancel`.
+- **Arm night** (`ArmMode.ARMED_NIGHT`) commands the panel's **Stay Instant**
+  mode (`ARMED_STAY_INST` on the wire). Stay Instant has **no exit delay by
+  default**. Arm night is available when panel firmware is **0.5.37 or newer**
+  (`AreaState.night_arm_supported` / `PanelInfo.firmware`). If the panel
+  rejects or ignores the command, the client raises `Elke27StayInstantRequiredError`
+  without changing reported state.
 
 ---
 

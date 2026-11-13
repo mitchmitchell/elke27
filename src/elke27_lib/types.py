@@ -219,6 +219,8 @@ class AreaState:
     ready_status: str | None = None
     alarm_memory: bool | None = None
     trouble_status: str | None = None
+    stay_instant_enabled: bool | None = None
+    night_arm_supported: bool = False
 
     @property
     def arming(self) -> bool:
@@ -228,6 +230,7 @@ class AreaState:
         if self.arm_cmd_mode not in (
             ArmMode.ARMED_AWAY,
             ArmMode.ARMED_STAY,
+            ArmMode.ARMED_NIGHT,
             ArmMode.ARMED_VACATION,
         ):
             return False

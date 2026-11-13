@@ -17,6 +17,7 @@ from elke27_lib import session_thread as session_mod
 from elke27_lib.client import ArmMode, Elke27Client
 from elke27_lib.const import E27ErrorCode
 from elke27_lib.errors import Elke27InvalidArgument
+from test.helpers.arm_night_panel import make_client_with_firmware
 from test.helpers.fake_panel_replies import synthetic_success_reply
 from test.helpers.internal import get_kernel, get_private
 
@@ -83,8 +84,8 @@ async def _reply(
 
 @pytest.mark.asyncio
 async def test_arm_night_rejected_with_clear_error_before_send() -> None:
-    client, session = _make_client()
-    with pytest.raises(Elke27InvalidArgument, match="does not support arm mode 'armed_night'"):
+    client, session = make_client_with_firmware("0.5.36")
+    with pytest.raises(Elke27InvalidArgument, match="0.5.37"):
         await client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234")
     assert session.sent == []
 

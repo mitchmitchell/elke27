@@ -54,6 +54,7 @@ class AreaState:
 
     # Identity/config
     name: str | None = None
+    stay_instant_enabled: bool | None = None
 
     # Core status (strings depend on API enums; keep as str for now)
     armed_state: str | None = None

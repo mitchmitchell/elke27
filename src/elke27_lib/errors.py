@@ -804,6 +804,21 @@ class Elke27InvalidArgument(ValueError):
         return f"{self.__class__.__name__}({self.__str__()!r})"
 
 
+class Elke27StayInstantRequiredError(Elke27Error):
+    """Arm night failed because Stay Instant is unavailable for the area."""
+
+    _DEFAULT_MESSAGE = (
+        "Stay Instant must be enabled in area settings (panel firmware 0.5.37 or newer)."
+    )
+
+    def __init__(self, message: str | None = None) -> None:
+        super().__init__(
+            message or self._DEFAULT_MESSAGE,
+            code="stay_instant_required",
+            is_transient=False,
+        )
+
+
 class E27HelloLinkRequired(E27ProvisioningRequired):
     """The panel rejected HELLO with a link/auth error code (e.g. 11006 invalid_id).
 

@@ -50,7 +50,7 @@ async def _area_after(monkeypatch: pytest.MonkeyPatch, payload: dict[str, object
         ("DISARMED", ArmMode.DISARMED),
         ("ARMED_STAY", ArmMode.ARMED_STAY),
         ("ARMED_AWAY", ArmMode.ARMED_AWAY),
-        ("ARMED_STAY_INST", ArmMode.ARMED_STAY),
+        ("ARMED_STAY_INST", ArmMode.ARMED_NIGHT),
         ("ARMED_VACATION", ArmMode.ARMED_VACATION),
         ("ALARM_MEM", None),
     ],
