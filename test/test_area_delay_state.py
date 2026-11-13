@@ -12,7 +12,15 @@ from elke27_lib.client import Elke27Client
 from elke27_lib.const import E27ErrorCode
 from elke27_lib.handlers.area import make_area_get_status_handler
 from elke27_lib.states import AreaState, PanelState
-from elke27_lib.types import DELAY_NONE, ArmMode, DelayStateEntry, DelayStateExit
+from elke27_lib.types import (
+    DELAY_NONE,
+    ArmMode,
+    DelayStateEntry,
+    DelayStateExit,
+)
+from elke27_lib.types import (
+    AreaState as PublicAreaState,
+)
 from test.helpers.dispatch import make_ctx
 from test.helpers.fake_session import connect_with_fake_panel
 
@@ -108,7 +116,12 @@ def _exit_frame(**overrides: object) -> dict[str, object]:
             "none",
         ),
         (
-            _exit_frame(arm_cmd_state="DISARMED", ee_timer=20),
+            _exit_frame(
+                arm_state="ARMED_AWAY",
+                arm_cmd_state="DISARMED",
+                ee_timer=20,
+                alarm_zone="",
+            ),
             "none",
         ),
     ],
@@ -209,9 +222,15 @@ async def test_entry_countdown_sequence_public_client(monkeypatch: pytest.Monkey
             "alarm_zone": "",
         },
     ]
-    for frame in frames:
-        await panel.deliver({"seq": 0, "area": {"get_status": frame}})
-    last = client.snapshot.areas[1]
+    snapshots = []
+    for idx, frame in enumerate(frames):
+        await panel.deliver({"seq": idx, "area": {"get_status": frame}})
+        snapshots.append(client.snapshot.areas[1])
+    for snap in snapshots[:2]:
+        assert snap.entry_delay is True
+        assert snap.arming is False
+        assert isinstance(snap.delay_state, DelayStateEntry)
+    last = snapshots[2]
     assert last.arm_mode is ArmMode.DISARMED
     assert last.entry_delay is False
     assert last.delay_state is DELAY_NONE
@@ -249,3 +268,183 @@ async def test_exit_delay_sequence_public_client(monkeypatch: pytest.MonkeyPatch
     assert snapshots[2].arming is False
     assert snapshots[2].delay_state is DELAY_NONE
     assert snapshots[2].ee_timer == 1
+
+
+def test_t12_armed_with_disarm_cmd_is_none() -> None:
+    area = _area_from_payload(
+        _exit_frame(arm_state="ARMED_AWAY", arm_cmd_state="DISARMED", ee_timer=20, alarm_zone="")
+    )
+    assert delay_state_from_area_status(area) is DELAY_NONE
+
+
+@pytest.mark.asyncio
+async def test_y03_public_flags_entry_vs_exit(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = Elke27Client()
+    panel = await connect_with_fake_panel(monkeypatch, client)
+    await panel.deliver({"seq": 0, "area": {"get_status": dict(ELK_ENTRY_CAPTURE, ee_timer=6)}})
+    entry_snap = client.snapshot.areas[1]
+    assert entry_snap.entry_delay is True
+    assert entry_snap.arming is False
+    await panel.deliver({"seq": 1, "area": {"get_status": _exit_frame(ee_timer=22)}})
+    exit_snap = client.snapshot.areas[1]
+    assert exit_snap.arming is True
+    assert exit_snap.entry_delay is False
+
+
+@pytest.mark.asyncio
+async def test_c02_multi_area_snapshot_delay_states(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = Elke27Client()
+    panel = await connect_with_fake_panel(monkeypatch, client)
+    area1_idle = {
+        "area_id": 1,
+        "arm_state": "DISARMED",
+        "arm_cmd_state": "DISARMED",
+        "ee_timer": 0,
+        "alarm_zone": "",
+        "alarms": "",
+        "alrm_snd": "",
+        "error_code": 0,
+    }
+    area2_exit = {**_exit_frame(ee_timer=33), "area_id": 2}
+    await panel.deliver({"seq": 0, "area": {"get_status": area1_idle}})
+    await panel.deliver({"seq": 1, "area": {"get_status": area2_exit}})
+    assert client.snapshot.areas[1].delay_state is DELAY_NONE
+    assert isinstance(client.snapshot.areas[2].delay_state, DelayStateExit)
+    assert client.snapshot.areas[2].delay_state.seconds == 33
+
+    area1_entry = dict(ELK_ENTRY_CAPTURE, ee_timer=7)
+    area2_idle = dict(area1_idle)
+    area2_idle["area_id"] = 2
+    await panel.deliver({"seq": 2, "area": {"get_status": area1_entry}})
+    await panel.deliver({"seq": 3, "area": {"get_status": area2_idle}})
+    assert isinstance(client.snapshot.areas[1].delay_state, DelayStateEntry)
+    assert client.snapshot.areas[2].delay_state is DELAY_NONE
+
+
+@pytest.mark.asyncio
+async def test_t18_alrm_snd_only_ends_entry_delay(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = Elke27Client()
+    panel = await connect_with_fake_panel(monkeypatch, client)
+    await panel.deliver({"seq": 0, "area": {"get_status": ELK_ENTRY_CAPTURE}})
+    assert client.snapshot.areas[1].entry_delay is True
+    await panel.deliver(
+        {
+            "seq": 1,
+            "area": {
+                "get_status": dict(ELK_ENTRY_CAPTURE, alarms="", alrm_snd="BURG"),
+            },
+        }
+    )
+    snap = client.snapshot.areas[1]
+    assert snap.entry_delay is False
+    assert snap.delay_state is DELAY_NONE
+
+
+def test_t13_unknown_arm_cmd_state_blocks_exit() -> None:
+    area = AreaState(
+        area_id=1,
+        arm_state="DISARMED",
+        arm_cmd_state="ARMED_SOMETHING_NEW",
+        ee_timer=25,
+        alarm_zone="",
+    )
+    assert delay_state_from_area_status(area) is DELAY_NONE
+
+
+def test_t14_unknown_arm_state_blocks_exit() -> None:
+    area = AreaState(
+        area_id=1,
+        arm_state="ARMED_SOMETHING_NEW",
+        arm_cmd_state="ARMED_AWAY",
+        ee_timer=25,
+        alarm_zone="",
+    )
+    assert delay_state_from_area_status(area) is DELAY_NONE
+
+
+def test_t16_unknown_arm_state_blocks_entry() -> None:
+    area = AreaState(
+        area_id=1,
+        arm_state="ARMED_SOMETHING_NEW",
+        ee_timer=9,
+        alarm_zone="ID:6 - Zone 6",
+    )
+    assert delay_state_from_area_status(area) is DELAY_NONE
+
+
+def test_t15_armed_state_fallback_for_entry() -> None:
+    area = AreaState(
+        area_id=1,
+        armed_state="ARMED_STAY",
+        arm_state=None,
+        ee_timer=8,
+        alarm_zone="  padded  ",
+    )
+    entry = delay_state_from_area_status(area)
+    assert isinstance(entry, DelayStateEntry)
+    assert entry.zone == "padded"
+
+
+def test_t05_entry_zone_is_stripped() -> None:
+    area = AreaState(
+        area_id=1,
+        arm_state="ARMED_STAY",
+        ee_timer=5,
+        alarm_zone="  ID:6 - Zone 6  ",
+    )
+    entry = delay_state_from_area_status(area)
+    assert isinstance(entry, DelayStateEntry)
+    assert entry.zone == "ID:6 - Zone 6"
+
+
+def test_t07_whitespace_only_alarm_zone_is_blank() -> None:
+    area = AreaState(
+        area_id=1,
+        arm_state="ARMED_STAY",
+        ee_timer=5,
+        alarm_zone="   ",
+    )
+    assert delay_state_from_area_status(area) is DELAY_NONE
+
+
+def test_t08_none_alarm_zone_is_not_entry() -> None:
+    area = AreaState(
+        area_id=1,
+        arm_state="ARMED_AWAY",
+        ee_timer=12,
+        alarm_zone=None,
+    )
+    assert delay_state_from_area_status(area) is DELAY_NONE
+
+
+def test_t10_negative_ee_timer_is_blank() -> None:
+    area = AreaState(
+        area_id=1,
+        arm_state="DISARMED",
+        arm_cmd_state="ARMED_AWAY",
+        ee_timer=-3,
+        alarm_zone="",
+    )
+    assert delay_state_from_area_status(area) is DELAY_NONE
+
+
+def test_i01_i02_public_all_exports_delay_symbols() -> None:
+    import elke27_lib
+
+    assert "DelayStateExit" in elke27_lib.__all__
+    assert "delay_state_from_area_status" in elke27_lib.__all__
+
+
+def test_y05_public_area_state_default_delay() -> None:
+    assert PublicAreaState(area_id=1).delay_state is DELAY_NONE
+
+
+def test_y06_delay_state_exit_is_frozen() -> None:
+    exit_state = DelayStateExit(seconds=10)
+    with pytest.raises(AttributeError):
+        exit_state.seconds = 9  # type: ignore[misc]
+
+
+def test_p05_arm_mode_from_panel_string_non_str() -> None:
+    assert arm_mode_from_panel_string(None) is None
+    assert arm_mode_from_panel_string(42) is None  # type: ignore[arg-type]

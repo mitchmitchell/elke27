@@ -37,17 +37,19 @@ def delay_state_from_area_status(area: AreaState) -> DelayState:
     arm_mode = arm_mode_from_panel_string(arm_value)
     cmd_mode = arm_mode_from_panel_string(area.arm_cmd_state)
 
+    timer = area.ee_timer
+    zone = area.alarm_zone
     if (
         arm_mode is not None
         and arm_mode is not ArmMode.DISARMED
-        and not ee_timer_blank(area.ee_timer)
-        and not alarm_zone_blank(area.alarm_zone)
+        and not ee_timer_blank(timer)
+        and not alarm_zone_blank(zone)
     ):
-        assert area.ee_timer is not None
-        assert area.alarm_zone is not None
-        return DelayStateEntry(seconds=area.ee_timer, zone=area.alarm_zone.strip())
+        if timer is None or zone is None:
+            return DELAY_NONE
+        return DelayStateEntry(seconds=timer, zone=zone.strip())
 
-    if ee_timer_blank(area.ee_timer):
+    if ee_timer_blank(timer):
         return DELAY_NONE
     if cmd_mode is None or cmd_mode is ArmMode.DISARMED:
         return DELAY_NONE
@@ -55,5 +57,6 @@ def delay_state_from_area_status(area: AreaState) -> DelayState:
         return DELAY_NONE
     if arm_mode == cmd_mode:
         return DELAY_NONE
-    assert area.ee_timer is not None
-    return DelayStateExit(seconds=area.ee_timer)
+    if timer is None:
+        return DELAY_NONE
+    return DelayStateExit(seconds=timer)

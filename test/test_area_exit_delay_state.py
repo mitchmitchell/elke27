@@ -18,7 +18,7 @@ from elke27_lib.handlers.area import (
 )
 from elke27_lib.kernel_loop import E27Kernel
 from elke27_lib.states import AreaState, PanelState
-from elke27_lib.types import ArmMode
+from elke27_lib.types import ArmMode, DelayStateEntry
 from test.helpers.dispatch import make_ctx
 
 
@@ -800,6 +800,30 @@ def _event_base(kind: str) -> dict[str, Any]:
         route=("__local__", kind),
         session_id=1,
     )
+
+
+def test_unrelated_payload_keeps_entry_delay() -> None:
+    state = PanelState()
+    handler = _status_handler(state)
+    on = _base_status_payload(
+        arm_state="ARMED_AWAY",
+        arm_cmd_state="ARMED_AWAY",
+        ee_timer=20,
+        alarm_zone="ID:6 - Zone 6",
+    )
+    assert handler({"area": {"get_status": on}}, make_ctx()) is True
+    assert (
+        handler(
+            {"area": {"get_status": {"area_id": 1, "Chime": True}}},
+            make_ctx(),
+        )
+        is True
+    )
+    snap = _snapshot_for(state.areas[1])
+    assert isinstance(snap.delay_state, DelayStateEntry)
+    assert snap.entry_delay is True
+    assert snap.arming is False
+    assert snap.ee_timer == 20
 
 
 def test_disconnect_snapshot_reset_clears_exit_delay_pending() -> None:
