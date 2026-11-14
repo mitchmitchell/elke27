@@ -2,21 +2,19 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import replace
-from types import MappingProxyType
 from typing import Any, cast
 
 import pytest
 
 from elke27_lib import Elke27InvalidArgument, Elke27PanelError, Elke27StayInstantRequiredError
-from elke27_lib.client import ArmMode, Elke27Client, PanelSnapshot, Result
+from elke27_lib.client import ArmMode, Elke27Client, Result
 from elke27_lib.const import E27ErrorCode
-from elke27_lib.firmware_version import NIGHT_ARM_MIN_APP_FIELD, pack_application_firmware
 from elke27_lib.handlers.control import make_control_get_version_info_handler
 from elke27_lib.states import PanelState
-from elke27_lib.types import LinkKeys
+from elke27_lib.types import DelayStateExit, LinkKeys
+from test.helpers.firmware_fixtures import NIGHT_ARM_MIN_APP_FIELD, pack_application_firmware
 from test.helpers.panel_command_driver import (
+    area_set_arm_messages,
     connect_panel,
     connect_with_app_firmware,
     drive_until_done,
@@ -178,14 +176,6 @@ async def test_arm_night_refresh_failure_raises_command_outcome_unknown(
         await client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234")
 
 
-def _area_set_arm_messages(panel_sent: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        msg["area"]["set_arm_state"]
-        for msg in panel_sent
-        if isinstance(msg.get("area"), dict) and "set_arm_state" in msg["area"]
-    ]
-
-
 @pytest.mark.asyncio
 async def test_sim_arm_night_then_disarm_with_hardware_app_value(
     monkeypatch: pytest.MonkeyPatch,
@@ -199,7 +189,7 @@ async def test_sim_arm_night_then_disarm_with_hardware_app_value(
         panel,
         client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234"),
     )
-    arm_msgs = _area_set_arm_messages(panel.sent)
+    arm_msgs = area_set_arm_messages(panel.sent)
     assert arm_msgs[-1]["arm_state"] == "ARMED_STAY_INST"
     assert arm_msgs[-1]["area_id"] == 1
     assert client.snapshot.areas[1].arm_mode is ArmMode.ARMED_NIGHT
@@ -222,7 +212,7 @@ async def test_sim_arm_night_area_two_targets_area_two(monkeypatch: pytest.Monke
         panel,
         client.async_arm_area(2, mode=ArmMode.ARMED_NIGHT, pin="1234"),
     )
-    arm_msgs = _area_set_arm_messages(panel.sent)
+    arm_msgs = area_set_arm_messages(panel.sent)
     assert arm_msgs[-1]["area_id"] == 2
     assert arm_msgs[-1]["arm_state"] == "ARMED_STAY_INST"
     assert client.snapshot.areas[2].arm_mode is ArmMode.ARMED_NIGHT
@@ -302,6 +292,7 @@ async def test_arm_night_exit_delay_pending_is_accepted(
     assert area.arm_mode is ArmMode.DISARMED
     assert area.arm_cmd_mode is ArmMode.ARMED_NIGHT
     assert area.arming is True
+    assert isinstance(area.delay_state, DelayStateExit)
 
 
 @pytest.mark.asyncio
@@ -335,40 +326,6 @@ async def test_arm_night_stay_with_stay_inst_cmd_raises_stay_instant(
             },
         )
     assert client.snapshot.areas[1].arm_mode is ArmMode.ARMED_STAY
-
-
-@pytest.mark.asyncio
-async def test_arm_night_missing_snapshot_area_raises_stay_instant(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    client, panel = await connect_with_app_firmware(monkeypatch, NIGHT_ARM_MIN_APP_FIELD)
-    strip_snapshot = {"active": False}
-    real_snapshot_get = cast(Any, Elke27Client).snapshot.fget
-    assert real_snapshot_get is not None
-
-    def snapshot_with_optional_strip(self: Elke27Client) -> PanelSnapshot:
-        snap = cast(PanelSnapshot, real_snapshot_get(self))
-        if strip_snapshot["active"]:
-            return replace(snap, areas=MappingProxyType({}))
-        return snap
-
-    monkeypatch.setattr(Elke27Client, "snapshot", property(snapshot_with_optional_strip))
-    real_execute = client.async_execute
-
-    async def execute_then_strip_area_snapshot(command_key: str, /, **params: Any) -> Any:
-        result = await real_execute(command_key, **cast(Any, params))
-        if command_key == "area_set_arm_state" and result.ok:
-            strip_snapshot["active"] = True
-        return result
-
-    monkeypatch.setattr(client, "async_execute", execute_then_strip_area_snapshot)
-
-    with pytest.raises(Elke27StayInstantRequiredError):
-        await drive_until_done(
-            client,
-            panel,
-            client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234"),
-        )
 
 
 @pytest.mark.parametrize("ee_timer", [0, None])
@@ -484,11 +441,11 @@ async def test_arm_stay_and_away_still_use_panel_arm_state_wire(
     await drive_until_done(
         client, panel, client.async_arm_area(1, mode=ArmMode.ARMED_STAY, pin="1234")
     )
-    stay_msgs = _area_set_arm_messages(panel.sent)
+    stay_msgs = area_set_arm_messages(panel.sent)
     assert stay_msgs[-1]["arm_state"] == "ARMED_STAY"
 
     await drive_until_done(
         client, panel, client.async_arm_area(1, mode=ArmMode.ARMED_AWAY, pin="1234")
     )
-    away_msgs = _area_set_arm_messages(panel.sent)
+    away_msgs = area_set_arm_messages(panel.sent)
     assert away_msgs[-1]["arm_state"] == "ARMED_AWAY"

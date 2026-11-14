@@ -5,17 +5,8 @@ from __future__ import annotations
 NIGHT_ARM_MIN_FIRMWARE: tuple[int, ...] = (0, 0, 5, 37)
 
 
-def pack_application_firmware(a: int, b: int, c: int, d: int) -> int:
-    return ((a & 0xFF) << 24) | ((b & 0xFF) << 16) | ((c & 0xFF) << 8) | (d & 0xFF)
-
-
-NIGHT_ARM_MIN_APP_FIELD: int = pack_application_firmware(0, 0, 5, 37)
-
-
 def application_firmware_tuple_from_app_field(app: int | None) -> tuple[int, ...] | None:
-    if isinstance(app, bool) or not isinstance(app, int):
-        return None
-    if app < 0:
+    if app is None or type(app) is not int or app < 0:
         return None
     return (
         (app >> 24) & 0xFF,

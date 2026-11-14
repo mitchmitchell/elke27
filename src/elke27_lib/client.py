@@ -63,6 +63,8 @@ else:
 
 from . import discovery as discovery_mod
 from . import linking_thread as linking_mod
+from .area_delay import delay_state_from_area_status
+from .arm_panel import arm_mode_from_panel_string as _arm_mode_from_panel_string
 from .command_kinds import is_read_only_route
 from .const import E27ErrorCode as PanelErrorCode
 from .dispatcher_loop import PagedBlock, RouteKey
@@ -290,14 +292,6 @@ _CLIENT_EXCEPTIONS = (
 _BASE_SUPPORTED_ARM_MODES: frozenset[ArmMode] = frozenset({ArmMode.ARMED_AWAY, ArmMode.ARMED_STAY})
 _PANEL_ARM_STATE_STAY_INST = "ARMED_STAY_INST"
 
-_ARM_STATE_TO_MODE: Mapping[str, ArmMode] = {
-    "DISARMED": ArmMode.DISARMED,
-    "ARMED_STAY": ArmMode.ARMED_STAY,
-    "ARMED_STAY_INST": ArmMode.ARMED_NIGHT,
-    "ARMED_AWAY": ArmMode.ARMED_AWAY,
-    "ARMED_VACATION": ArmMode.ARMED_VACATION,
-    "ARMED_NIGHT": ArmMode.ARMED_NIGHT,
-}
 _NON_ARM_STATES: frozenset[str] = frozenset({"ALARM_MEM"})
 
 
@@ -521,7 +515,7 @@ class Elke27Client:
         # Raw API pass-through (decision 34) is off unless the caller opts in at
         # construction. The Home Assistant integration must never set this.
         self._raw_passthrough_enabled: bool = bool(enable_raw_passthrough)
-        self._skip_connect_bootstrap: bool = bool(skip_connect_bootstrap)
+        self._skip_connect_bootstrap: bool = skip_connect_bootstrap
         self._connection_lost_logged = False
         self._warned_arm_states: set[str] = set()
         self._connect_failures_warning_logged = False
@@ -1082,9 +1076,7 @@ class Elke27Client:
         warns once per connection-owning client when it sees one
         (https://github.com/mitchmitchell/elke27/issues/100).
         """
-        if not isinstance(value, str):
-            return None
-        return _ARM_STATE_TO_MODE.get(value.strip().upper())
+        return _arm_mode_from_panel_string(value)
 
     def _build_panel_info(self) -> PanelInfo:
         panel = self._kernel.state.panel
@@ -1114,6 +1106,7 @@ class Elke27Client:
         night_supported = night_arm_supported_from_app_field(app_version)
         for area_id, area in self._kernel.state.areas.items():
             arm_value = area.arm_state or area.armed_state
+            delay_state = delay_state_from_area_status(area)
             out[area_id] = V2AreaState(
                 area_id=area_id,
                 name=area.name,
@@ -1128,6 +1121,7 @@ class Elke27Client:
                 alarm_memory=_area_alarm_memory(area.alarm_mem, arm_value),
                 trouble_status=area.trouble_status,
                 night_arm_supported=night_supported,
+                delay_state=delay_state,
             )
         return types_mod.MappingProxyType(out)
 
@@ -2202,8 +2196,7 @@ class Elke27Client:
             "app_version",
             "application_firmware",
         ):
-            if hasattr(panel, field):
-                setattr(panel, field, None)
+            setattr(panel, field, None)
         self._replace_snapshot(
             panel_info=self._build_panel_info(),
             areas=self._build_area_map(),
@@ -2644,11 +2637,13 @@ class Elke27Client:
 
     def _raise_if_night_arm_ignored(self, area_id: int) -> None:
         after = self.snapshot.areas.get(area_id)
-        if after is None:
-            raise Elke27StayInstantRequiredError()
-        if after.arm_mode is ArmMode.ARMED_NIGHT:
+        if after is not None and after.arm_mode is ArmMode.ARMED_NIGHT:
             return
-        if after.arming and after.arm_cmd_mode is ArmMode.ARMED_NIGHT:
+        if (
+            after is not None
+            and after.arming
+            and after.arm_cmd_mode is ArmMode.ARMED_NIGHT
+        ):
             return
         raise Elke27StayInstantRequiredError()
 

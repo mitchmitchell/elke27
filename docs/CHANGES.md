@@ -3,13 +3,28 @@
   - Arm night (`ArmMode.ARMED_NIGHT`) sends `area.set_arm_state` with
     `arm_state` `ARMED_STAY_INST`; `ARMED_STAY_INST` status maps to
     `armed_night` instead of `armed_stay` (#139).
-  - Arm night requires panel application firmware 0.5.37+ (from
+  - Arm night requires application firmware **0.0.5.37 or later** (from
     `control.get_version_info` ``app``, not SSP). `PanelInfo.application_firmware`
     and per-area `AreaState.night_arm_supported` expose capability on the public
     snapshot.
   - Panel rejections raise `Elke27PanelError`; ignored Stay Instant (accepted
     write, state unchanged) raises `Elke27StayInstantRequiredError`. A failed
     post-command status refresh raises `Elke27CommandOutcomeUnknownError`.
+  - Entry/exit delay (#92): public ``AreaState`` exposes ``delay_state``
+    (``DelayStateNone``, ``DelayStateEntry``, or ``DelayStateExit``) derived from
+    documented ``area.get_status`` fields on each public ``AreaState.delay_state``
+    (derived inside the client snapshot; not a separate public entry point).
+    ``entry_delay`` is ``True`` during entry delay; ``arming`` is ``True`` during
+    exit delay. Remaining seconds follow the panel's five-second broadcasts only
+    (no local countdown). The undocumented ``entry_delay_active`` key is no longer
+    read. Entry delay is simulator-proven only; hardware entry testing needs
+    explicit approval before it is claimed in release notes beyond that.
+  - Being armed no longer clears ``ee_timer`` / ``alarm_zone`` on unrelated
+    partial payloads; fields clear only when a payload that touches them omits
+    them or sends the wrong type. ``arming`` can stay true across stay→away
+    command changes while ``ee_timer`` is still present; partial cmd-only
+    payloads that clear ``ee_timer`` still drop ``arming``. When exit delay
+    completes, ``ee_timer`` often remains ``1`` on the final armed frame.
 
   Discovery Blocking Import (0.5.1, 2026-11-12)
 

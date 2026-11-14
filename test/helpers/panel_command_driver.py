@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Coroutine
+from collections.abc import Coroutine, Mapping
 from typing import Any
 
 import pytest
@@ -12,6 +12,14 @@ from elke27_lib.client import Elke27Client
 from elke27_lib.const import E27ErrorCode
 from test.helpers.fake_panel_replies import synthetic_success_reply
 from test.helpers.fake_session import FakePanelSession, connect_with_fake_panel
+
+
+def area_set_arm_messages(panel_sent: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        msg["area"]["set_arm_state"]
+        for msg in panel_sent
+        if isinstance(msg.get("area"), dict) and "set_arm_state" in msg["area"]
+    ]
 
 
 async def connect_panel(

@@ -18,7 +18,7 @@ from elke27_lib.handlers.area import (
 )
 from elke27_lib.kernel_loop import E27Kernel
 from elke27_lib.states import AreaState, PanelState
-from elke27_lib.types import ArmMode
+from elke27_lib.types import ArmMode, DelayStateEntry
 from test.helpers.dispatch import make_ctx
 
 
@@ -92,7 +92,7 @@ def test_exit_delay_payload_updates_internal_and_public_snapshot() -> None:
     assert snapshot_area.arming is True
 
 
-def test_fully_armed_payload_clears_exit_delay_pending_fields() -> None:
+def test_fully_armed_payload_keeps_reported_ee_fields() -> None:
     state = PanelState()
     handler = _status_handler(state)
     msg = {
@@ -107,17 +107,18 @@ def test_fully_armed_payload_clears_exit_delay_pending_fields() -> None:
     assert handler(msg, make_ctx()) is True
     area = state.areas[1]
     assert area.arm_state == "ARMED_STAY"
-    assert area.arm_cmd_state is None
-    assert area.ee_timer is None
+    assert area.arm_cmd_state == "ARMED_STAY"
+    assert area.ee_timer == 0
 
     snapshot_area = _snapshot_for(area)
     assert snapshot_area.arm_mode is ArmMode.ARMED_STAY
-    assert snapshot_area.arm_cmd_mode is None
-    assert snapshot_area.ee_timer is None
+    assert snapshot_area.arm_cmd_mode is ArmMode.ARMED_STAY
+    assert snapshot_area.ee_timer == 0
     assert snapshot_area.arming is False
+    assert snapshot_area.entry_delay is False
 
 
-def test_missing_alarm_zone_makes_arming_false() -> None:
+def test_partial_exit_delay_without_alarm_zone_is_arming() -> None:
     state = PanelState()
     handler = _status_handler(state)
     msg = {
@@ -134,7 +135,7 @@ def test_missing_alarm_zone_makes_arming_false() -> None:
     assert handler(msg, make_ctx()) is True
     area = state.areas[1]
     assert area.alarm_zone is None
-    assert _snapshot_for(area).arming is False
+    assert _snapshot_for(area).arming is True
 
 
 def test_missing_exit_delay_fields_remain_none() -> None:
@@ -303,7 +304,7 @@ def test_ee_timer_zero_not_arming() -> None:
     assert _snapshot_for(state.areas[1]).arming is False
 
 
-def test_non_empty_alarm_zone_not_arming() -> None:
+def test_non_empty_alarm_zone_during_exit_delay_still_arming() -> None:
     state = PanelState()
     handler = _status_handler(state)
     msg = {
@@ -317,7 +318,9 @@ def test_non_empty_alarm_zone_not_arming() -> None:
     assert handler(msg, make_ctx()) is True
     area = state.areas[1]
     assert area.alarm_zone == "3"
-    assert _snapshot_for(area).arming is False
+    snap = _snapshot_for(area)
+    assert snap.arming is True
+    assert snap.entry_delay is False
 
 
 def test_set_status_route_applies_exit_delay_fields() -> None:
@@ -797,6 +800,30 @@ def _event_base(kind: str) -> dict[str, Any]:
         route=("__local__", kind),
         session_id=1,
     )
+
+
+def test_unrelated_payload_keeps_entry_delay() -> None:
+    state = PanelState()
+    handler = _status_handler(state)
+    on = _base_status_payload(
+        arm_state="ARMED_AWAY",
+        arm_cmd_state="ARMED_AWAY",
+        ee_timer=20,
+        alarm_zone="ID:6 - Zone 6",
+    )
+    assert handler({"area": {"get_status": on}}, make_ctx()) is True
+    assert (
+        handler(
+            {"area": {"get_status": {"area_id": 1, "Chime": True}}},
+            make_ctx(),
+        )
+        is True
+    )
+    snap = _snapshot_for(state.areas[1])
+    assert isinstance(snap.delay_state, DelayStateEntry)
+    assert snap.entry_delay is True
+    assert snap.arming is False
+    assert snap.ee_timer == 20
 
 
 def test_disconnect_snapshot_reset_clears_exit_delay_pending() -> None:

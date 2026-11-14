@@ -126,6 +126,31 @@ class ArmMode(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class DelayStateNone:
+    """No entry or exit delay is active."""
+
+
+@dataclass(frozen=True, slots=True)
+class DelayStateEntry:
+    """Entry delay while armed after a zone trip."""
+
+    seconds: int
+    zone: str
+
+
+@dataclass(frozen=True, slots=True)
+class DelayStateExit:
+    """Exit delay before the commanded arm mode takes effect."""
+
+    seconds: int
+
+
+DelayState = DelayStateNone | DelayStateEntry | DelayStateExit
+
+DELAY_NONE = DelayStateNone()
+
+
+@dataclass(frozen=True, slots=True)
 class PanelInfo:
     """
     Immutable panel information snapshot.
@@ -221,24 +246,17 @@ class AreaState:
     alarm_memory: bool | None = None
     trouble_status: str | None = None
     night_arm_supported: bool = False
+    delay_state: DelayState = DELAY_NONE
 
     @property
     def arming(self) -> bool:
-        """True only during an active exit delay (disarmed, pending arm, timer running)."""
-        if self.arm_mode is not ArmMode.DISARMED:
-            return False
-        if self.arm_cmd_mode not in (
-            ArmMode.ARMED_AWAY,
-            ArmMode.ARMED_STAY,
-            ArmMode.ARMED_NIGHT,
-            ArmMode.ARMED_VACATION,
-        ):
-            return False
-        if self.ee_timer is None or self.ee_timer <= 0:
-            return False
-        if self.alarm_zone != "":
-            return False
-        return True
+        """True during exit delay (panel ``ee_timer`` while ``arm_state`` lags ``arm_cmd_state``)."""
+        return isinstance(self.delay_state, DelayStateExit)
+
+    @property
+    def entry_delay(self) -> bool:
+        """True during entry delay (armed, non-zero ``ee_timer``, non-empty ``alarm_zone``)."""
+        return isinstance(self.delay_state, DelayStateEntry)
 
 
 @dataclass(frozen=True, slots=True)

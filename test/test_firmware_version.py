@@ -7,14 +7,13 @@ from typing import Any, cast
 import pytest
 
 from elke27_lib.firmware_version import (
-    NIGHT_ARM_MIN_APP_FIELD,
     NIGHT_ARM_MIN_FIRMWARE,
     application_firmware_tuple_from_app_field,
     format_application_firmware,
     night_arm_supported_from_app_field,
-    pack_application_firmware,
     version_tuple_at_least,
 )
+from test.helpers.firmware_fixtures import NIGHT_ARM_MIN_APP_FIELD, pack_application_firmware
 
 
 def test_app_field_decodes_hardware_capture() -> None:
