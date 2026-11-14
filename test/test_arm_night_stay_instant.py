@@ -296,7 +296,7 @@ async def test_arm_night_exit_delay_pending_is_accepted(
 
 
 @pytest.mark.asyncio
-async def test_arm_night_stay_with_stay_inst_cmd_raises_stay_instant(
+async def test_arm_night_stay_arm_state_with_stay_inst_cmd_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, panel = await connect_with_app_firmware(monkeypatch, NIGHT_ARM_MIN_APP_FIELD)
@@ -318,7 +318,7 @@ async def test_arm_night_stay_with_stay_inst_cmd_raises_stay_instant(
                             "error_code": E27ErrorCode.ELKERR_NONE,
                             "arm_state": "ARMED_STAY",
                             "arm_cmd_state": "ARMED_STAY_INST",
-                            "ee_timer": 30,
+                            "ee_timer": 0,
                             "alarm_zone": "",
                         }
                     }
@@ -326,6 +326,7 @@ async def test_arm_night_stay_with_stay_inst_cmd_raises_stay_instant(
             },
         )
     assert client.snapshot.areas[1].arm_mode is ArmMode.ARMED_STAY
+    assert client.snapshot.areas[1].arm_cmd_mode is ArmMode.ARMED_NIGHT
 
 
 @pytest.mark.parametrize("ee_timer", [0, None])

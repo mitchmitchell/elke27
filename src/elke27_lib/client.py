@@ -2639,11 +2639,7 @@ class Elke27Client:
         after = self.snapshot.areas.get(area_id)
         if after is not None and after.arm_mode is ArmMode.ARMED_NIGHT:
             return
-        if (
-            after is not None
-            and after.arming
-            and after.arm_cmd_mode is ArmMode.ARMED_NIGHT
-        ):
+        if after is not None and after.arming and after.arm_cmd_mode is ArmMode.ARMED_NIGHT:
             return
         raise Elke27StayInstantRequiredError()
 
