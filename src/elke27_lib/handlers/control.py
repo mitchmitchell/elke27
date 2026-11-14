@@ -44,6 +44,7 @@ from elke27_lib.events import (
     Event,
     PanelVersionInfoUpdated,
 )
+from elke27_lib.firmware_version import format_application_firmware
 from elke27_lib.states import PanelState, update_csm_snapshot
 
 EmitFn = Callable[[Event, DispatchContext], None]
@@ -144,6 +145,19 @@ def _reconcile_control_get_version_info(
             warnings.append(
                 f"field 'firmware' wrong type (expected str, got {type(firmware).__name__})"
             )
+
+    app = payload.get("app")
+    if app is not None:
+        if isinstance(app, int) and not isinstance(app, bool):
+            formatted = format_application_firmware(app)
+            if state.panel.app_version != app:
+                state.panel.app_version = app
+                changed.add("app_version")
+            if formatted is not None and state.panel.application_firmware != formatted:
+                state.panel.application_firmware = formatted
+                changed.add("application_firmware")
+        else:
+            warnings.append(f"field 'app' wrong type (expected int, got {type(app).__name__})")
 
     if serial is not None:
         if isinstance(serial, str):

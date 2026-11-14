@@ -5,9 +5,9 @@ from __future__ import annotations
 from typing import Literal
 
 ResponseKey = tuple[str, str]
-ArmState = Literal["DISARMED", "ARMED_AWAY", "ARMED_STAY"]
+ArmState = Literal["DISARMED", "ARMED_AWAY", "ARMED_STAY", "ARMED_STAY_INST"]
 
-_ARM_STATES: set[str] = {"DISARMED", "ARMED_AWAY", "ARMED_STAY"}
+_ARM_STATES: set[str] = {"DISARMED", "ARMED_AWAY", "ARMED_STAY", "ARMED_STAY_INST"}
 
 
 def generator_area_get_table_info() -> tuple[dict[str, object], ResponseKey]:

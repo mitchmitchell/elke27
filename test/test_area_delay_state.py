@@ -186,14 +186,12 @@ def test_armed_stay_inst_exit_delay_via_shared_arm_mapping() -> None:
     state = delay_state_from_area_status(_area_from_payload(exit_frame))
     assert isinstance(state, DelayStateExit)
     assert state.seconds == 30
-    assert arm_mode_from_panel_string("DISARMED") is not arm_mode_from_panel_string(
-        "ARMED_STAY_INST"
-    )
+    assert arm_mode_from_panel_string("ARMED_STAY_INST") is ArmMode.ARMED_NIGHT
 
 
 def test_armed_stay_inst_complete_is_not_delay() -> None:
     inst = "ARMED_STAY_INST"
-    assert arm_mode_from_panel_string(inst) == arm_mode_from_panel_string(inst)
+    assert arm_mode_from_panel_string(inst) is ArmMode.ARMED_NIGHT
     armed = {
         "area_id": 1,
         "arm_state": inst,

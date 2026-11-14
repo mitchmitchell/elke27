@@ -406,6 +406,7 @@ class E27Kernel:
         outbound_max_burst: int = 1,
         filter_attribs_to_configured: bool = True,
         keepalive_test_hooks: KeepaliveTestHooks | None = None,
+        skip_connect_bootstrap: bool = False,
     ) -> None:
         self._log = logger or logging.getLogger(__name__)
         self.now = now_monotonic
@@ -430,6 +431,7 @@ class E27Kernel:
         self._request_max_backoff_s = max(0.0, float(request_max_backoff_s))
         self._max_pending_requests = max(1, int(max_pending_requests))
         self._filter_attribs_to_configured = filter_attribs_to_configured
+        self._skip_connect_bootstrap = skip_connect_bootstrap
         self._outbound_min_interval_s = outbound_min_interval_s
         self._outbound_max_burst = outbound_max_burst
         self._last_link_keys = None
@@ -731,7 +733,8 @@ class E27Kernel:
                 {"table_elements": None, "increment_size": None},
             )
         self._emit_connection_state(connected=True)
-        self._bootstrap_requests()
+        if not self._skip_connect_bootstrap:
+            self._bootstrap_requests()
         self._last_link_keys = link_keys
         self._last_client_identity = client_identity
         self._last_session_config = cfg

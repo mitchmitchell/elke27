@@ -22,6 +22,7 @@ from .errors import (
     Elke27PermissionError,
     Elke27PinRequiredError,
     Elke27ProtocolError,
+    Elke27StayInstantRequiredError,
     Elke27TimeoutError,
     Elke27TransientError,
 )
@@ -111,6 +112,7 @@ __all__ = [
     "Elke27PanelError",
     "Elke27CryptoError",
     "Elke27InvalidArgument",
+    "Elke27StayInstantRequiredError",
     "Elke27Hub",
     "redact_for_diagnostics",
     "async_discover_host",

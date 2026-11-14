@@ -100,6 +100,7 @@ from .errors import (
     Elke27PanelError,
     Elke27PermissionError,
     Elke27PinRequiredError,
+    Elke27StayInstantRequiredError,
     Elke27TimeoutError,
     InvalidCredentials,
     InvalidLinkKeys,
@@ -151,6 +152,12 @@ from .events import (
     ZonesStatusBulkUpdated,
     ZoneStatusUpdated,
     ZoneTableInfoUpdated,
+)
+from .firmware_version import (
+    NIGHT_ARM_MIN_FIRMWARE,
+    application_firmware_tuple_from_app_field,
+    night_arm_supported_from_app_field,
+    version_tuple_at_least,
 )
 from .generators.registry import COMMANDS, CommandSpec, MergeStrategy
 from .handlers.area import (
@@ -282,11 +289,16 @@ _CLIENT_EXCEPTIONS = (
 )
 
 
-# area.set_arm_state accepts only these arm states (generators/area.py). The E27
-# has Away and Stay arming; it has no Night mode.
-_SUPPORTED_ARM_MODES: frozenset[ArmMode] = frozenset({ArmMode.ARMED_AWAY, ArmMode.ARMED_STAY})
+_BASE_SUPPORTED_ARM_MODES: frozenset[ArmMode] = frozenset({ArmMode.ARMED_AWAY, ArmMode.ARMED_STAY})
+_PANEL_ARM_STATE_STAY_INST = "ARMED_STAY_INST"
 
 _NON_ARM_STATES: frozenset[str] = frozenset({"ALARM_MEM"})
+
+
+def _panel_arm_state_for_mode(mode: ArmMode) -> str:
+    if mode is ArmMode.ARMED_NIGHT:
+        return _PANEL_ARM_STATE_STAY_INST
+    return mode.value.upper()
 
 
 def _area_alarm_memory(alarm_mem: str | None, arm_state: str | None) -> bool | None:
@@ -481,6 +493,9 @@ class Elke27Client:
     Stable client API for consumers (e.g., Home Assistant).
 
     This facade intentionally avoids HA-specific concepts.
+
+    ``skip_connect_bootstrap`` is for unit/simulator tests only; Home Assistant
+    integrations must never enable it.
     """
 
     def __init__(
@@ -494,11 +509,13 @@ class Elke27Client:
         logger: logging.Logger | None = None,
         filter_attribs_to_configured: bool = True,
         enable_raw_passthrough: bool = False,
+        skip_connect_bootstrap: bool = False,
     ) -> None:
         self._log: logging.Logger = logger or logging.getLogger(__name__)
         # Raw API pass-through (decision 34) is off unless the caller opts in at
         # construction. The Home Assistant integration must never set this.
         self._raw_passthrough_enabled: bool = bool(enable_raw_passthrough)
+        self._skip_connect_bootstrap: bool = skip_connect_bootstrap
         self._connection_lost_logged = False
         self._warned_arm_states: set[str] = set()
         self._connect_failures_warning_logged = False
@@ -560,6 +577,7 @@ class Elke27Client:
                 outbound_min_interval_s=outbound_min_interval_s,
                 outbound_max_burst=outbound_max_burst,
                 filter_attribs_to_configured=filter_attribs_to_configured,
+                skip_connect_bootstrap=self._skip_connect_bootstrap,
             )
         else:
             self._kernel = kernel
@@ -1066,6 +1084,7 @@ class Elke27Client:
             mac=getattr(panel, "mac", None),
             model=panel.model,
             firmware=panel.firmware,
+            application_firmware=panel.application_firmware,
             serial=panel.serial,
             panel_name=getattr(panel, "panel_name", None),
         )
@@ -1083,6 +1102,8 @@ class Elke27Client:
 
     def _build_area_map(self) -> Mapping[int, V2AreaState]:
         out: dict[int, V2AreaState] = {}
+        app_version = self._kernel.state.panel.app_version
+        night_supported = night_arm_supported_from_app_field(app_version)
         for area_id, area in self._kernel.state.areas.items():
             arm_value = area.arm_state or area.armed_state
             delay_state = delay_state_from_area_status(area)
@@ -1099,6 +1120,7 @@ class Elke27Client:
                 ready_status=area.ready_status,
                 alarm_memory=_area_alarm_memory(area.alarm_mem, arm_value),
                 trouble_status=area.trouble_status,
+                night_arm_supported=night_supported,
                 delay_state=delay_state,
             )
         return types_mod.MappingProxyType(out)
@@ -2166,11 +2188,19 @@ class Elke27Client:
             return
         self._identity_panel_key = key
         panel = self._kernel.state.panel
-        for field in ("serial", "mac", "model", "firmware"):
-            if hasattr(panel, field):
-                setattr(panel, field, None)
-        # Publish the cleared identity; panel_info=None would keep the old PanelInfo.
-        self._replace_snapshot(panel_info=self._build_panel_info())
+        for field in (
+            "serial",
+            "mac",
+            "model",
+            "firmware",
+            "app_version",
+            "application_firmware",
+        ):
+            setattr(panel, field, None)
+        self._replace_snapshot(
+            panel_info=self._build_panel_info(),
+            areas=self._build_area_map(),
+        )
 
     def _request_panel_version_info(self) -> None:
         """Ask the panel for serial/MAC/model/firmware after HELLO (E1).
@@ -2605,6 +2635,19 @@ class Elke27Client:
             )
         return None
 
+    def _raise_if_night_arm_ignored(self, area_id: int) -> None:
+        after = self.snapshot.areas.get(area_id)
+        if after is not None and after.arm_mode is ArmMode.ARMED_NIGHT:
+            return
+        if (
+            after is not None
+            and after.arm_mode is ArmMode.DISARMED
+            and after.arming
+            and after.arm_cmd_mode is ArmMode.ARMED_NIGHT
+        ):
+            return
+        raise Elke27StayInstantRequiredError()
+
     @overload
     async def async_arm_area(
         self,
@@ -2669,13 +2712,22 @@ class Elke27Client:
                 exit_delay_cancel=exit_delay_cancel,
                 return_result=return_result,
             )
-        if mode not in _SUPPORTED_ARM_MODES:
+        if mode not in _BASE_SUPPORTED_ARM_MODES and mode is not ArmMode.ARMED_NIGHT:
             raise Elke27InvalidArgument(
                 f"The E27 panel does not support arm mode {mode.value!r}; "
-                "use armed_away or armed_stay."
+                "use armed_away, armed_stay, or armed_night."
             )
+        if mode is ArmMode.ARMED_NIGHT:
+            app_version = self._kernel.state.panel.app_version
+            app_tuple = application_firmware_tuple_from_app_field(app_version)
+            if app_tuple is None:
+                raise Elke27InvalidArgument("Panel application firmware version is unknown.")
+            if not version_tuple_at_least(app_tuple, NIGHT_ARM_MIN_FIRMWARE):
+                raise Elke27InvalidArgument(
+                    "Arm night requires panel application firmware 0.5.37 or newer."
+                )
         pin_value = _normalize_area_pin(pin, action="arm")
-        arm_state = mode.value.upper()
+        arm_state = _panel_arm_state_for_mode(mode)
         result = await self.async_execute(
             "area_set_arm_state",
             area_id=area_id,
@@ -2688,6 +2740,10 @@ class Elke27Client:
             if result.error is not None:
                 self._raise_v2_command_error(result.error)
             raise Elke27ProtocolErrorV2("Failed to arm area.")
+        if mode is ArmMode.ARMED_NIGHT:
+            if result.status_refresh_ok is False:
+                raise Elke27CommandOutcomeUnknownError(("area", "set_arm_state"))
+            self._raise_if_night_arm_ignored(area_id)
         if return_result:
             return CommandResult(
                 route="area_set_arm_state", status_refresh_ok=result.status_refresh_ok

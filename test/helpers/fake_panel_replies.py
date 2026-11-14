@@ -52,6 +52,18 @@ def synthetic_success_reply(
     domain, command, request_payload = parsed
     history = sent_history or []
 
+    if domain == "control" and command == "get_version_info":
+        return {
+            "seq": seq,
+            "control": {
+                "get_version_info": {
+                    "error_code": E27ErrorCode.ELKERR_NONE,
+                    "app": request_payload.get("app", 0),
+                    "SSP": request_payload.get("SSP", "0.0.0"),
+                }
+            },
+        }
+
     if domain == "area" and command == "set_arm_state":
         area_id = request_payload.get("area_id", 1)
         return {

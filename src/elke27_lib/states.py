@@ -39,6 +39,8 @@ class PanelMetaState:
     panel_name: str | None = None
     model: str | None = None
     firmware: str | None = None
+    application_firmware: str | None = None
+    app_version: int | None = None
     serial: str | None = None
     mac: str | None = None
 

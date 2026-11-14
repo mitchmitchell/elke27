@@ -1,5 +1,15 @@
   Unreleased
 
+  - Arm night (`ArmMode.ARMED_NIGHT`) sends `area.set_arm_state` with
+    `arm_state` `ARMED_STAY_INST`; `ARMED_STAY_INST` status maps to
+    `armed_night` instead of `armed_stay` (#139).
+  - Arm night requires application firmware **0.0.5.37 or later** (from
+    `control.get_version_info` ``app``, not SSP). `PanelInfo.application_firmware`
+    and per-area `AreaState.night_arm_supported` expose capability on the public
+    snapshot.
+  - Panel rejections raise `Elke27PanelError`; ignored Stay Instant (accepted
+    write, state unchanged) raises `Elke27StayInstantRequiredError`. A failed
+    post-command status refresh raises `Elke27CommandOutcomeUnknownError`.
   - Entry/exit delay (#92): public ``AreaState`` exposes ``delay_state``
     (``DelayStateNone``, ``DelayStateEntry``, or ``DelayStateExit``) derived from
     documented ``area.get_status`` fields on each public ``AreaState.delay_state``
