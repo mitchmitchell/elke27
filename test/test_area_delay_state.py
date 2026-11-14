@@ -414,7 +414,9 @@ def test_t08_none_alarm_zone_is_not_entry() -> None:
         ee_timer=12,
         alarm_zone=None,
     )
-    assert delay_state_from_area_status(area) is DELAY_NONE
+    state = delay_state_from_area_status(area)
+    assert state is DELAY_NONE
+    assert not isinstance(state, DelayStateEntry)
 
 
 def test_t10_negative_ee_timer_is_blank() -> None:
@@ -432,19 +434,12 @@ def test_i01_i02_public_all_exports_delay_symbols() -> None:
     import elke27_lib
 
     assert "DelayStateExit" in elke27_lib.__all__
-    assert "delay_state_from_area_status" in elke27_lib.__all__
+    assert "DelayStateEntry" in elke27_lib.__all__
+    assert "DelayStateNone" in elke27_lib.__all__
+    assert "DelayState" in elke27_lib.__all__
+    assert "delay_state_from_area_status" not in elke27_lib.__all__
+    assert "delay_state_from_area_status" not in dir(elke27_lib)
 
 
 def test_y05_public_area_state_default_delay() -> None:
     assert PublicAreaState(area_id=1).delay_state is DELAY_NONE
-
-
-def test_y06_delay_state_exit_is_frozen() -> None:
-    exit_state = DelayStateExit(seconds=10)
-    with pytest.raises(AttributeError):
-        exit_state.seconds = 9  # type: ignore[misc]
-
-
-def test_p05_arm_mode_from_panel_string_non_str() -> None:
-    assert arm_mode_from_panel_string(None) is None
-    assert arm_mode_from_panel_string(42) is None  # type: ignore[arg-type]

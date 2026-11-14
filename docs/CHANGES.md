@@ -2,7 +2,8 @@
 
   - Entry/exit delay (#92): public ``AreaState`` exposes ``delay_state``
     (``DelayStateNone``, ``DelayStateEntry``, or ``DelayStateExit``) derived from
-    documented ``area.get_status`` fields via ``delay_state_from_area_status``.
+    documented ``area.get_status`` fields on each public ``AreaState.delay_state``
+    (derived inside the client snapshot; not a separate public entry point).
     ``entry_delay`` is ``True`` during entry delay; ``arming`` is ``True`` during
     exit delay. Remaining seconds follow the panel's five-second broadcasts only
     (no local countdown). The undocumented ``entry_delay_active`` key is no longer

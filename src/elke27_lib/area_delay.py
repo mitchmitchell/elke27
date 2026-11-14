@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TypeGuard
+
 from elke27_lib.arm_panel import arm_mode_from_panel_string
 from elke27_lib.handlers.area import area_alarm_active
 from elke27_lib.states import AreaState
@@ -14,18 +16,18 @@ from elke27_lib.types import (
 )
 
 
-def ee_timer_blank(value: int | None) -> bool:
-    """``ee_timer`` is blank when missing, zero, or non-positive."""
+def ee_timer_set(value: int | None) -> TypeGuard[int]:
+    """True when ``ee_timer`` is a positive panel countdown integer."""
     if value is None or isinstance(value, bool):
-        return True
-    return value <= 0
+        return False
+    return value > 0
 
 
-def alarm_zone_blank(value: str | None) -> bool:
-    """``alarm_zone`` is blank when missing or empty after trim."""
+def alarm_zone_set(value: str | None) -> TypeGuard[str]:
+    """True when ``alarm_zone`` is present and non-empty after trim."""
     if value is None:
-        return True
-    return not str(value).strip()
+        return False
+    return bool(str(value).strip())
 
 
 def delay_state_from_area_status(area: AreaState) -> DelayState:
@@ -42,21 +44,17 @@ def delay_state_from_area_status(area: AreaState) -> DelayState:
     if (
         arm_mode is not None
         and arm_mode is not ArmMode.DISARMED
-        and not ee_timer_blank(timer)
-        and not alarm_zone_blank(zone)
+        and ee_timer_set(timer)
+        and alarm_zone_set(zone)
     ):
-        if timer is None or zone is None:
-            return DELAY_NONE
         return DelayStateEntry(seconds=timer, zone=zone.strip())
 
-    if ee_timer_blank(timer):
+    if not ee_timer_set(timer):
         return DELAY_NONE
     if cmd_mode is None or cmd_mode is ArmMode.DISARMED:
         return DELAY_NONE
     if arm_mode is None:
         return DELAY_NONE
     if arm_mode == cmd_mode:
-        return DELAY_NONE
-    if timer is None:
         return DELAY_NONE
     return DelayStateExit(seconds=timer)
