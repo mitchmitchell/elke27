@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from collections.abc import Callable, Coroutine, Mapping
+from dataclasses import dataclass
 from typing import Any, cast
 
 import pytest
@@ -270,7 +272,6 @@ def test_mark_area_stale_notifies_subscribers() -> None:
 
 def test_area_status_update_clears_only_matching_stale_area() -> None:
     client = Elke27Client()
-    get_kernel(client)
     client._mark_area_stale(1)
 
     client._handle_kernel_event(
@@ -354,7 +355,6 @@ def test_unchanged_zone_get_status_handler_reply_clears_stale() -> None:
 
 def test_unchanged_area_status_read_clears_stale_area() -> None:
     client = Elke27Client()
-    get_kernel(client)
     client._mark_area_stale(1)
 
     client._handle_kernel_event(
@@ -376,7 +376,6 @@ def test_unchanged_area_status_read_clears_stale_area() -> None:
 
 def test_unchanged_zone_status_read_clears_stale_zone() -> None:
     client = Elke27Client()
-    get_kernel(client)
     client._mark_zone_stale(17)
 
     client._handle_kernel_event(
@@ -398,7 +397,6 @@ def test_unchanged_zone_status_read_clears_stale_zone() -> None:
 
 def test_zone_bulk_status_clears_only_updated_zones() -> None:
     client = Elke27Client()
-    get_kernel(client)
     client._mark_zone_stale(10)
     client._mark_zone_stale(11)
     client._mark_zone_stale(12)
@@ -568,8 +566,96 @@ async def test_unrelated_zone_status_does_not_release_arm_publication_wait() -> 
     assert client.snapshot.areas[1].arm_mode == ArmMode.ARMED_AWAY
 
 
+@dataclass(frozen=True)
+class _ReceiveThreadPublicationCase:
+    id: str
+    call: Callable[[Elke27Client], Coroutine[Any, Any, Result[Mapping[str, Any]]]]
+    reply_for_sent: Callable[[dict[str, Any]], dict[str, Any]]
+    check: Callable[[Elke27Client, Result[Mapping[str, Any]]], None]
+
+
+def _receive_thread_publication_cases() -> tuple[_ReceiveThreadPublicationCase, ...]:
+    return (
+        _ReceiveThreadPublicationCase(
+            id="area_set_arm_state",
+            call=lambda client: client.async_execute(
+                "area_set_arm_state",
+                area_id=1,
+                arm_state="ARMED_AWAY",
+                pin=1234,
+            ),
+            reply_for_sent=lambda sent: {
+                "seq": sent["seq"],
+                "area": {
+                    "set_arm_state": {
+                        "area_id": 1,
+                        "error_code": E27ErrorCode.ELKERR_NONE,
+                        "arm_state": "ARMED_AWAY",
+                    }
+                },
+            },
+            check=_check_arm_write_publication,
+        ),
+        _ReceiveThreadPublicationCase(
+            id="area_get_status",
+            call=lambda client: client.async_execute("area_get_status", area_id=1),
+            reply_for_sent=lambda sent: {
+                "seq": sent["seq"],
+                "area": {
+                    "get_status": {
+                        "area_id": 1,
+                        "arm_state": "ARMED_AWAY",
+                        "error_code": E27ErrorCode.ELKERR_NONE,
+                    }
+                },
+            },
+            check=_check_area_get_status_publication,
+        ),
+        _ReceiveThreadPublicationCase(
+            id="zone_get_all_zones_status",
+            call=lambda client: client.async_execute("zone_get_all_zones_status"),
+            reply_for_sent=lambda sent: {
+                "seq": sent["seq"],
+                "zone": {
+                    "get_all_zones_status": {
+                        "status": "F",
+                        "error_code": E27ErrorCode.ELKERR_NONE,
+                    }
+                },
+            },
+            check=_check_zone_bulk_status_publication,
+        ),
+    )
+
+
+def _check_arm_write_publication(client: Elke27Client, result: Result[Mapping[str, Any]]) -> None:
+    assert result.status_refresh_ok is True
+    assert client.get_snapshot().areas[1].arm_mode == ArmMode.ARMED_AWAY
+
+
+def _check_area_get_status_publication(
+    client: Elke27Client, result: Result[Mapping[str, Any]]
+) -> None:
+    assert result.status_refresh_ok is None
+    assert client.get_snapshot().areas[1].arm_mode == ArmMode.ARMED_AWAY
+
+
+def _check_zone_bulk_status_publication(
+    client: Elke27Client, result: Result[Mapping[str, Any]]
+) -> None:
+    assert result.status_refresh_ok is None
+    assert client.get_snapshot().zones[1].bypassed is True
+
+
 @pytest.mark.asyncio
-async def test_async_execute_waits_for_receive_thread_snapshot_publication() -> None:
+@pytest.mark.parametrize(
+    "case",
+    _receive_thread_publication_cases(),
+    ids=[c.id for c in _receive_thread_publication_cases()],
+)
+async def test_async_execute_waits_for_receive_thread_snapshot_publication(
+    case: _ReceiveThreadPublicationCase,
+) -> None:
     """Regression for Codex r4238451930 (receive-thread resolve before loop dispatch).
 
     ``E27Kernel._on_message`` resolves the pending future before ``dispatch`` and
@@ -578,14 +664,22 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication() -> 
     that gap; deliver the panel reply from a worker thread and defer
     ``call_soon_threadsafe(_handle_kernel_event)`` so ``async_execute`` would return
     before entity status publication without ``_await_entity_status_publication``.
+    Removing the wait makes each parametrized route fail this test.
     """
     client, session = _make_client()
     loop = asyncio.get_running_loop()
     cast(Any, client)._connected = True
     client._event_loop = loop
     kernel = get_kernel(client)
-    kernel.state.get_or_create_area(1).arm_state = "DISARMED"
-    client._replace_snapshot(areas=client._build_area_map())
+    if case.id == "zone_get_all_zones_status":
+        zone = kernel.state.get_or_create_zone(1)
+        zone.area_id = 1
+        zone.bypassed = False
+        client._replace_snapshot(zones=client._build_zone_map())
+    else:
+        kernel.state.get_or_create_area(1).arm_state = "DISARMED"
+        client._replace_snapshot(areas=client._build_area_map())
+    snapshot_version_before = client.snapshot.version
 
     deferred_handles: list[tuple[Any, tuple[Any, ...]]] = []
     real_call_soon_threadsafe = loop.call_soon_threadsafe
@@ -610,32 +704,14 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication() -> 
             fn(*args)
 
     flush_task = asyncio.create_task(flush_deferred_snapshot_handles())
-    snapshot_version_before = client.snapshot.version
-
-    task = asyncio.create_task(
-        client.async_execute(
-            "area_set_arm_state",
-            area_id=1,
-            arm_state="ARMED_AWAY",
-            pin=1234,
-        )
-    )
+    task = asyncio.create_task(case.call(client))
 
     while not session.sent:
         await asyncio.sleep(0.01)
 
     sent = session.sent[0]
     on_message = get_private(kernel, "_on_message")
-    reply = {
-        "seq": sent["seq"],
-        "area": {
-            "set_arm_state": {
-                "area_id": 1,
-                "error_code": E27ErrorCode.ELKERR_NONE,
-                "arm_state": "ARMED_AWAY",
-            }
-        },
-    }
+    reply = case.reply_for_sent(sent)
 
     delivery_error: list[BaseException] = []
 
@@ -645,16 +721,16 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication() -> 
         except BaseException as exc:  # noqa: BLE001
             delivery_error.append(exc)
 
-    threading.Thread(target=receive_thread, name="fake-receive", daemon=True).start()
+    threading.Thread(target=receive_thread, name=f"fake-receive-{case.id}", daemon=True).start()
 
     result = await task
 
     assert delivery_error == []
     assert isinstance(result, Result)
     assert result.ok is True
-    assert result.status_refresh_ok is True
-    assert client.snapshot.version > snapshot_version_before
-    assert client.snapshot.areas[1].arm_mode == ArmMode.ARMED_AWAY
+    if case.id == "area_set_arm_state":
+        assert client.snapshot.version > snapshot_version_before
+    case.check(client, result)
 
     await flush_task
     loop.call_soon_threadsafe = real_call_soon_threadsafe  # type: ignore[method-assign]

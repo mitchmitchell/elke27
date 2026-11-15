@@ -1018,6 +1018,38 @@ def _ids_from_bitmask(mask: int) -> list[int]:
     return ids
 
 
+def bulk_zone_status_publication_zone_ids(
+    state: PanelState, payload: Mapping[str, Any]
+) -> tuple[int, ...]:
+    """Zone ids whose snapshot publication may follow a bulk status reply."""
+    warnings: list[str] = []
+    ids: list[int] = []
+    status_text = payload.get("status")
+    if isinstance(status_text, str):
+        compact = "".join(status_text.split()).upper()
+        for idx, ch in enumerate(compact):
+            if not ch:
+                continue
+            zone_id = idx + 1
+            if not _should_apply_bulk_zone(state, zone_id):
+                continue
+            if state.zones.get(zone_id) is None:
+                continue
+            ids.append(zone_id)
+        return tuple(_dedupe_sorted(ids))
+
+    for item in _extract_zone_status_items(payload, warnings):
+        zone_id = _coerce_zone_id(item.get("zone_id") or item.get("id") or item.get("zone"))
+        if zone_id is None:
+            continue
+        if not _should_apply_bulk_zone(state, zone_id):
+            continue
+        if state.zones.get(zone_id) is None:
+            continue
+        ids.append(zone_id)
+    return tuple(_dedupe_sorted(ids))
+
+
 def _reconcile_bulk_zone_status(
     state: PanelState, payload: Mapping[str, Any], *, now: float
 ) -> _BulkStatusOutcome:

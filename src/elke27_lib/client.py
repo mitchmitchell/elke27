@@ -165,7 +165,7 @@ from .handlers.area import (
     clear_all_area_exit_delay_pending,
     make_area_configured_merge,
 )
-from .handlers.zone import make_zone_configured_merge
+from .handlers.zone import bulk_zone_status_publication_zone_ids, make_zone_configured_merge
 from .kernel_loop import (
     DiscoverResult,
     E27Kernel,
@@ -1876,6 +1876,9 @@ class Elke27Client:
         elif isinstance(evt, ZoneStatusUpdated):
             if evt.status_confirmed:
                 self._notify_entity_status_publication("zone", evt.zone_id)
+        elif isinstance(evt, ZonesStatusBulkUpdated):
+            for zone_id in evt.updated_ids:
+                self._notify_entity_status_publication("zone", zone_id)
 
         if isinstance(evt, AreaConfiguredInventoryReady):
             self._mark_inventory_ready("area")
@@ -2721,9 +2724,11 @@ class Elke27Client:
             app_version = self._kernel.state.panel.app_version
             app_tuple = application_firmware_tuple_from_app_field(app_version)
             if app_tuple is None:
-                raise Elke27InvalidArgument("Panel application firmware version is unknown.")
+                raise Elke27PanelApplicationFirmwareUnknownError(
+                    "Panel application firmware version is unknown."
+                )
             if not version_tuple_at_least(app_tuple, NIGHT_ARM_MIN_FIRMWARE):
-                raise Elke27InvalidArgument(
+                raise Elke27NightArmFirmwareTooOldError(
                     "Arm night requires panel application firmware 0.5.37 or newer."
                 )
         pin_value = _normalize_area_pin(pin, action="arm")
@@ -3313,7 +3318,16 @@ class Elke27Client:
                 spec.key == "area_set_arm_state" and params.get("arm_state") == "DISARMED"
             )
             publication_wait: tuple[Literal["area", "zone"], int, int] | None = None
+            zone_bulk_publication_before: dict[int, int] | None = None
             if command_key == "area_set_arm_state":
+                area_id = params.get("area_id")
+                if isinstance(area_id, int) and area_id > 0:
+                    publication_wait = (
+                        "area",
+                        area_id,
+                        self._area_status_seq.get(area_id, 0),
+                    )
+            elif command_key == "area_get_status":
                 area_id = params.get("area_id")
                 if isinstance(area_id, int) and area_id > 0:
                     publication_wait = (
@@ -3329,6 +3343,8 @@ class Elke27Client:
                         zone_id,
                         self._zone_status_seq.get(zone_id, 0),
                     )
+            elif command_key == "zone_get_all_zones_status":
+                zone_bulk_publication_before = dict(self._zone_status_seq)
             panel_busy_attempt = 0
             timeout_value = timeout_s if timeout_s is not None else self._kernel.request_timeout_s
             while True:
@@ -3441,6 +3457,19 @@ class Elke27Client:
                         seen_before=seen_before,
                         deadline=command_deadline,
                     )
+                if (
+                    command_key == "zone_get_all_zones_status"
+                    and zone_bulk_publication_before is not None
+                ):
+                    for zone_id in bulk_zone_status_publication_zone_ids(
+                        self._kernel.state, response_payload
+                    ):
+                        await self._await_entity_status_publication(
+                            domain="zone",
+                            entity_id=zone_id,
+                            seen_before=zone_bulk_publication_before.get(zone_id, 0),
+                            deadline=command_deadline,
+                        )
                 return _ok(response_payload, status_refresh_ok=status_refresh_ok)
 
         if spec.response_mode != "paged_blocks":
