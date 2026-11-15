@@ -45,6 +45,19 @@ def test_error_is_public_timeout_subclass_with_route() -> None:
     assert "area.set_arm_state" in str(err)
 
 
+def test_outcome_unknown_refresh_failure_message_differs_from_no_reply_default() -> None:
+    no_reply = Elke27CommandOutcomeUnknownError(("area", "set_arm_state"))
+    refresh_failed = Elke27CommandOutcomeUnknownError(
+        ("area", "set_arm_state"),
+        "The panel acknowledged area.set_arm_state but the follow-up status "
+        "refresh failed; the resulting arm state is unknown.",
+    )
+    assert "after it was sent" in str(no_reply)
+    assert "acknowledged" in str(refresh_failed)
+    assert "status refresh" in str(refresh_failed)
+    assert "after it was sent" not in str(refresh_failed)
+
+
 async def _run(client: Elke27Client, budget_s: float, **kwargs: Any) -> Any:
     cast(Any, client)._command_transport_wait_budget_s = lambda _t: budget_s
     return await asyncio.wait_for(

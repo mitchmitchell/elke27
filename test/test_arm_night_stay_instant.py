@@ -174,8 +174,12 @@ async def test_arm_night_refresh_failure_raises_command_outcome_unknown(
 
     monkeypatch.setattr(client, "async_execute", _execute_no_refresh)
 
-    with pytest.raises(Elke27CommandOutcomeUnknownError):
+    with pytest.raises(Elke27CommandOutcomeUnknownError) as exc_info:
         await client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234")
+    msg = str(exc_info.value)
+    assert "acknowledged" in msg
+    assert "status refresh" in msg
+    assert "after it was sent" not in msg
 
 
 @pytest.mark.asyncio
@@ -258,6 +262,38 @@ async def test_sim_arm_night_area_two_checks_armed_area_not_area_one(
                             "area_id": 2,
                             "error_code": E27ErrorCode.ELKERR_NONE,
                             "arm_state": "DISARMED",
+                        }
+                    }
+                },
+            },
+        )
+
+
+@pytest.mark.asyncio
+async def test_arm_night_disarmed_pending_plain_stay_cmd_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, panel = await connect_with_app_firmware(monkeypatch, NIGHT_ARM_MIN_APP_FIELD)
+    with pytest.raises(Elke27StayInstantRequiredError):
+        await drive_until_done(
+            client,
+            panel,
+            client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234"),
+            custom_replies={
+                0: {
+                    "area": {
+                        "set_arm_state": {"area_id": 1, "error_code": E27ErrorCode.ELKERR_NONE}
+                    }
+                },
+                1: {
+                    "area": {
+                        "get_status": {
+                            "area_id": 1,
+                            "error_code": E27ErrorCode.ELKERR_NONE,
+                            "arm_state": "DISARMED",
+                            "arm_cmd_state": "ARMED_STAY",
+                            "ee_timer": 30,
+                            "alarm_zone": "",
                         }
                     }
                 },
