@@ -8,7 +8,13 @@ from typing import Any, cast
 
 import pytest
 
-from elke27_lib import Elke27InvalidArgument, Elke27PanelError, Elke27StayInstantRequiredError
+from elke27_lib import (
+    Elke27InvalidArgument,
+    Elke27NightArmFirmwareTooOldError,
+    Elke27PanelApplicationFirmwareUnknownError,
+    Elke27PanelError,
+    Elke27StayInstantRequiredError,
+)
 from elke27_lib.client import ArmMode, Elke27Client, PanelSnapshot, Result
 from elke27_lib.const import E27ErrorCode
 from elke27_lib.handlers.control import make_control_get_version_info_handler
@@ -63,7 +69,7 @@ async def test_arm_night_rejected_when_application_firmware_too_old(
         monkeypatch, pack_application_firmware(0, 0, 5, 36)
     )
     sent_before = len(panel.sent)
-    with pytest.raises(Elke27InvalidArgument, match="0.5.37"):
+    with pytest.raises(Elke27NightArmFirmwareTooOldError, match="0.5.37"):
         await client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234")
     assert panel.sent[sent_before:] == []
 
@@ -74,9 +80,21 @@ async def test_high_ssp_low_app_does_not_enable_night(monkeypatch: pytest.Monkey
         monkeypatch, pack_application_firmware(0, 0, 5, 36), ssp="99.99.99"
     )
     sent_before = len(panel.sent)
-    with pytest.raises(Elke27InvalidArgument, match="0.5.37"):
+    with pytest.raises(Elke27NightArmFirmwareTooOldError, match="0.5.37"):
         await client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234")
     assert panel.sent[sent_before:] == []
+
+
+@pytest.mark.asyncio
+async def test_arm_night_unknown_application_firmware(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, panel = await connect_panel(monkeypatch)
+    await seed_area_disarmed(panel)
+    sent_before = len(panel.sent)
+    with pytest.raises(Elke27PanelApplicationFirmwareUnknownError, match="unknown"):
+        await client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234")
+    assert panel.sent[sent_before:] == []
+    with pytest.raises(Elke27InvalidArgument):
+        await client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234")
 
 
 @pytest.mark.asyncio

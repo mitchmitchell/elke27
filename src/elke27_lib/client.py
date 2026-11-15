@@ -97,6 +97,8 @@ from .errors import (
     Elke27InvalidArgument,
     Elke27LinkRequiredError,
     Elke27LinkSlotsFullError,
+    Elke27NightArmFirmwareTooOldError,
+    Elke27PanelApplicationFirmwareUnknownError,
     Elke27PanelError,
     Elke27PermissionError,
     Elke27PinRequiredError,
