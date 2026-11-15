@@ -63,7 +63,7 @@ async def test_arm_night_rejected_when_application_firmware_too_old(
         monkeypatch, pack_application_firmware(0, 0, 5, 36)
     )
     sent_before = len(panel.sent)
-    with pytest.raises(Elke27InvalidArgument, match="0.5.37"):
+    with pytest.raises(Elke27InvalidArgument, match=r"application firmware 0\.0\.5\.37 or later"):
         await client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234")
     assert panel.sent[sent_before:] == []
 
@@ -74,7 +74,7 @@ async def test_high_ssp_low_app_does_not_enable_night(monkeypatch: pytest.Monkey
         monkeypatch, pack_application_firmware(0, 0, 5, 36), ssp="99.99.99"
     )
     sent_before = len(panel.sent)
-    with pytest.raises(Elke27InvalidArgument, match="0.5.37"):
+    with pytest.raises(Elke27InvalidArgument, match=r"application firmware 0\.0\.5\.37 or later"):
         await client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234")
     assert panel.sent[sent_before:] == []
 

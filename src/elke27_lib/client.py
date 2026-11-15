@@ -2725,7 +2725,7 @@ class Elke27Client:
                 raise Elke27InvalidArgument("Panel application firmware version is unknown.")
             if not version_tuple_at_least(app_tuple, NIGHT_ARM_MIN_FIRMWARE):
                 raise Elke27InvalidArgument(
-                    "Arm night requires panel application firmware 0.5.37 or newer."
+                    "Arm night requires application firmware 0.0.5.37 or later."
                 )
         pin_value = _normalize_area_pin(pin, action="arm")
         arm_state = _panel_arm_state_for_mode(mode)
