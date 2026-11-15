@@ -1093,9 +1093,7 @@ def _reconcile_bulk_zone_status(
     )
     if updated:
         state.panel.last_message_at = now
-    return _BulkStatusOutcome(
-        updated_ids=tuple(_dedupe_sorted(updated)), warnings=tuple(warnings)
-    )
+    return _BulkStatusOutcome(updated_ids=tuple(_dedupe_sorted(updated)), warnings=tuple(warnings))
 
 
 def _should_apply_bulk_zone(state: PanelState, zone_id: int) -> bool:

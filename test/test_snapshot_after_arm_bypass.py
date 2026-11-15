@@ -37,7 +37,9 @@ def _sync_area_disarmed_snapshot(client: Elke27Client, kernel: Any) -> None:
     client._replace_snapshot(areas=client._build_area_map())
 
 
-def _sync_zones_ready_snapshot(client: Elke27Client, kernel: Any, zone_ids: tuple[int, ...]) -> None:
+def _sync_zones_ready_snapshot(
+    client: Elke27Client, kernel: Any, zone_ids: tuple[int, ...]
+) -> None:
     for zone_id in zone_ids:
         zone = kernel.state.get_or_create_zone(zone_id)
         zone.area_id = 1
