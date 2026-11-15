@@ -1207,7 +1207,7 @@ def _apply_zone_status_char(zone: ZoneState, ch: str, warnings: list[str]) -> bo
         zone.trouble = False
         zone.violated = True
         zone.bypassed = False
-    else:
+    elif ch in bypassed:
         zone.enabled = True
         zone.trouble = False
         zone.violated = False
