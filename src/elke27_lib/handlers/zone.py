@@ -1021,39 +1021,23 @@ def _ids_from_bitmask(mask: int) -> list[int]:
 def bulk_zone_status_publication_zone_ids(
     state: PanelState, payload: Mapping[str, Any]
 ) -> tuple[int, ...]:
-    """Zone ids whose snapshot publication may follow a bulk status reply."""
+    """Zone ids that will appear in ``ZonesStatusBulkUpdated.updated_ids`` for this payload."""
     warnings: list[str] = []
-    ids: list[int] = []
-    status_text = payload.get("status")
-    if isinstance(status_text, str):
-        compact = "".join(status_text.split()).upper()
-        for idx, ch in enumerate(compact):
-            if not ch:
-                continue
-            zone_id = idx + 1
-            if not _should_apply_bulk_zone(state, zone_id):
-                continue
-            if state.zones.get(zone_id) is None:
-                continue
-            ids.append(zone_id)
-        return tuple(_dedupe_sorted(ids))
-
-    for item in _extract_zone_status_items(payload, warnings):
-        zone_id = _coerce_zone_id(item.get("zone_id") or item.get("id") or item.get("zone"))
-        if zone_id is None:
-            continue
-        if not _should_apply_bulk_zone(state, zone_id):
-            continue
-        if state.zones.get(zone_id) is None:
-            continue
-        ids.append(zone_id)
-    return tuple(_dedupe_sorted(ids))
+    return tuple(
+        _dedupe_sorted(
+            _collect_bulk_zone_status_updated_zone_ids(state, payload, warnings, mutate=False)
+        )
+    )
 
 
-def _reconcile_bulk_zone_status(
-    state: PanelState, payload: Mapping[str, Any], *, now: float
-) -> _BulkStatusOutcome:
-    warnings: list[str] = []
+def _collect_bulk_zone_status_updated_zone_ids(
+    state: PanelState,
+    payload: Mapping[str, Any],
+    warnings: list[str],
+    *,
+    mutate: bool,
+    now: float | None = None,
+) -> list[int]:
     updated: list[int] = []
     status_text = payload.get("status")
     if isinstance(status_text, str):
@@ -1065,21 +1049,21 @@ def _reconcile_bulk_zone_status(
             zone = state.zones.get(zone_id)
             if zone is None:
                 continue
-            if _apply_zone_status_char(zone, ch, warnings):
-                zone.last_update_at = now
+            if mutate:
+                if now is None:
+                    raise ValueError("bulk zone status reconcile requires now when mutating")
+                if _apply_zone_status_char(zone, ch, warnings):
+                    zone.last_update_at = now
+                    updated.append(zone_id)
+            elif _zone_status_char_recognized(ch, warnings):
                 updated.append(zone_id)
-        if updated:
-            state.panel.last_message_at = now
-        return _BulkStatusOutcome(
-            updated_ids=tuple(_dedupe_sorted(updated)), warnings=tuple(warnings)
-        )
+        return updated
 
     items = _extract_zone_status_items(payload, warnings)
-    updated = []
-
     if not items:
-        warnings.append("no zone status items found")
-        return _BulkStatusOutcome(updated_ids=(), warnings=tuple(warnings))
+        if mutate:
+            warnings.append("no zone status items found")
+        return updated
 
     for item in items:
         zone_id = _coerce_zone_id(item.get("zone_id") or item.get("id") or item.get("zone"))
@@ -1091,14 +1075,27 @@ def _reconcile_bulk_zone_status(
         zone = state.zones.get(zone_id)
         if zone is None:
             continue
-        _apply_zone_fields(zone, item, warnings)
-        zone.last_update_at = now
+        if mutate:
+            if now is None:
+                raise ValueError("bulk zone status reconcile requires now when mutating")
+            _apply_zone_fields(zone, item, warnings)
+            zone.last_update_at = now
         updated.append(zone_id)
+    return updated
 
+
+def _reconcile_bulk_zone_status(
+    state: PanelState, payload: Mapping[str, Any], *, now: float
+) -> _BulkStatusOutcome:
+    warnings: list[str] = []
+    updated = _collect_bulk_zone_status_updated_zone_ids(
+        state, payload, warnings, mutate=True, now=now
+    )
     if updated:
         state.panel.last_message_at = now
-
-    return _BulkStatusOutcome(updated_ids=tuple(_dedupe_sorted(updated)), warnings=tuple(warnings))
+    return _BulkStatusOutcome(
+        updated_ids=tuple(_dedupe_sorted(updated)), warnings=tuple(warnings)
+    )
 
 
 def _should_apply_bulk_zone(state: PanelState, zone_id: int) -> bool:
@@ -1170,18 +1167,28 @@ def _apply_zone_status_payload(
             warnings.append(f"unknown secure_state: {secure_state!r}")
 
 
-def _apply_zone_status_char(zone: ZoneState, ch: str, warnings: list[str]) -> bool:
+def _zone_status_char_recognized(ch: str, warnings: list[str]) -> bool:
     disabled = {"0", "4", "8", "C"}
     normal = {"1", "2", "3"}
     trouble = {"5", "6", "7"}
     violated = {"9", "A", "B"}
     bypassed = {"D", "E", "F"}
-
     if ch not in disabled | normal | trouble | violated | bypassed:
         warnings.append(f"unknown zone status char: {ch!r}")
         return False
+    return True
+
+
+def _apply_zone_status_char(zone: ZoneState, ch: str, warnings: list[str]) -> bool:
+    if not _zone_status_char_recognized(ch, warnings):
+        return False
 
     zone.status_code = ch
+    disabled = {"0", "4", "8", "C"}
+    normal = {"1", "2", "3"}
+    trouble = {"5", "6", "7"}
+    violated = {"9", "A", "B"}
+    bypassed = {"D", "E", "F"}
     if ch in disabled:
         zone.enabled = False
         zone.trouble = False

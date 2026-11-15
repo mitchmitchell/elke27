@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 import time
 from collections.abc import Callable, Coroutine, Mapping
@@ -29,6 +30,19 @@ from elke27_lib.types import EventType, PanelInfo
 from test.helpers.fake_panel_replies import synthetic_success_reply
 from test.helpers.internal import get_kernel, get_private
 from test.test_panel_errors_ready_night import _FakeSession, _make_client
+
+
+def _sync_area_disarmed_snapshot(client: Elke27Client, kernel: Any) -> None:
+    kernel.state.get_or_create_area(1).arm_state = "DISARMED"
+    client._replace_snapshot(areas=client._build_area_map())
+
+
+def _sync_zones_ready_snapshot(client: Elke27Client, kernel: Any, zone_ids: tuple[int, ...]) -> None:
+    for zone_id in zone_ids:
+        zone = kernel.state.get_or_create_zone(zone_id)
+        zone.area_id = 1
+        zone.bypassed = False
+    client._replace_snapshot(zones=client._build_zone_map())
 
 
 async def _drive_until_done(
@@ -448,8 +462,6 @@ async def test_unchanged_arm_reply_publication_wait_returns_promptly() -> None:
     kernel = get_kernel(client)
     kernel.state.get_or_create_area(1).arm_state = "ARMED_AWAY"
     client._replace_snapshot(areas=client._build_area_map())
-    cast(Any, client)._connected = True
-    client._event_loop = asyncio.get_running_loop()
 
     started = time.monotonic()
     await _drive_until_done(
@@ -672,13 +684,9 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
     client._event_loop = loop
     kernel = get_kernel(client)
     if case.id == "zone_get_all_zones_status":
-        zone = kernel.state.get_or_create_zone(1)
-        zone.area_id = 1
-        zone.bypassed = False
-        client._replace_snapshot(zones=client._build_zone_map())
+        _sync_zones_ready_snapshot(client, kernel, (1,))
     else:
-        kernel.state.get_or_create_area(1).arm_state = "DISARMED"
-        client._replace_snapshot(areas=client._build_area_map())
+        _sync_area_disarmed_snapshot(client, kernel)
     snapshot_version_before = client.snapshot.version
 
     deferred_handles: list[tuple[Any, tuple[Any, ...]]] = []
@@ -770,6 +778,111 @@ async def test_arm_refresh_and_publication_wait_share_command_deadline() -> None
     # Previously write + a fresh full budget for the refresh (~2x); now one budget.
     budget = client._command_transport_wait_budget_s(timeout_s)
     assert elapsed < budget * 1.5
+
+
+_PUBLICATION_TIMEOUT_LOG = "Timed out waiting for"
+
+
+@dataclass(frozen=True)
+class _PromptPublicationWaitCase:
+    id: str
+    call: Callable[[Elke27Client], Coroutine[Any, Any, Result[Mapping[str, Any]]]]
+    first_reply: dict[str, Any]
+    assert_snapshot: Callable[[Elke27Client], None] | None
+
+
+def _prompt_publication_wait_cases() -> tuple[_PromptPublicationWaitCase, ...]:
+    return (
+        _PromptPublicationWaitCase(
+            id="zone_bulk_unknown_char",
+            call=lambda client: client.async_execute("zone_get_all_zones_status", timeout_s=2.0),
+            first_reply={
+                "seq": 0,
+                "zone": {
+                    "get_all_zones_status": {
+                        "status": "FX",
+                        "error_code": E27ErrorCode.ELKERR_NONE,
+                    }
+                },
+            },
+            assert_snapshot=_assert_zone_one_bypassed_snapshot,
+        ),
+        _PromptPublicationWaitCase(
+            id="zone_bulk_no_updates",
+            call=lambda client: client.async_execute("zone_get_all_zones_status", timeout_s=2.0),
+            first_reply={
+                "seq": 0,
+                "zone": {
+                    "get_all_zones_status": {
+                        "status": "",
+                        "error_code": E27ErrorCode.ELKERR_NONE,
+                    }
+                },
+            },
+            assert_snapshot=None,
+        ),
+        _PromptPublicationWaitCase(
+            id="area_get_status_unchanged",
+            call=lambda client: client.async_execute("area_get_status", area_id=1, timeout_s=2.0),
+            first_reply={
+                "seq": 0,
+                "area": {
+                    "get_status": {
+                        "area_id": 1,
+                        "arm_state": "DISARMED",
+                        "error_code": E27ErrorCode.ELKERR_NONE,
+                    }
+                },
+            },
+            assert_snapshot=_assert_area_one_disarmed_snapshot,
+        ),
+    )
+
+
+def _assert_zone_one_bypassed_snapshot(client: Elke27Client) -> None:
+    assert client.get_snapshot().zones[1].bypassed is True
+
+
+def _assert_area_one_disarmed_snapshot(client: Elke27Client) -> None:
+    assert client.get_snapshot().areas[1].arm_mode == ArmMode.DISARMED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case",
+    _prompt_publication_wait_cases(),
+    ids=[c.id for c in _prompt_publication_wait_cases()],
+)
+async def test_status_read_publication_wait_returns_promptly(
+    case: _PromptPublicationWaitCase,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client, session = _make_client()
+    kernel = get_kernel(client)
+    if case.id == "zone_bulk_unknown_char":
+        _sync_zones_ready_snapshot(client, kernel, (1, 2))
+    elif case.id == "zone_bulk_no_updates":
+        _sync_zones_ready_snapshot(client, kernel, (1,))
+    else:
+        _sync_area_disarmed_snapshot(client, kernel)
+
+    caplog.set_level(logging.WARNING, logger="elke27_lib.client")
+    started = time.monotonic()
+    result = await _drive_until_done(
+        client,
+        session,
+        case.call(client),
+        first_reply=case.first_reply,
+        max_replies=1,
+    )
+    elapsed = time.monotonic() - started
+
+    assert isinstance(result, Result)
+    assert result.ok is True
+    assert elapsed < 0.5
+    if case.assert_snapshot is not None:
+        case.assert_snapshot(client)
+    assert not any(_PUBLICATION_TIMEOUT_LOG in rec.message for rec in caplog.records)
 
 
 def _area_status_evt(*, confirmed: bool) -> AreaStatusUpdated:
