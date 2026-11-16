@@ -1372,16 +1372,19 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         case.check(client, result, snapshot_version_before)
     elif case.hold_kernel_publication:
         threading.Thread(target=receive_thread, name=f"fake-receive-{case.id}", daemon=True).start()
-        while not deferred_handles:
-            await asyncio.sleep(0)
+        await _wait_until_deferred_nonempty(deferred_handles)
         sent = session.sent[0]
         held_before_inject = len(deferred_handles)
         inject_unconfirmed_publication_event(kernel, case.id, sent["seq"])
-        while len(deferred_handles) <= held_before_inject:
-            await asyncio.sleep(0)
+
+        async def _wait_deferred_growth() -> None:
+            async with asyncio.timeout(2.0):
+                while len(deferred_handles) <= held_before_inject:
+                    await asyncio.sleep(0)
+
+        await _wait_deferred_growth()
         _run_deferred_at(deferred_handles, held_before_inject)
-        for _ in range(200):
-            await asyncio.sleep(0)
+        await asyncio.sleep(0.05)
         assert not task.done()
         while deferred_handles:
             fn, args = deferred_handles.pop(0)
@@ -1797,8 +1800,9 @@ async def test_reply_publication_timeout_drops_registered_slot(
     monkeypatch.setattr(loop, "call_soon_threadsafe", intercept_call_soon_threadsafe)
 
     task = asyncio.create_task(client.async_execute("area_get_status", area_id=1, timeout_s=0.05))
-    while not session.sent:
-        await asyncio.sleep(0)
+    async with asyncio.timeout(2.0):
+        while not session.sent:
+            await asyncio.sleep(0.01)
     reply = {
         "seq": session.sent[0]["seq"],
         "area": {

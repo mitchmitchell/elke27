@@ -221,26 +221,105 @@ async def test_disconnect_then_result_connect_receives_events_and_dispatch(
     assert connect_result.ok is True
     client.bind_kernel_loop_thread_for_tests(loop)
     panel = FakePanelSession.instances[-1]
-    exec_task = asyncio.create_task(
-        client.async_execute("output_get_status", output_id=1, timeout_s=2.0)
-    )
-    async with asyncio.timeout(2.0):
-        while not panel.sent:
-            await asyncio.sleep(0.01)
-    sent = cast(dict[str, Any], panel.sent[-1])
+    collected: list[Any] = []
+
+    async def _drain_events() -> None:
+        async for evt in client.events():
+            collected.append(evt)
+            return
+
+    drain_task = asyncio.create_task(_drain_events())
+    await asyncio.sleep(0)
     await panel.deliver(
         {
-            "seq": sent["seq"],
-            "output": {
+            "seq": 0,
+            "session_id": panel.info.session_id,
+            "area": {
                 "get_status": {
-                    "output_id": 1,
+                    "area_id": 1,
+                    "arm_state": "DISARMED",
                     "error_code": E27ErrorCode.ELKERR_NONE,
                 }
             },
         }
     )
-    exec_result = await asyncio.wait_for(exec_task, timeout=2.0)
-    assert exec_result.ok is True
+    await asyncio.wait_for(drain_task, timeout=2.0)
+    assert collected
+
+
+@pytest.mark.asyncio
+async def test_async_connect_delivers_panel_event_within_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = Elke27Client(skip_connect_bootstrap=True)
+    FakePanelSession.instances.clear()
+    monkeypatch.setattr(session_mod, "Session", FakePanelSession)
+    await client.async_connect("panel.invalid", 2101, LinkKeys("aa", "bb", "cc"))
+    panel = FakePanelSession.instances[-1]
+    loop = asyncio.get_running_loop()
+    client.bind_kernel_loop_thread_for_tests(loop)
+    collected: list[Any] = []
+
+    async def _drain() -> None:
+        async for evt in client.events():
+            collected.append(evt)
+            return
+
+    drain_task = asyncio.create_task(_drain())
+    await asyncio.sleep(0)
+    await panel.deliver(
+        {
+            "seq": 0,
+            "session_id": panel.info.session_id,
+            "area": {
+                "get_status": {
+                    "area_id": 1,
+                    "arm_state": "DISARMED",
+                    "error_code": E27ErrorCode.ELKERR_NONE,
+                }
+            },
+        }
+    )
+    await asyncio.wait_for(drain_task, timeout=2.0)
+    assert collected
+
+
+@pytest.mark.asyncio
+async def test_async_connect_after_close_delivers_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = Elke27Client(skip_connect_bootstrap=True)
+    await client.close()
+    FakePanelSession.instances.clear()
+    monkeypatch.setattr(session_mod, "Session", FakePanelSession)
+    await client.async_connect("panel.invalid", 2101, LinkKeys("aa", "bb", "cc"))
+    panel = FakePanelSession.instances[-1]
+    loop = asyncio.get_running_loop()
+    client.bind_kernel_loop_thread_for_tests(loop)
+    collected: list[Any] = []
+
+    async def _drain() -> None:
+        async for evt in client.events():
+            collected.append(evt)
+            return
+
+    drain_task = asyncio.create_task(_drain())
+    await asyncio.sleep(0)
+    await panel.deliver(
+        {
+            "seq": 0,
+            "session_id": panel.info.session_id,
+            "area": {
+                "get_status": {
+                    "area_id": 1,
+                    "arm_state": "DISARMED",
+                    "error_code": E27ErrorCode.ELKERR_NONE,
+                }
+            },
+        }
+    )
+    await asyncio.wait_for(drain_task, timeout=2.0)
+    assert collected
 
 
 @pytest.mark.asyncio

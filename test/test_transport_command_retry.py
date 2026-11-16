@@ -103,7 +103,9 @@ async def test_late_reply_cancels_pending_same_seq_transport_retry() -> None:
         for item in list(kernel_any._request_queue_high) + list(kernel_any._request_queue_normal)
     )
 
-    deliver_panel_message(kernel, {"seq": seq, "zone": {"get_status": {"zone_id": 1, "status": "OK"}}})
+    deliver_panel_message(
+        kernel, {"seq": seq, "zone": {"get_status": {"zone_id": 1, "status": "OK"}}}
+    )
     assert seq not in kernel_any._transport_retry_timer_by_seq
     assert not any(
         item.seq == seq
@@ -210,7 +212,9 @@ async def test_kernel_timeout_then_success_retries_same_seq() -> None:
     assert len(session.sent) == 2
     assert session.sent[0]["seq"] == session.sent[1]["seq"] == seq
 
-    deliver_panel_message(kernel, {"seq": seq, "zone": {"get_status": {"zone_id": 1, "status": "OK"}}})
+    deliver_panel_message(
+        kernel, {"seq": seq, "zone": {"get_status": {"zone_id": 1, "status": "OK"}}}
+    )
     msg = await asyncio.wait_for(future, timeout=0.2)
     assert msg["seq"] == seq
 
@@ -797,7 +801,9 @@ async def test_async_execute_timeout_retry_then_success() -> None:
     await asyncio.sleep(0)
     assert len(session.sent) == 2
     assert session.sent[0]["seq"] == session.sent[1]["seq"]
-    deliver_panel_message(kernel, {"seq": seq, "zone": {"get_status": {"zone_id": 1, "status": "OK"}}})
+    deliver_panel_message(
+        kernel, {"seq": seq, "zone": {"get_status": {"zone_id": 1, "status": "OK"}}}
+    )
     result = await asyncio.wait_for(task, timeout=0.5)
     assert result.ok
 
@@ -965,8 +971,12 @@ async def test_disarm_uses_high_priority() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("command", ["area_get_status", "zone_get_status", "zone_get_all_zones_status"])
-async def test_session_loss_while_reply_pending(command: str, caplog: pytest.LogCaptureFixture) -> None:
+@pytest.mark.parametrize(
+    "command", ["area_get_status", "zone_get_status", "zone_get_all_zones_status"]
+)
+async def test_session_loss_while_reply_pending(
+    command: str, caplog: pytest.LogCaptureFixture
+) -> None:
     from elke27_lib.client import Elke27DisconnectedError
 
     session = _FakeSession()
@@ -1032,7 +1042,7 @@ async def test_reply_snapshot_publication_release_paths() -> None:
     complete = get_private(client, "_complete_reply_publication")
     begin(91, ("area", "get_status"), loop)
     assert reply_publication_seq_active(client, 91)
-    await await_pub(91, deadline=loop.time())
+    await await_pub(91, deadline=loop.time() - 1.0)
     assert not reply_publication_seq_active(client, 91)
     begin(92, ("zone", "get_status"), loop)
     complete(92)

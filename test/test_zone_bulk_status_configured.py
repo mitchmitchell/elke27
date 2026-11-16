@@ -33,3 +33,5 @@ def test_bulk_status_respects_configured_zones() -> None:
     msg = {"zone": {"get_all_zones_status": {"status": "33333", "error_code": 0}}}
     assert handler(msg, _ctx(("zone", "get_all_zones_status"))) is True
     assert set(state.zones.keys()) == {1}
+    evt = emit.events[0]
+    assert getattr(evt, "updated_count", None) == 1

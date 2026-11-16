@@ -1021,9 +1021,7 @@ class Elke27Client:
                 cancel_error: BaseException = _outcome_unknown("caller cancelled") or E27Timeout(
                     f"async_execute cancelled for {command_key} seq={seq}"
                 )
-                self._kernel.cancel_command_transport(
-                    seq, cancel_error, drop_pending_response=True
-                )
+                self._kernel.cancel_command_transport(seq, cancel_error, drop_pending_response=True)
                 raise asyncio.CancelledError() from cancel_error
             timeout_error: BaseException = _outcome_unknown("deadline") or E27Timeout(
                 f"async_execute timeout waiting for {command_key} seq={seq}"

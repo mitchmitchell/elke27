@@ -80,9 +80,11 @@ def test_public_api_types_are_dataclasses_or_enums() -> None:
 
 
 def test_public_api_snapshot_publication_error_exported() -> None:
+    import elke27_lib
     from elke27_lib import Elke27SnapshotPublicationError as RootPublicationError
 
     assert RootPublicationError.__doc__ is not None
+    assert "Elke27SnapshotPublicationError" in elke27_lib.__all__
 
 
 def test_public_api_client_instantiation_and_snapshot() -> None:
