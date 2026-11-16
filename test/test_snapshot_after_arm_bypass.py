@@ -1393,7 +1393,18 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
 
         await _wait_deferred_growth()
         _run_deferred_at(deferred_handles, held_before_inject)
-        await asyncio.sleep(0.05)
+        reply_seq = cast(int, sent["seq"])
+
+        async def _wait_still_in_publication_wait() -> None:
+            while True:
+                if reply_publication_pending(client, reply_seq) and not task.done():
+                    return
+                if task.done():
+                    raise AssertionError("execute finished before kernel publication hold window")
+                await asyncio.sleep(0)
+
+        async with asyncio.timeout(2.0):
+            await _wait_still_in_publication_wait()
         assert not task.done()
         while deferred_handles:
             fn, args = deferred_handles.pop(0)

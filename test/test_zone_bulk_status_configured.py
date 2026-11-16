@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from elke27_lib.dispatcher_loop import DispatchContext, MessageKind
+from elke27_lib.events import ZonesStatusBulkUpdated
 from elke27_lib.handlers.zone import make_zone_get_all_zones_status_handler
 from elke27_lib.states import PanelState
 
@@ -34,4 +35,5 @@ def test_bulk_status_respects_configured_zones() -> None:
     assert handler(msg, _ctx(("zone", "get_all_zones_status"))) is True
     assert set(state.zones.keys()) == {1}
     evt = emit.events[0]
-    assert getattr(evt, "updated_count", None) == 1
+    assert isinstance(evt, ZonesStatusBulkUpdated)
+    assert evt.updated_count == 1
