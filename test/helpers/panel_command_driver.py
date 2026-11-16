@@ -93,25 +93,26 @@ async def drive_until_done(
     base = len(panel.sent)
     task = asyncio.create_task(call)
     seen = base
-    while not task.done():
-        await asyncio.sleep(0)
-        if max_replies is not None and seen >= base + max_replies:
-            continue
-        while seen < len(panel.sent):
-            sent = panel.sent[seen]
-            command_index = seen - base
-            if custom_replies is not None and command_index in custom_replies:
-                reply = dict(custom_replies[command_index])
-                reply["seq"] = sent["seq"]
-                if "session_id" not in reply:
-                    reply["session_id"] = sent.get("session_id", panel.info.session_id)
-                await panel.deliver(reply)
-            else:
-                await panel.deliver(
-                    synthetic_success_reply(
-                        dict(sent),
-                        sent_history=[dict(item) for item in panel.sent[:seen]],
+    async with asyncio.timeout(2.0):
+        while not task.done():
+            await asyncio.sleep(0)
+            if max_replies is not None and seen >= base + max_replies:
+                continue
+            while seen < len(panel.sent):
+                sent = panel.sent[seen]
+                command_index = seen - base
+                if custom_replies is not None and command_index in custom_replies:
+                    reply = dict(custom_replies[command_index])
+                    reply["seq"] = sent["seq"]
+                    if "session_id" not in reply:
+                        reply["session_id"] = sent.get("session_id", panel.info.session_id)
+                    await panel.deliver(reply)
+                else:
+                    await panel.deliver(
+                        synthetic_success_reply(
+                            dict(sent),
+                            sent_history=[dict(item) for item in panel.sent[:seen]],
+                        )
                     )
-                )
-            seen += 1
+                seen += 1
     return await task

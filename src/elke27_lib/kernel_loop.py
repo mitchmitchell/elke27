@@ -1760,11 +1760,10 @@ class E27Kernel:
             cancel_outbound = getattr(session, "cancel_outbound_pending_seq", None)
             if cancel_outbound is not None:
                 cancel_outbound(seq)
-        drop_only = drop_pending_response
 
         def _finish_cancel() -> None:
             self.dispatcher.drop_pending(seq)
-            if drop_only:
+            if drop_pending_response:
                 self._pending_responses.drop(seq)
             elif not self._pending_responses.fail(seq, exc):
                 self._pending_responses.drop(seq)

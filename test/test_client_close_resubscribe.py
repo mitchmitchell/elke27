@@ -88,7 +88,8 @@ async def test_close_during_publication_wait_returns_disconnected(
                 raise AssertionError("execute finished before area_get_status was sent")
             await asyncio.sleep(0.01)
 
-    sent = await _wait_status_sent()
+    async with asyncio.timeout(2.0):
+        sent = await _wait_status_sent()
     reply["seq"] = sent["seq"]
     reply_seq = sent["seq"]
 
@@ -181,8 +182,9 @@ async def test_close_then_result_connect_receives_events_and_dispatch(
     exec_task = asyncio.create_task(
         client.async_execute("output_get_status", output_id=1, timeout_s=2.0)
     )
-    while not panel.sent:
-        await asyncio.sleep(0.01)
+    async with asyncio.timeout(2.0):
+        while not panel.sent:
+            await asyncio.sleep(0.01)
     sent = cast(dict[str, Any], panel.sent[-1])
     await panel.deliver(
         {
@@ -200,7 +202,7 @@ async def test_close_then_result_connect_receives_events_and_dispatch(
 
 
 @pytest.mark.asyncio
-async def test_disconnect_then_result_connect_receives_events_and_dispatch(
+async def test_disconnect_then_result_connect_receives_events(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from elke27_lib.linking_thread import E27Identity

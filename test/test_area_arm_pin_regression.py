@@ -71,20 +71,21 @@ async def _run_and_ack(
     assert session.sent, "request was never sent to the panel"
     on_message = get_private(get_kernel(client), "_on_message")
     seen = 0
-    while not task.done():
-        await asyncio.sleep(0)
-        while seen < len(session.sent):
-            sent = session.sent[seen]
-            if seen == 0:
-                on_message(
-                    {
-                        "seq": sent["seq"],
-                        "area": {"set_arm_state": {"error_code": E27ErrorCode.ELKERR_NONE}},
-                    }
-                )
-            else:
-                on_message(synthetic_success_reply(sent, sent_history=session.sent[:seen]))
-            seen += 1
+    async with asyncio.timeout(2.0):
+        while not task.done():
+            await asyncio.sleep(0)
+            while seen < len(session.sent):
+                sent = session.sent[seen]
+                if seen == 0:
+                    on_message(
+                        {
+                            "seq": sent["seq"],
+                            "area": {"set_arm_state": {"error_code": E27ErrorCode.ELKERR_NONE}},
+                        }
+                    )
+                else:
+                    on_message(synthetic_success_reply(sent, sent_history=session.sent[:seen]))
+                seen += 1
     sent = session.sent[0]
     return sent["area"]["set_arm_state"], await task
 
