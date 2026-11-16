@@ -1830,16 +1830,12 @@ class Elke27Client:
                 "Timed out waiting for reply seq=%s snapshot publication",
                 reply_seq,
             )
-            self._release_reply_publication_command(reply_seq)
             return
         fut = self._reply_publication_by_seq.get(reply_seq)
         if fut is None:
             return
         if fut.done():
-            try:
-                fut.result()
-            finally:
-                self._release_reply_publication_command(reply_seq)
+            fut.result()
             return
         try:
             await asyncio.wait_for(fut, timeout=remaining)
@@ -1848,8 +1844,6 @@ class Elke27Client:
                 "Timed out waiting for reply seq=%s snapshot publication",
                 reply_seq,
             )
-        finally:
-            self._release_reply_publication_command(reply_seq)
 
     def _record_local_zone_bypass(self, zone_id: int) -> None:
         zone = self._kernel.state.zones.get(zone_id)
@@ -3590,7 +3584,6 @@ class Elke27Client:
                             Elke27SnapshotPublicationError,
                         ) as publication_failed:
                             return _err(publication_failed)
-                        publication_owner = None
                     return _ok(response_payload, status_refresh_ok=status_refresh_ok)
                 finally:
                     if publication_owner is not None:
