@@ -601,3 +601,22 @@ def test_signal_sent_event_paths() -> None:
     kernel._register_sent_event(1, event)
     kernel._signal_sent_event(1)
     assert event.is_set()
+
+
+def test_kernel_dispatch_correlation_classifies_reply_as_response() -> None:
+    kernel = E27Kernel()
+    seq = 99
+    kernel.register_dispatch_correlation(seq, ("area", "get_status"))
+    result = kernel.dispatcher.dispatch(
+        {
+            "seq": seq,
+            "area": {
+                "get_status": {
+                    "area_id": 1,
+                    "arm_state": "DISARMED",
+                    "error_code": 0,
+                }
+            },
+        }
+    )
+    assert result.classification == "RESPONSE"

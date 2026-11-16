@@ -371,20 +371,19 @@ def make_zone_get_all_zones_status_handler(state: PanelState, emit: EmitFn, now:
             return True
 
         outcome = _reconcile_bulk_zone_status(state, payload, now=now())
-        if outcome.updated_ids:
-            emit(
-                ZonesStatusBulkUpdated(
-                    kind=ZonesStatusBulkUpdated.KIND,
-                    at=UNSET_AT,
-                    seq=UNSET_SEQ,
-                    classification=UNSET_CLASSIFICATION,
-                    route=UNSET_ROUTE,
-                    session_id=UNSET_SESSION_ID,
-                    updated_count=len(outcome.updated_ids),
-                    updated_ids=outcome.updated_ids,
-                ),
-                ctx,
-            )
+        emit(
+            ZonesStatusBulkUpdated(
+                kind=ZonesStatusBulkUpdated.KIND,
+                at=UNSET_AT,
+                seq=UNSET_SEQ,
+                classification=UNSET_CLASSIFICATION,
+                route=UNSET_ROUTE,
+                session_id=UNSET_SESSION_ID,
+                updated_count=len(outcome.updated_ids),
+                updated_ids=outcome.updated_ids,
+            ),
+            ctx,
+        )
 
         if outcome.warnings:
             emit(
@@ -1018,6 +1017,20 @@ def _ids_from_bitmask(mask: int) -> list[int]:
     return ids
 
 
+_ZONE_STATUS_DISABLED = frozenset({"0", "4", "8", "C"})
+_ZONE_STATUS_NORMAL = frozenset({"1", "2", "3"})
+_ZONE_STATUS_TROUBLE = frozenset({"5", "6", "7"})
+_ZONE_STATUS_VIOLATED = frozenset({"9", "A", "B"})
+_ZONE_STATUS_BYPASSED = frozenset({"D", "E", "F"})
+_ZONE_STATUS_ALL_KNOWN = (
+    _ZONE_STATUS_DISABLED
+    | _ZONE_STATUS_NORMAL
+    | _ZONE_STATUS_TROUBLE
+    | _ZONE_STATUS_VIOLATED
+    | _ZONE_STATUS_BYPASSED
+)
+
+
 def _reconcile_bulk_zone_status(
     state: PanelState, payload: Mapping[str, Any], *, now: float
 ) -> _BulkStatusOutcome:
@@ -1036,36 +1049,25 @@ def _reconcile_bulk_zone_status(
             if _apply_zone_status_char(zone, ch, warnings):
                 zone.last_update_at = now
                 updated.append(zone_id)
-        if updated:
-            state.panel.last_message_at = now
-        return _BulkStatusOutcome(
-            updated_ids=tuple(_dedupe_sorted(updated)), warnings=tuple(warnings)
-        )
-
-    items = _extract_zone_status_items(payload, warnings)
-    updated = []
-
-    if not items:
-        warnings.append("no zone status items found")
-        return _BulkStatusOutcome(updated_ids=(), warnings=tuple(warnings))
-
-    for item in items:
-        zone_id = _coerce_zone_id(item.get("zone_id") or item.get("id") or item.get("zone"))
-        if zone_id is None:
-            warnings.append("zone status item missing zone_id")
-            continue
-        if not _should_apply_bulk_zone(state, zone_id):
-            continue
-        zone = state.zones.get(zone_id)
-        if zone is None:
-            continue
-        _apply_zone_fields(zone, item, warnings)
-        zone.last_update_at = now
-        updated.append(zone_id)
-
+    else:
+        items = _extract_zone_status_items(payload, warnings)
+        if not items:
+            warnings.append("no zone status items found")
+        for item in items:
+            zone_id = _coerce_zone_id(item.get("zone_id") or item.get("id") or item.get("zone"))
+            if zone_id is None:
+                warnings.append("zone status item missing zone_id")
+                continue
+            if not _should_apply_bulk_zone(state, zone_id):
+                continue
+            zone = state.zones.get(zone_id)
+            if zone is None:
+                continue
+            _apply_zone_fields(zone, item, warnings)
+            zone.last_update_at = now
+            updated.append(zone_id)
     if updated:
         state.panel.last_message_at = now
-
     return _BulkStatusOutcome(updated_ids=tuple(_dedupe_sorted(updated)), warnings=tuple(warnings))
 
 
@@ -1138,39 +1140,39 @@ def _apply_zone_status_payload(
             warnings.append(f"unknown secure_state: {secure_state!r}")
 
 
-def _apply_zone_status_char(zone: ZoneState, ch: str, warnings: list[str]) -> bool:
-    disabled = {"0", "4", "8", "C"}
-    normal = {"1", "2", "3"}
-    trouble = {"5", "6", "7"}
-    violated = {"9", "A", "B"}
-    bypassed = {"D", "E", "F"}
-
-    if ch not in disabled | normal | trouble | violated | bypassed:
+def _zone_status_char_recognized(ch: str, warnings: list[str]) -> bool:
+    if ch not in _ZONE_STATUS_ALL_KNOWN:
         warnings.append(f"unknown zone status char: {ch!r}")
+        return False
+    return True
+
+
+def _apply_zone_status_char(zone: ZoneState, ch: str, warnings: list[str]) -> bool:
+    if not _zone_status_char_recognized(ch, warnings):
         return False
 
     zone.status_code = ch
-    if ch in disabled:
+    if ch in _ZONE_STATUS_DISABLED:
         zone.enabled = False
         zone.trouble = False
         zone.violated = False
         zone.bypassed = False
-    elif ch in normal:
+    elif ch in _ZONE_STATUS_NORMAL:
         zone.enabled = True
         zone.trouble = False
         zone.violated = False
         zone.bypassed = False
-    elif ch in trouble:
+    elif ch in _ZONE_STATUS_TROUBLE:
         zone.enabled = True
         zone.trouble = True
         zone.violated = False
         zone.bypassed = False
-    elif ch in violated:
+    elif ch in _ZONE_STATUS_VIOLATED:
         zone.enabled = True
         zone.trouble = False
         zone.violated = True
         zone.bypassed = False
-    else:
+    elif ch in _ZONE_STATUS_BYPASSED:
         zone.enabled = True
         zone.trouble = False
         zone.violated = False

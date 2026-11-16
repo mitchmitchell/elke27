@@ -35,7 +35,10 @@ from elke27_lib import (
     redact_for_diagnostics,
 )
 from elke27_lib.discovery import E27System
-from elke27_lib.errors import E27ProvisioningTimeout, Elke27AuthError
+from elke27_lib.errors import (
+    E27ProvisioningTimeout,
+    Elke27AuthError,
+)
 from elke27_lib.events import (
     UNSET_AT,
     UNSET_CLASSIFICATION,
@@ -74,6 +77,14 @@ def test_public_api_types_are_dataclasses_or_enums() -> None:
     assert dataclasses.is_dataclass(OutputDefinition)
     assert issubclass(EventType, Enum)
     assert issubclass(ArmMode, Enum)
+
+
+def test_public_api_snapshot_publication_error_exported() -> None:
+    import elke27_lib
+    from elke27_lib import Elke27SnapshotPublicationError as RootPublicationError
+
+    assert RootPublicationError.__doc__ is not None
+    assert "Elke27SnapshotPublicationError" in elke27_lib.__all__
 
 
 def test_public_api_client_instantiation_and_snapshot() -> None:
@@ -216,15 +227,19 @@ async def test_async_link_roundtrip_and_auth_error(monkeypatch: MonkeyPatch) -> 
         )
 
 
+from test.helpers.fake_kernel_dispatch import FakeKernelDispatchSupport
+
+
 @pytest.mark.asyncio
 async def test_async_connect_disconnect_and_wait_ready(monkeypatch: MonkeyPatch) -> None:
     del monkeypatch
 
-    class _FakeKernel:
+    class _FakeKernel(FakeKernelDispatchSupport):
         _ready: bool
         state: object
 
         def __init__(self) -> None:
+            super().__init__()
             self._ready = False
             self.state = type(
                 "_State",

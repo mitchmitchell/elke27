@@ -46,6 +46,9 @@ class _FakeSession:
         if on_sent is not None:
             on_sent(0.0)
 
+    def close(self) -> None:
+        return None
+
 
 def _make_client() -> tuple[Elke27Client, _FakeSession]:
     client = Elke27Client()
@@ -69,15 +72,16 @@ async def _reply(
     on_message = get_private(get_kernel(client), "_on_message")
     seen = 0
     client._event_loop = asyncio.get_running_loop()
-    while not task.done():
-        await asyncio.sleep(0)
-        while seen < len(session.sent):
-            sent = session.sent[seen]
-            if seen == 0:
-                on_message({"seq": sent["seq"], domain: {command: payload}})
-            else:
-                on_message(synthetic_success_reply(sent, sent_history=session.sent[:seen]))
-            seen += 1
+    async with asyncio.timeout(2.0):
+        while not task.done():
+            await asyncio.sleep(0)
+            while seen < len(session.sent):
+                sent = session.sent[seen]
+                if seen == 0:
+                    on_message({"seq": sent["seq"], domain: {command: payload}})
+                else:
+                    on_message(synthetic_success_reply(sent, sent_history=session.sent[:seen]))
+                seen += 1
     return await task
 
 

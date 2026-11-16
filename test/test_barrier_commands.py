@@ -44,8 +44,12 @@ class _FakeState:
         self.barriers: dict[int, KernelBarrierState] = {}
 
 
-class _FakeKernel:
+from test.helpers.fake_kernel_dispatch import FakeKernelDispatchSupport
+
+
+class _FakeKernel(FakeKernelDispatchSupport):
     def __init__(self) -> None:
+        super().__init__()
         self.state = _FakeState()
 
     def subscribe(

@@ -724,6 +724,18 @@ class Elke27ProtocolError(Elke27Error):
         super().__init__(message, code="protocol", is_transient=False, user_message=user_message)
 
 
+class Elke27SnapshotPublicationError(Elke27ProtocolError):
+    """Snapshot update tied to a command reply could not be published."""
+
+    def __init__(
+        self,
+        message: str = "Snapshot publication failed.",
+        *,
+        user_message: str | None = None,
+    ) -> None:
+        super().__init__(message, user_message=user_message)
+
+
 class Elke27PanelError(Elke27ProtocolError):
     """The panel answered a command with a non-zero ``error_code``.
 
