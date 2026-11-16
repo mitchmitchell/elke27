@@ -34,7 +34,7 @@ from elke27_lib.events import (
 )
 from elke27_lib.types import EventType, PanelInfo
 from test.helpers.fake_panel_replies import synthetic_success_reply
-from test.helpers.internal import get_kernel, get_private
+from test.helpers.internal import deliver_panel_message, get_kernel, get_private
 from test.test_panel_errors_ready_night import _FakeSession, _make_client
 
 
@@ -67,7 +67,7 @@ async def _drive_until_done(
     max_replies: int | None = None,
 ) -> Any:
     task = asyncio.ensure_future(call)
-    on_message = get_private(get_kernel(client), "_on_message")
+    kernel = get_kernel(client)
     seen = 0
     cast(Any, client)._connected = True
     client._event_loop = asyncio.get_running_loop()
@@ -80,9 +80,11 @@ async def _drive_until_done(
             if seen == 0 and first_reply is not None:
                 reply = dict(first_reply)
                 reply["seq"] = sent["seq"]
-                on_message(reply)
+                deliver_panel_message(kernel, reply)
             else:
-                on_message(synthetic_success_reply(sent, sent_history=session.sent[:seen]))
+                deliver_panel_message(
+                    kernel, synthetic_success_reply(sent, sent_history=session.sent[:seen])
+                )
             seen += 1
     return await task
 
@@ -219,7 +221,6 @@ async def test_arm_ok_when_status_read_returns_panel_error() -> None:
             pin=1234,
         )
     )
-    on_message = get_private(kernel, "_on_message")
     client._event_loop = asyncio.get_running_loop()
     seen = 0
     while not task.done():
@@ -227,7 +228,8 @@ async def test_arm_ok_when_status_read_returns_panel_error() -> None:
         while seen < len(session.sent):
             sent = session.sent[seen]
             if seen == 0:
-                on_message(
+                deliver_panel_message(
+                    kernel,
                     {
                         "seq": sent["seq"],
                         "area": {
@@ -236,10 +238,11 @@ async def test_arm_ok_when_status_read_returns_panel_error() -> None:
                                 "error_code": E27ErrorCode.ELKERR_NONE,
                             }
                         },
-                    }
+                    },
                 )
             elif seen == 1:
-                on_message(
+                deliver_panel_message(
+                    kernel,
                     {
                         "seq": sent["seq"],
                         "area": {
@@ -248,7 +251,7 @@ async def test_arm_ok_when_status_read_returns_panel_error() -> None:
                                 "error_code": int(E27ErrorCode.ELKERR_INVALID_PIN),
                             }
                         },
-                    }
+                    },
                 )
             seen += 1
     result = await task
@@ -335,8 +338,8 @@ def test_unchanged_area_get_status_handler_reply_clears_stale() -> None:
     client._mark_area_stale(1)
     _immediate_event_loop(client)
 
-    on_message = get_private(kernel, "_on_message")
-    on_message(
+    deliver_panel_message(
+        kernel,
         {
             "seq": 1,
             "area": {
@@ -346,7 +349,7 @@ def test_unchanged_area_get_status_handler_reply_clears_stale() -> None:
                     "error_code": E27ErrorCode.ELKERR_NONE,
                 }
             },
-        }
+        },
     )
 
     assert client.snapshot.stale is False
@@ -362,8 +365,8 @@ def test_unchanged_zone_get_status_handler_reply_clears_stale() -> None:
     client._mark_zone_stale(17)
     _immediate_event_loop(client)
 
-    on_message = get_private(kernel, "_on_message")
-    on_message(
+    deliver_panel_message(
+        kernel,
         {
             "seq": 1,
             "zone": {
@@ -373,7 +376,7 @@ def test_unchanged_zone_get_status_handler_reply_clears_stale() -> None:
                     "error_code": E27ErrorCode.ELKERR_NONE,
                 }
             },
-        }
+        },
     )
 
     assert client.snapshot.stale is False
@@ -543,7 +546,6 @@ async def test_unrelated_zone_status_does_not_release_arm_publication_wait() -> 
         await asyncio.sleep(0.01)
 
     sent = session.sent[0]
-    on_message = get_private(kernel, "_on_message")
     reply = {
         "seq": sent["seq"],
         "area": {
@@ -556,7 +558,7 @@ async def test_unrelated_zone_status_does_not_release_arm_publication_wait() -> 
     }
 
     threading.Thread(
-        target=lambda: on_message(reply),
+        target=lambda: deliver_panel_message(kernel, reply),
         name="fake-receive",
         daemon=True,
     ).start()
@@ -606,6 +608,7 @@ class _ReceiveThreadPublicationCase:
     same_zone_unrelated_bulk_before_write: bool = False
     snapshot_build_fails: bool = False
     ack_only_zone_write: bool = False
+    hold_dispatch_publication: bool = False
 
 
 def _receive_thread_publication_cases() -> tuple[_ReceiveThreadPublicationCase, ...]:
@@ -683,6 +686,22 @@ def _receive_thread_publication_cases() -> tuple[_ReceiveThreadPublicationCase, 
             check=_check_zone_write_publication_same_zone,
             prepare=lambda client, kernel: _sync_zones_ready_snapshot(client, kernel, (1,)),
             ack_only_zone_write=True,
+        ),
+        _ReceiveThreadPublicationCase(
+            id="area_get_status_dispatch_publication_fallback",
+            call=lambda client: client.async_execute("area_get_status", area_id=1, timeout_s=2.0),
+            reply_for_sent=lambda sent: {
+                "seq": sent["seq"],
+                "area": {
+                    "get_status": {
+                        "error_code": E27ErrorCode.ELKERR_NONE,
+                        "area_id": 0,
+                    }
+                },
+            },
+            check=_check_area_dispatch_publication_fallback,
+            prepare=_sync_area_disarmed_snapshot,
+            hold_dispatch_publication=True,
         ),
         _ReceiveThreadPublicationCase(
             id="zone_get_status",
@@ -775,6 +794,13 @@ def _check_area_get_status_publication(
     assert client.get_snapshot().areas[1].arm_mode == ArmMode.ARMED_AWAY
 
 
+def _check_area_dispatch_publication_fallback(
+    client: Elke27Client, result: Result[Mapping[str, Any]], _version_before: int
+) -> None:
+    assert result.ok is True
+    assert client.get_snapshot().areas[1].arm_mode == ArmMode.DISARMED
+
+
 def _check_zone_bulk_status_publication(
     client: Elke27Client, result: Result[Mapping[str, Any]], _version_before: int
 ) -> None:
@@ -835,9 +861,15 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
     real_call_soon_threadsafe = loop.call_soon_threadsafe
 
     def intercept_call_soon_threadsafe(fn: Any, /, *args: Any) -> None:
+        fn_name = getattr(fn, "__name__", None)
+        fn_self = getattr(fn, "__self__", None)
+        if fn_self is client and fn_name == "_handle_kernel_event":
+            deferred_handles.append((fn, args))
+            return
         if (
-            getattr(fn, "__name__", None) == "_handle_kernel_event"
-            and getattr(fn, "__self__", None) is client
+            case.hold_dispatch_publication
+            and fn_self is client
+            and fn_name == "_complete_dispatch_only_reply_publication"
         ):
             deferred_handles.append((fn, args))
             return
@@ -859,6 +891,7 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         or case.same_zone_unrelated_bulk_before_write
         or case.snapshot_build_fails
         or case.ack_only_zone_write
+        or case.hold_dispatch_publication
     )
     if not skip_auto_flush:
         flush_task = asyncio.create_task(flush_deferred_snapshot_handles())
@@ -868,14 +901,13 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         await asyncio.sleep(0.01)
 
     sent = session.sent[0]
-    on_message = get_private(kernel, "_on_message")
     reply = case.reply_for_sent(sent)
 
     delivery_error: list[BaseException] = []
 
     def receive_thread() -> None:
         try:
-            on_message(reply)
+            deliver_panel_message(kernel, reply)
         except BaseException as exc:  # noqa: BLE001
             delivery_error.append(exc)
 
@@ -892,12 +924,6 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
             await task
     elif case.ack_only_zone_write:
         threading.Thread(target=receive_thread, name=f"fake-receive-{case.id}", daemon=True).start()
-        while len(session.sent) < 1:
-            await asyncio.sleep(0)
-        while not deferred_handles:
-            await asyncio.sleep(0)
-        assert not task.done()
-        assert client.get_snapshot().zones[1].bypassed is False
         while len(session.sent) < 2:
             await asyncio.sleep(0)
         get_status_sent = session.sent[1]
@@ -913,15 +939,32 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         }
 
         def receive_refresh() -> None:
-            on_message(get_status_reply)
+            deliver_panel_message(kernel, get_status_reply)
 
         threading.Thread(
             target=receive_refresh, name=f"fake-receive-refresh-{case.id}", daemon=True
         ).start()
         while not deferred_handles:
             await asyncio.sleep(0)
+        for _ in range(200):
+            await asyncio.sleep(0)
         assert not task.done()
         assert client.get_snapshot().zones[1].bypassed is False
+        while deferred_handles:
+            fn, args = deferred_handles.pop(0)
+            fn(*args)
+        result = await task
+        assert delivery_error == []
+        assert isinstance(result, Result)
+        assert result.ok is True
+        case.check(client, result, snapshot_version_before)
+    elif case.hold_dispatch_publication:
+        threading.Thread(target=receive_thread, name=f"fake-receive-{case.id}", daemon=True).start()
+        while not deferred_handles:
+            await asyncio.sleep(0)
+        for _ in range(200):
+            await asyncio.sleep(0)
+        assert not task.done()
         while deferred_handles:
             fn, args = deferred_handles.pop(0)
             fn(*args)
@@ -942,7 +985,7 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         }
 
         def receive_bulk() -> None:
-            on_message(bulk_reply)
+            deliver_panel_message(kernel, bulk_reply)
 
         threading.Thread(
             target=receive_bulk,
@@ -959,7 +1002,7 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         write_delivered = asyncio.Event()
 
         def receive_write() -> None:
-            on_message(reply)
+            deliver_panel_message(kernel, reply)
             loop.call_soon_threadsafe(write_delivered.set)
 
         threading.Thread(
@@ -1146,24 +1189,61 @@ async def test_area_get_status_publication_wait_no_timeout(
     assert client.get_snapshot().areas[1].arm_mode == ArmMode.DISARMED
     assert not any(_PUBLICATION_TIMEOUT_LOG in rec.message for rec in caplog.records)
 
-    for _ in range(4):
-        await _drive_until_done(
-            client,
-            session,
-            client.async_execute("area_get_status", area_id=1, timeout_s=2.0),
-            first_reply={
-                "seq": 0,
-                "area": {
-                    "get_status": {
-                        "area_id": 1,
-                        "arm_state": "DISARMED",
-                        "error_code": E27ErrorCode.ELKERR_NONE,
-                    }
-                },
-            },
-            max_replies=1,
-        )
+
+@pytest.mark.asyncio
+async def test_reply_publication_timeout_drops_registered_slot(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Publication wait must drop the registered seq when the command deadline hits."""
+    client, session = _make_client()
+    kernel = get_kernel(client)
+    _sync_area_disarmed_snapshot(client, kernel)
+    loop = asyncio.get_running_loop()
+    cast(Any, client)._connected = True
+    client._event_loop = loop
+    caplog.set_level(logging.WARNING, logger="elke27_lib.client")
+
+    deferred_handles: list[tuple[Any, tuple[Any, ...]]] = []
+    real_call_soon_threadsafe = loop.call_soon_threadsafe
+
+    def intercept_call_soon_threadsafe(fn: Any, /, *args: Any) -> None:
+        fn_name = getattr(fn, "__name__", None)
+        fn_self = getattr(fn, "__self__", None)
+        if fn_self is client and fn_name in {
+            "_handle_kernel_event",
+            "_complete_dispatch_only_reply_publication",
+        }:
+            deferred_handles.append((fn, args))
+            return
+        real_call_soon_threadsafe(fn, *args)
+
+    loop.call_soon_threadsafe = intercept_call_soon_threadsafe  # type: ignore[method-assign]
+
+    task = asyncio.create_task(client.async_execute("area_get_status", area_id=1, timeout_s=0.05))
+    while not session.sent:
+        await asyncio.sleep(0)
+    reply = {
+        "seq": session.sent[0]["seq"],
+        "area": {
+            "get_status": {
+                "area_id": 1,
+                "arm_state": "DISARMED",
+                "error_code": E27ErrorCode.ELKERR_NONE,
+            }
+        },
+    }
+
+    def receive_thread() -> None:
+        deliver_panel_message(kernel, reply)
+
+    threading.Thread(target=receive_thread, daemon=True).start()
+    result = await task
+    assert isinstance(result, Result)
+    assert result.ok is True
+    assert any(_PUBLICATION_TIMEOUT_LOG in rec.message for rec in caplog.records)
     assert len(get_private(client, "_reply_publication_by_seq")) == 0
+
+    loop.call_soon_threadsafe = real_call_soon_threadsafe  # type: ignore[method-assign]
 
 
 def _area_status_evt(*, confirmed: bool, reply_seq: int) -> AreaStatusUpdated:

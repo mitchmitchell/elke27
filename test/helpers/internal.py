@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
+
+
+def deliver_panel_message(kernel: object, msg: Mapping[str, Any]) -> None:
+    get_private(kernel, "_on_message")(msg)
 
 
 def get_private(obj: object, name: str) -> Any:

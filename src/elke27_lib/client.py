@@ -608,9 +608,8 @@ class Elke27Client:
         if self._kernel_event_token is not None:
             return
         self._kernel_event_token = self._kernel.subscribe(self._on_kernel_event)
-        add_dispatch_listener = getattr(self._kernel, "add_dispatch_listener", None)
-        if add_dispatch_listener is not None:
-            self._dispatch_listener_remove = add_dispatch_listener(
+        if isinstance(self._kernel, E27Kernel):
+            self._dispatch_listener_remove = self._kernel.add_dispatch_listener(
                 self._on_kernel_dispatch_response
             )
 
