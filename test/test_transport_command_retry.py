@@ -18,6 +18,7 @@ from elke27_lib.const import E27ErrorCode
 from elke27_lib.errors import ConnectionLost, E27Timeout
 from elke27_lib.kernel_loop import E27Kernel, KernelError
 from elke27_lib.outbound_loop import OutboundPriority
+from test.helpers.fake_session import connect_with_fake_panel
 from test.helpers.internal import (
     deliver_panel_message,
     get_kernel,
@@ -27,7 +28,7 @@ from test.helpers.internal import (
     set_private,
     trigger_session_disconnect,
 )
-from test.helpers.panel_command_driver import connect_panel
+from test.helpers.panel_command_driver import connect_panel, seed_area_disarmed
 
 
 class _FakeSessionCfg:
@@ -1154,6 +1155,34 @@ async def test_reply_snapshot_publication_release_paths(
     )
     assert not reply_publication_seq_active(client, seq)
     assert kernel.dispatcher.match_pending(seq, pop=False) is None
+
+
+@pytest.mark.asyncio
+async def test_async_execute_send_failure_clears_dispatch_correlation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop = asyncio.get_running_loop()
+    kernel = E27Kernel()
+    client = Elke27Client(kernel=kernel, skip_connect_bootstrap=True)
+    panel = await connect_with_fake_panel(monkeypatch, client)
+    client.bind_kernel_loop_thread_for_tests(loop)
+    await seed_area_disarmed(panel, 1)
+    panel.close()
+    pending_before_execute = kernel.dispatcher.pending_count()
+    result = await client.async_execute("area_get_status", area_id=1, timeout_s=5.0)
+    assert not result.ok
+    assert kernel.dispatcher.pending_count() == pending_before_execute
+
+    kernel = E27Kernel()
+    client = Elke27Client(kernel=kernel, skip_connect_bootstrap=True)
+    panel = await connect_with_fake_panel(monkeypatch, client)
+    client.bind_kernel_loop_thread_for_tests(loop)
+    await seed_area_disarmed(panel, 1)
+    await client.close()
+    pending_before_execute = kernel.dispatcher.pending_count()
+    result = await client.async_execute("area_get_status", area_id=1, timeout_s=5.0)
+    assert not result.ok
+    assert kernel.dispatcher.pending_count() == pending_before_execute
 
 
 @pytest.mark.asyncio

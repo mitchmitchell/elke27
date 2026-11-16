@@ -1269,39 +1269,3 @@ def test_misc_helpers_coverage(monkeypatch: pytest.MonkeyPatch) -> None:
         err.__cause__ = exc
         normalized = client._normalize_error(err, phase="phase")
         assert isinstance(normalized, ProtocolError)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "session_setup",
-    ["no_session", "inactive_session"],
-)
-async def test_async_execute_send_failure_clears_dispatch_correlation(
-    session_setup: str,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from elke27_lib import session_thread as session_mod
-
-    loop = asyncio.get_running_loop()
-    kernel = E27Kernel()
-    session = SimpleNamespace(
-        state=session_mod.SessionState.ACTIVE,
-        sent=[],
-        cfg=SimpleNamespace(host="panel.invalid", port=2101),
-    )
-    kernel._session = cast(Any, session)
-    kernel._loop = loop
-    kernel.state.panel.session_id = 1
-    kernel.state.panel.connected = True
-    client = Elke27Client(kernel=kernel)
-    client._connected = True
-    client._event_loop = loop
-    client.bind_kernel_loop_thread_for_tests(loop)
-    kernel.state.get_or_create_area(1).arm_state = "DISARMED"
-    if session_setup == "no_session":
-        kernel._session = None
-    else:
-        session.state = session_mod.SessionState.DISCONNECTED
-    result = await client.async_execute("area_get_status", area_id=1, timeout_s=5.0)
-    assert not result.ok
-    assert kernel.dispatcher.pending_count() == 0
