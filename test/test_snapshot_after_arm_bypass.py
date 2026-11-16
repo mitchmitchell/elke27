@@ -1186,7 +1186,9 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
                     prior = [cast(dict[str, Any], m) for m in session.sent]
                     deliver_panel_message(
                         kernel,
-                        _bootstrap_transport_reply(cast(dict[str, Any], session.sent[0]), sent_history=prior),
+                        _bootstrap_transport_reply(
+                            cast(dict[str, Any], session.sent[0]), sent_history=prior
+                        ),
                     )
                     session.sent.pop(0)
                     idle_rounds = 0
@@ -1202,7 +1204,7 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
     drop_dispatch_seqs: list[int] = []
     real_call_soon_threadsafe = loop.call_soon_threadsafe
 
-    if case.assert_dispatch_clear_on_success:
+    if case.assert_dispatch_clear_on_success or case.disconnect_before_reply:
         real_drop_dispatch = kernel.drop_dispatch_correlation
 
         def _track_drop_dispatch(seq: int) -> None:
@@ -1508,20 +1510,28 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         assert follow_result.ok is True
         assert not any(_PUBLICATION_TIMEOUT_LOG in rec.message for rec in caplog.records)
     elif case.disconnect_before_reply:
+        reply_seq = sent["seq"]
         while not session.sent:
             await asyncio.sleep(0.01)
-        async with asyncio.timeout(2.0):
-            while kernel.dispatcher.pending_count() == 0:
+        threading.Thread(target=receive_thread, name=f"fake-receive-{case.id}", daemon=True).start()
+
+        async def _wait_publication_slot() -> None:
+            while True:
+                if reply_publication_pending(client, reply_seq) and not task.done():
+                    return
                 await asyncio.sleep(0.01)
-        trigger_session_disconnect(kernel, ConnectionResetError())
+
         async with asyncio.timeout(2.0):
-            while kernel.dispatcher.pending_count() > 0:
-                await asyncio.sleep(0.01)
-        assert kernel.dispatcher.pending_count() == 0
+            await _wait_publication_slot()
+        assert reply_publication_pending(client, reply_seq)
+        _emit_panel_connection_lost(client)
+        assert drop_dispatch_seqs == [reply_seq]
         result = await task
         assert isinstance(result, Result)
         assert not result.ok
         assert isinstance(result.error, Elke27DisconnectedError)
+        assert kernel.dispatcher.match_pending(reply_seq, pop=False) is None
+        assert kernel.dispatcher.pending_count() == 0
     elif case.disconnect_before_flush:
         threading.Thread(target=receive_thread, name=f"fake-receive-{case.id}", daemon=True).start()
         if case.session_kernel_disconnect:
