@@ -1258,6 +1258,18 @@ class E27Kernel:
 
         return remove
 
+    def register_dispatch_correlation(
+        self, seq: int, expected_route: tuple[str, str] | None
+    ) -> None:
+        self.dispatcher.add_pending(
+            PendingRequest(
+                seq=seq,
+                expected_route=expected_route,
+                created_at=self.now(),
+                opaque=None,
+            )
+        )
+
     # -------------------------
     # Session -> E27Kernel -> Dispatcher wiring
     # -------------------------

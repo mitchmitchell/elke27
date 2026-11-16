@@ -539,7 +539,6 @@ NOQA_CEILING: dict[str, int] = {
     "test/test_e27_table_info_live.py:BLE001": 1,
     "test/test_e27_zone_defs_live.py:BLE001": 1,
     "test/test_e27_zone_live.py:BLE001": 1,
-    "test/test_snapshot_after_arm_bypass.py:BLE001": 1,
 }
 
 

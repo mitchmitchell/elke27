@@ -3435,6 +3435,7 @@ class Elke27Client:
                 seq = self._kernel.next_seq()
                 if command_key in self._REPLY_PUBLICATION_COMMANDS:
                     self._reply_publication_by_seq[seq] = loop.create_future()
+                    self._kernel.register_dispatch_correlation(seq, expected_route)
                 future = self._kernel.pending_responses.create(
                     seq,
                     command_key=command_key,

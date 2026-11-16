@@ -34,7 +34,12 @@ from elke27_lib.events import (
 )
 from elke27_lib.types import EventType, PanelInfo
 from test.helpers.fake_panel_replies import synthetic_success_reply
-from test.helpers.internal import deliver_panel_message, get_kernel, get_private
+from test.helpers.internal import (
+    deliver_panel_message,
+    get_kernel,
+    get_private,
+    inject_unconfirmed_publication_event,
+)
 from test.test_panel_errors_ready_night import _FakeSession, _make_client
 
 
@@ -607,7 +612,9 @@ class _ReceiveThreadPublicationCase:
     disconnect_before_flush: bool = False
     same_zone_unrelated_bulk_before_write: bool = False
     snapshot_build_fails: bool = False
+    ack_only_arm_write: bool = False
     ack_only_zone_write: bool = False
+    hold_kernel_publication: bool = False
     hold_dispatch_publication: bool = False
 
 
@@ -635,6 +642,28 @@ def _receive_thread_publication_cases() -> tuple[_ReceiveThreadPublicationCase, 
             prepare=_sync_area_disarmed_snapshot,
         ),
         _ReceiveThreadPublicationCase(
+            id="area_set_arm_state_ack_only_refresh",
+            call=lambda client: client.async_execute(
+                "area_set_arm_state",
+                area_id=1,
+                arm_state="ARMED_AWAY",
+                pin=1234,
+                timeout_s=2.0,
+            ),
+            reply_for_sent=lambda sent: {
+                "seq": sent["seq"],
+                "area": {
+                    "set_arm_state": {
+                        "area_id": 1,
+                        "error_code": E27ErrorCode.ELKERR_NONE,
+                    }
+                },
+            },
+            check=_check_arm_write_publication,
+            prepare=_sync_area_disarmed_snapshot,
+            ack_only_arm_write=True,
+        ),
+        _ReceiveThreadPublicationCase(
             id="area_get_status",
             call=lambda client: client.async_execute("area_get_status", area_id=1),
             reply_for_sent=lambda sent: {
@@ -649,6 +678,30 @@ def _receive_thread_publication_cases() -> tuple[_ReceiveThreadPublicationCase, 
             },
             check=_check_area_get_status_publication,
             prepare=_sync_area_disarmed_snapshot,
+            hold_kernel_publication=True,
+        ),
+        _ReceiveThreadPublicationCase(
+            id="zone_set_status_confirmed_publication_hold",
+            call=lambda client: client.async_execute(
+                "zone_set_status",
+                zone_id=1,
+                bypassed=True,
+                pin=1234,
+                timeout_s=3.0,
+            ),
+            reply_for_sent=lambda sent: {
+                "seq": sent["seq"],
+                "zone": {
+                    "set_status": {
+                        "zone_id": 1,
+                        "error_code": E27ErrorCode.ELKERR_NONE,
+                        "BYPASSED": True,
+                    }
+                },
+            },
+            check=_check_zone_write_publication_same_zone,
+            prepare=lambda client, kernel: _sync_zones_ready_snapshot(client, kernel, (1,)),
+            hold_kernel_publication=True,
         ),
         _ReceiveThreadPublicationCase(
             id="zone_get_all_zones_status",
@@ -689,7 +742,9 @@ def _receive_thread_publication_cases() -> tuple[_ReceiveThreadPublicationCase, 
         ),
         _ReceiveThreadPublicationCase(
             id="area_get_status_dispatch_publication_fallback",
-            call=lambda client: client.async_execute("area_get_status", area_id=1, timeout_s=2.0),
+            call=lambda client: client.async_execute(
+                "area_get_status", area_id=1, timeout_s=1.5
+            ),
             reply_for_sent=lambda sent: {
                 "seq": sent["seq"],
                 "area": {
@@ -702,22 +757,6 @@ def _receive_thread_publication_cases() -> tuple[_ReceiveThreadPublicationCase, 
             check=_check_area_dispatch_publication_fallback,
             prepare=_sync_area_disarmed_snapshot,
             hold_dispatch_publication=True,
-        ),
-        _ReceiveThreadPublicationCase(
-            id="zone_get_status",
-            call=lambda client: client.async_execute("zone_get_status", zone_id=1),
-            reply_for_sent=lambda sent: {
-                "seq": sent["seq"],
-                "zone": {
-                    "get_status": {
-                        "zone_id": 1,
-                        "BYPASSED": True,
-                        "error_code": E27ErrorCode.ELKERR_NONE,
-                    }
-                },
-            },
-            check=_check_zone_get_status_publication,
-            prepare=lambda client, kernel: _sync_zones_ready_snapshot(client, kernel, (1,)),
         ),
         _ReceiveThreadPublicationCase(
             id="same_zone_unrelated_bulk_zone_write",
@@ -830,6 +869,7 @@ def _check_zone_get_status_publication(
 )
 async def test_async_execute_waits_for_receive_thread_snapshot_publication(
     case: _ReceiveThreadPublicationCase,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Regression for Codex r4238451930 (receive-thread resolve before loop dispatch).
 
@@ -854,6 +894,11 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
     loop = asyncio.get_running_loop()
     cast(Any, client)._connected = True
     client._event_loop = loop
+    client.bind_kernel_loop_thread_for_tests(loop)
+    if case.hold_dispatch_publication:
+        kernel.command_transport_wait_budget_s = (  # type: ignore[method-assign]
+            lambda _request_timeout_s: 1.5
+        )
     case.prepare(client, kernel)
     snapshot_version_before = client.snapshot.version
 
@@ -866,11 +911,7 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         if fn_self is client and fn_name == "_handle_kernel_event":
             deferred_handles.append((fn, args))
             return
-        if (
-            case.hold_dispatch_publication
-            and fn_self is client
-            and fn_name == "_complete_dispatch_only_reply_publication"
-        ):
+        if fn_self is client and fn_name == "_complete_dispatch_only_reply_publication":
             deferred_handles.append((fn, args))
             return
         real_call_soon_threadsafe(fn, *args)
@@ -890,7 +931,9 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         case.disconnect_before_flush
         or case.same_zone_unrelated_bulk_before_write
         or case.snapshot_build_fails
+        or case.ack_only_arm_write
         or case.ack_only_zone_write
+        or case.hold_kernel_publication
         or case.hold_dispatch_publication
     )
     if not skip_auto_flush:
@@ -908,8 +951,11 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
     def receive_thread() -> None:
         try:
             deliver_panel_message(kernel, reply)
-        except BaseException as exc:  # noqa: BLE001
+        except (RuntimeError, TypeError, ValueError) as exc:
             delivery_error.append(exc)
+
+    if case.hold_dispatch_publication:
+        caplog.set_level(logging.WARNING, logger="elke27_lib.client")
 
     if case.snapshot_build_fails:
         threading.Thread(target=receive_thread, name=f"fake-receive-{case.id}", daemon=True).start()
@@ -922,6 +968,42 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
                 fn(*args)
         with pytest.raises(Elke27SnapshotPublicationError):
             await task
+    elif case.ack_only_arm_write:
+        threading.Thread(target=receive_thread, name=f"fake-receive-{case.id}", daemon=True).start()
+        while len(session.sent) < 2:
+            await asyncio.sleep(0)
+        get_status_sent = session.sent[1]
+        get_status_reply = {
+            "seq": get_status_sent["seq"],
+            "area": {
+                "get_status": {
+                    "area_id": 1,
+                    "arm_state": "ARMED_AWAY",
+                    "error_code": E27ErrorCode.ELKERR_NONE,
+                }
+            },
+        }
+
+        def receive_refresh() -> None:
+            deliver_panel_message(kernel, get_status_reply)
+
+        threading.Thread(
+            target=receive_refresh, name=f"fake-receive-refresh-{case.id}", daemon=True
+        ).start()
+        while not deferred_handles:
+            await asyncio.sleep(0)
+        for _ in range(200):
+            await asyncio.sleep(0)
+        assert not task.done()
+        assert client.get_snapshot().areas[1].arm_mode == ArmMode.DISARMED
+        while deferred_handles:
+            fn, args = deferred_handles.pop(0)
+            fn(*args)
+        result = await task
+        assert delivery_error == []
+        assert isinstance(result, Result)
+        assert result.ok is True
+        case.check(client, result, snapshot_version_before)
     elif case.ack_only_zone_write:
         threading.Thread(target=receive_thread, name=f"fake-receive-{case.id}", daemon=True).start()
         while len(session.sent) < 2:
@@ -958,10 +1040,12 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         assert isinstance(result, Result)
         assert result.ok is True
         case.check(client, result, snapshot_version_before)
-    elif case.hold_dispatch_publication:
+    elif case.hold_kernel_publication:
         threading.Thread(target=receive_thread, name=f"fake-receive-{case.id}", daemon=True).start()
         while not deferred_handles:
             await asyncio.sleep(0)
+        sent = session.sent[0]
+        inject_unconfirmed_publication_event(client, case.id, sent["seq"])
         for _ in range(200):
             await asyncio.sleep(0)
         assert not task.done()
@@ -972,6 +1056,20 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         assert delivery_error == []
         assert isinstance(result, Result)
         assert result.ok is True
+        case.check(client, result, snapshot_version_before)
+    elif case.hold_dispatch_publication:
+        threading.Thread(target=receive_thread, name=f"fake-receive-{case.id}", daemon=True).start()
+        while not deferred_handles:
+            await asyncio.sleep(0)
+        assert not task.done()
+        while deferred_handles:
+            fn, args = deferred_handles.pop(0)
+            fn(*args)
+        result = await task
+        assert delivery_error == []
+        assert isinstance(result, Result)
+        assert result.ok is True
+        assert not any(_PUBLICATION_TIMEOUT_LOG in rec.message for rec in caplog.records)
         case.check(client, result, snapshot_version_before)
     elif case.same_zone_unrelated_bulk_before_write:
         bulk_reply = {
