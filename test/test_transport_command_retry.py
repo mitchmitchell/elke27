@@ -1149,8 +1149,7 @@ async def test_reply_snapshot_publication_release_paths(
         result = await task
     assert result.ok is True
     assert any(
-        publication_timeout in rec.message
-        or "follow-up status read failed" in rec.message
+        publication_timeout in rec.message or "follow-up status read failed" in rec.message
         for rec in caplog.records
     )
     assert not reply_publication_seq_active(client, seq)
