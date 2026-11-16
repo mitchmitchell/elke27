@@ -13,3 +13,7 @@ def set_private(obj: object, name: str, value: Any) -> None:
 
 def get_kernel(client: object) -> Any:
     return get_private(client, "_kernel")
+
+
+def deliver_panel_message(kernel: object, msg: dict[str, object]) -> None:
+    get_private(kernel, "_on_message")(msg)
