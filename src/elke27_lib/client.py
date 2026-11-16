@@ -622,9 +622,6 @@ class Elke27Client:
         """Test-only: record the kernel asyncio loop as bound to the current thread."""
         self._kernel.bind_loop_thread_for_tests(loop)
 
-    def reply_publication_inflight_count(self) -> int:
-        return len(self._reply_publication_by_seq)
-
     def _ensure_kernel_subscription(self) -> None:
         if self._kernel_event_token is not None:
             return
@@ -977,16 +974,21 @@ class Elke27Client:
         try:
             async with asyncio.timeout(budget_s):
                 await sent_event.wait()
+                publication_fut = self._reply_publication_by_seq.get(seq)
+                publication_handled = publication_fut is None
+                if publication_fut is not None and publication_fut.done():
+                    publication_fut.result()
+                    publication_handled = True
                 while not future.done():
                     wait_on: set[asyncio.Future[Any]] = {cast(asyncio.Future[Any], future)}
-                    publication_fut = self._reply_publication_by_seq.get(seq)
-                    if publication_fut is not None:
+                    if publication_fut is not None and not publication_handled:
                         wait_on.add(cast(asyncio.Future[Any], publication_fut))
                     done, _pending = await asyncio.wait(
                         wait_on, return_when=asyncio.FIRST_COMPLETED
                     )
                     if publication_fut is not None and publication_fut in done:
                         publication_fut.result()
+                        publication_handled = True
                     if future in done:
                         break
                 msg = future.result()

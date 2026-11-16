@@ -1,19 +1,10 @@
 from __future__ import annotations
 
-from elke27_lib.client import Elke27Client
 from elke27_lib.const import E27ErrorCode
 from test.helpers.internal import deliver_panel_message
 
 
-def reply_publication_slot_count(client: object) -> int:
-    if not isinstance(client, Elke27Client):
-        raise TypeError(f"expected Elke27Client, got {type(client).__name__}")
-    return client.reply_publication_inflight_count()
-
-
-def inject_unconfirmed_publication_event(
-    kernel: object, case_id: str, reply_seq: int
-) -> None:
+def inject_unconfirmed_publication_event(kernel: object, case_id: str, reply_seq: int) -> None:
     if case_id == "zone_set_status_confirmed_publication_hold":
         deliver_panel_message(
             kernel,
