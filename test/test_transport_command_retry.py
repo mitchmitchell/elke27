@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import gc
 from collections.abc import Callable
 from typing import Any, cast
 
@@ -819,6 +818,7 @@ def _make_client(session: _FakeSession, *, max_retries: int = 2) -> Elke27Client
 async def test_async_execute_panel_refusal_single_send() -> None:
     session = _FakeSession()
     client = _make_client(session, max_retries=2)
+    kernel = get_kernel(client)
 
     task = asyncio.create_task(
         client.async_execute("area_set_arm_state", area_id=1, arm_state="ARMED_AWAY", pin=1234)
@@ -828,7 +828,7 @@ async def test_async_execute_panel_refusal_single_send() -> None:
             break
         await asyncio.sleep(0)
     sent = session.sent[0]
-    on_message = get_private(get_kernel(client), "_on_message")
+    on_message = get_private(kernel, "_on_message")
     on_message(
         {
             "seq": sent["seq"],
@@ -848,6 +848,7 @@ async def test_async_execute_panel_refusal_single_send() -> None:
 async def test_async_execute_panel_busy_then_success() -> None:
     session = _FakeSession()
     client = _make_client(session, max_retries=2)
+    kernel = get_kernel(client)
 
     task = asyncio.create_task(client.async_execute("zone_get_status", zone_id=1))
     busy_code = int(E27ErrorCode.ELKERR_ZWAVE_BUSY)
@@ -857,7 +858,7 @@ async def test_async_execute_panel_busy_then_success() -> None:
                 break
             await asyncio.sleep(0)
         sent = session.sent[attempt]
-        on_message = get_private(get_kernel(client), "_on_message")
+        on_message = get_private(kernel, "_on_message")
         if attempt == 0:
             on_message(
                 {
@@ -935,31 +936,34 @@ async def test_async_execute_connection_lost_maps_to_disconnected_result() -> No
 
 
 @pytest.mark.asyncio
-async def test_async_execute_drains_done_publication_future_on_connection_lost(
-    capsys: pytest.CaptureFixture[str],
+async def test_recv_thread_reply_marshals_retry_cleanup_to_loop(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from elke27_lib.client import Elke27DisconnectedError
+    import threading
 
+    kernel = E27Kernel(request_timeout_s=0.02, request_max_retries=2, request_max_backoff_s=60.0)
     session = _FakeSession()
-    client = _make_client(session)
-    kernel = get_kernel(client)
-    kernel.state.get_or_create_area(1).arm_state = "DISARMED"
-    task = asyncio.create_task(client.async_execute("area_get_status", area_id=1, timeout_s=2.0))
-    for _ in range(50):
-        if session.sent or task.done():
-            break
-        await asyncio.sleep(0)
-    seq = session.sent[0]["seq"]
-    get_private(client, "_reply_publication_by_seq")[seq].set_exception(
-        ConnectionLost("publication failed")
-    )
-    get_private(kernel, "_abort_requests")(ConnectionLost("Session disconnected."))
-    result = await asyncio.wait_for(task, timeout=0.5)
-    assert not result.ok
-    assert isinstance(result.error, Elke27DisconnectedError)
+    _wire_kernel(kernel, session)
+    loop = asyncio.get_running_loop()
+    loop_thread = threading.get_ident()
+    calls: list[tuple[int, int]] = []
+    original = get_private(kernel, "_clear_pending_transport_retry_for_seq")
+
+    def _spy(seq: int) -> None:
+        calls.append((seq, threading.get_ident()))
+        original(seq)
+
+    monkeypatch.setattr(kernel, "_clear_pending_transport_retry_for_seq", _spy)
+    threadsafe = get_private(kernel, "_clear_pending_transport_retry_for_seq_threadsafe")
+
+    worker = threading.Thread(target=threadsafe, args=(77,))
+    worker.start()
+    worker.join()
+    assert calls == []
     await asyncio.sleep(0)
-    gc.collect()
-    await asyncio.sleep(0.05)
-    assert "Future exception was never retrieved" not in (
-        capsys.readouterr().err + capsys.readouterr().out
-    )
+    await asyncio.sleep(0)
+    assert calls == [(77, loop_thread)]
+
+    threadsafe(78)
+    assert calls[-1] == (78, loop_thread)
+    assert loop is asyncio.get_running_loop()

@@ -1110,7 +1110,7 @@ class Elke27Client:
         if isinstance(err, (E27AuthFailed, InvalidPinError, InvalidCredentials)):
             raise Elke27AuthError("Authentication failed for this operation.") from None
         if isinstance(err, ConnectionLost):
-            raise self._disconnected_from_connection_lost(err) from err
+            raise self._disconnected_from_connection_lost(err)
         if isinstance(err, (E27Timeout, E27TransportError, TimeoutError, asyncio.TimeoutError)):
             raise Elke27TimeoutError("Operation timed out.") from None
         if isinstance(err, E27NotReady):
@@ -3021,6 +3021,7 @@ class Elke27Client:
         session_config: SessionConfig | None = None,
     ) -> Result[None]:
         try:
+            self._event_loop = asyncio.get_running_loop()
             await asyncio.to_thread(self._kernel.load_features_blocking, self._feature_modules)
             await self._kernel.connect(
                 link_keys,
@@ -3028,6 +3029,7 @@ class Elke27Client:
                 client_identity=client_identity,
                 session_config=session_config,
             )
+            self._connected = True
             return _ok(None)
         except _CLIENT_EXCEPTIONS as exc:
             return _err(self._normalize_error(exc, phase="connect"))

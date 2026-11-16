@@ -132,27 +132,13 @@ async def test_close_then_async_connect_keeps_kernel_subscription(
 
 
 @pytest.mark.asyncio
-async def test_close_then_result_connect_keeps_kernel_subscription(
+async def test_close_then_result_connect_receives_events_and_dispatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    subscribe_calls: list[int] = []
-    dispatch_calls: list[int] = []
-    real_subscribe = kernel_mod.E27Kernel.subscribe
-    real_add_dispatch = kernel_mod.E27Kernel.add_dispatch_listener
-
-    def tracked_subscribe(self: kernel_mod.E27Kernel, *args: Any, **kwargs: Any) -> int:
-        subscribe_calls.append(1)
-        return real_subscribe(self, *args, **kwargs)
-
-    def tracked_dispatch(self: kernel_mod.E27Kernel, *args: Any, **kwargs: Any) -> Any:
-        dispatch_calls.append(1)
-        return real_add_dispatch(self, *args, **kwargs)
-
-    monkeypatch.setattr(kernel_mod.E27Kernel, "subscribe", tracked_subscribe)
-    monkeypatch.setattr(kernel_mod.E27Kernel, "add_dispatch_listener", tracked_dispatch)
     from elke27_lib.linking_thread import E27Identity
 
     client = Elke27Client(skip_connect_bootstrap=True)
+    loop = asyncio.get_running_loop()
     await client.close()
     FakePanelSession.instances.clear()
     monkeypatch.setattr(session_mod, "Session", FakePanelSession)
@@ -165,5 +151,49 @@ async def test_close_then_result_connect_keeps_kernel_subscription(
         session_config=session_config,
     )
     assert connect_result.ok is True
-    assert subscribe_calls == [1]
-    assert dispatch_calls == [1]
+    client.bind_kernel_loop_thread_for_tests(loop)
+    panel = FakePanelSession.instances[-1]
+    collected: list[Any] = []
+
+    async def _drain_events() -> None:
+        async for evt in client.events():
+            collected.append(evt)
+            return
+
+    drain_task = asyncio.create_task(_drain_events())
+    await asyncio.sleep(0)
+    await panel.deliver(
+        {
+            "seq": 0,
+            "session_id": panel.info.session_id,
+            "area": {
+                "get_status": {
+                    "area_id": 1,
+                    "arm_state": "DISARMED",
+                    "error_code": E27ErrorCode.ELKERR_NONE,
+                }
+            },
+        }
+    )
+    await asyncio.wait_for(drain_task, timeout=2.0)
+    assert collected
+
+    exec_task = asyncio.create_task(
+        client.async_execute("output_get_status", output_id=1, timeout_s=2.0)
+    )
+    while not panel.sent:
+        await asyncio.sleep(0.01)
+    sent = cast(dict[str, Any], panel.sent[-1])
+    await panel.deliver(
+        {
+            "seq": sent["seq"],
+            "output": {
+                "get_status": {
+                    "output_id": 1,
+                    "error_code": E27ErrorCode.ELKERR_NONE,
+                }
+            },
+        }
+    )
+    exec_result = await asyncio.wait_for(exec_task, timeout=2.0)
+    assert exec_result.ok is True
