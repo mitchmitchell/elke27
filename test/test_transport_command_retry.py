@@ -1096,40 +1096,26 @@ async def test_reply_snapshot_publication_release_paths(
     assert not reply_publication_seq_active(client, seq)
     assert kernel.dispatcher.match_pending(seq, pop=False) is None
 
+    caplog.clear()
     caplog.set_level(logging.WARNING, logger="elke27_lib.client")
     monkeypatch.setattr(kernel, "command_transport_wait_budget_s", lambda _t: 0.08)
-    sent_before = len(session.sent)
-    sent_before = len(session.sent)
-    task = asyncio.create_task(
-        client.async_execute(
-            "area_set_arm_state", area_id=1, arm_state="DISARMED", pin=1234, timeout_s=5.0
-        )
+
+    async def _burn_budget_before_publication(*_args: Any, **_kwargs: Any) -> None:
+        await asyncio.sleep(0.12)
+
+    monkeypatch.setattr(
+        client, "_status_refresh_after_successful_write", _burn_budget_before_publication
     )
+    sent_before = len(session.sent)
+    task = asyncio.create_task(client.async_execute("area_get_status", area_id=1, timeout_s=5.0))
     async with asyncio.timeout(2.0):
         while len(session.sent) <= sent_before:
             await asyncio.sleep(0.01)
-    seq = session.sent[-1]["seq"]
+    spent_seq = session.sent[-1]["seq"]
     deliver_panel_message(
         kernel,
         {
-            "seq": seq,
-            "area": {
-                "set_arm_state": {
-                    "area_id": 1,
-                    "error_code": E27ErrorCode.ELKERR_NONE,
-                }
-            },
-        },
-    )
-    async with asyncio.timeout(2.0):
-        while len(session.sent) < sent_before + 2:
-            await asyncio.sleep(0.01)
-    await asyncio.sleep(0.12)
-    refresh = session.sent[-1]
-    deliver_panel_message(
-        kernel,
-        {
-            "seq": refresh["seq"],
+            "seq": spent_seq,
             "area": {
                 "get_status": {
                     "area_id": 1,
@@ -1139,8 +1125,7 @@ async def test_reply_snapshot_publication_release_paths(
             },
         },
     )
-    await asyncio.sleep(0)
-    publication_timeout = f"Timed out waiting for reply seq={seq} snapshot publication"
+    publication_timeout = f"Timed out waiting for reply seq={spent_seq} snapshot publication"
     async with asyncio.timeout(2.0):
         while not task.done() and not any(
             publication_timeout in rec.message for rec in caplog.records
@@ -1149,12 +1134,9 @@ async def test_reply_snapshot_publication_release_paths(
     async with asyncio.timeout(2.0):
         result = await task
     assert result.ok is True
-    assert any(
-        publication_timeout in rec.message or "follow-up status read failed" in rec.message
-        for rec in caplog.records
-    )
-    assert not reply_publication_seq_active(client, seq)
-    assert kernel.dispatcher.match_pending(seq, pop=False) is None
+    assert any(publication_timeout in rec.message for rec in caplog.records)
+    assert not reply_publication_seq_active(client, spent_seq)
+    assert kernel.dispatcher.match_pending(spent_seq, pop=False) is None
 
 
 @pytest.mark.asyncio
