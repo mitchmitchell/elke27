@@ -15,6 +15,11 @@ def get_kernel(client: object) -> Any:
     return get_private(client, "_kernel")
 
 
+def reply_publication_slot_count(client: object) -> int:
+    slots = get_private(client, "_reply_publication_by_seq")
+    return len(slots)
+
+
 def deliver_panel_message(kernel: object, msg: dict[str, object]) -> None:
     get_private(kernel, "_on_message")(msg)
 

@@ -37,8 +37,8 @@ from test.helpers.fake_panel_replies import synthetic_success_reply
 from test.helpers.internal import (
     deliver_panel_message,
     get_kernel,
-    get_private,
     inject_unconfirmed_publication_event,
+    reply_publication_slot_count,
 )
 from test.test_panel_errors_ready_night import _FakeSession, _make_client
 
@@ -616,6 +616,8 @@ class _ReceiveThreadPublicationCase:
     ack_only_zone_write: bool = False
     hold_kernel_publication: bool = False
     hold_dispatch_publication: bool = False
+    disconnect_before_reply: bool = False
+    cancel_before_reply: bool = False
 
 
 def _receive_thread_publication_cases() -> tuple[_ReceiveThreadPublicationCase, ...]:
@@ -757,6 +759,57 @@ def _receive_thread_publication_cases() -> tuple[_ReceiveThreadPublicationCase, 
             hold_dispatch_publication=True,
         ),
         _ReceiveThreadPublicationCase(
+            id="zone_get_status",
+            call=lambda client: client.async_execute("zone_get_status", zone_id=1),
+            reply_for_sent=lambda sent: {
+                "seq": sent["seq"],
+                "zone": {
+                    "get_status": {
+                        "zone_id": 1,
+                        "BYPASSED": True,
+                        "error_code": E27ErrorCode.ELKERR_NONE,
+                    }
+                },
+            },
+            check=_check_zone_get_status_publication,
+            prepare=lambda client, kernel: _sync_zones_ready_snapshot(client, kernel, (1,)),
+            hold_kernel_publication=True,
+        ),
+        _ReceiveThreadPublicationCase(
+            id="disconnect_before_reply_clears_dispatch_correlation",
+            call=lambda client: client.async_execute("area_get_status", area_id=1, timeout_s=0.5),
+            reply_for_sent=lambda sent: {
+                "seq": sent["seq"],
+                "area": {
+                    "get_status": {
+                        "area_id": 1,
+                        "arm_state": "DISARMED",
+                        "error_code": E27ErrorCode.ELKERR_NONE,
+                    }
+                },
+            },
+            check=lambda _client, _result, _version_before: None,
+            prepare=_sync_area_disarmed_snapshot,
+            disconnect_before_reply=True,
+        ),
+        _ReceiveThreadPublicationCase(
+            id="cancel_before_reply_clears_correlation",
+            call=lambda client: client.async_execute("area_get_status", area_id=1, timeout_s=5.0),
+            reply_for_sent=lambda sent: {
+                "seq": sent["seq"],
+                "area": {
+                    "get_status": {
+                        "area_id": 1,
+                        "arm_state": "DISARMED",
+                        "error_code": E27ErrorCode.ELKERR_NONE,
+                    }
+                },
+            },
+            check=lambda _client, _result, _version_before: None,
+            prepare=_sync_area_disarmed_snapshot,
+            cancel_before_reply=True,
+        ),
+        _ReceiveThreadPublicationCase(
             id="same_zone_unrelated_bulk_zone_write",
             call=lambda client: client.async_execute(
                 "zone_set_status",
@@ -859,6 +912,22 @@ def _check_zone_get_status_publication(
     assert client.get_snapshot().zones[1].bypassed is True
 
 
+def _emit_panel_connection_lost(client: Elke27Client) -> None:
+    client._handle_kernel_event(
+        ConnectionStateChanged(
+            kind=ConnectionStateChanged.KIND,
+            at=UNSET_AT,
+            seq=UNSET_SEQ,
+            classification=UNSET_CLASSIFICATION,
+            route=UNSET_ROUTE,
+            session_id=UNSET_SESSION_ID,
+            connected=False,
+            reason="lost",
+            error_type=None,
+        )
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "case",
@@ -933,6 +1002,8 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         or case.ack_only_zone_write
         or case.hold_kernel_publication
         or case.hold_dispatch_publication
+        or case.disconnect_before_reply
+        or case.cancel_before_reply
     )
     if not skip_auto_flush:
         flush_task = asyncio.create_task(flush_deferred_snapshot_handles())
@@ -1120,22 +1191,36 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         assert isinstance(result, Result)
         assert result.ok is True
         case.check(client, result, snapshot_version_before)
+    elif case.cancel_before_reply:
+        while not session.sent:
+            await asyncio.sleep(0)
+        for _ in range(500):
+            if kernel.dispatcher.pending_count() > 0:
+                break
+            await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+        assert reply_publication_slot_count(client) == 0
+        assert kernel.dispatcher.pending_count() == 0
+    elif case.disconnect_before_reply:
+        while not session.sent:
+            await asyncio.sleep(0)
+        for _ in range(500):
+            if kernel.dispatcher.pending_count() > 0:
+                break
+            await asyncio.sleep(0)
+        _emit_panel_connection_lost(client)
+        await asyncio.sleep(0)
+        assert kernel.dispatcher.pending_count() == 0
+        with pytest.raises(Elke27DisconnectedError):
+            await task
+        assert reply_publication_slot_count(client) == 0
     elif case.disconnect_before_flush:
         threading.Thread(target=receive_thread, name=f"fake-receive-{case.id}", daemon=True).start()
         await asyncio.sleep(0.05)
-        client._handle_kernel_event(
-            ConnectionStateChanged(
-                kind=ConnectionStateChanged.KIND,
-                at=UNSET_AT,
-                seq=UNSET_SEQ,
-                classification=UNSET_CLASSIFICATION,
-                route=UNSET_ROUTE,
-                session_id=UNSET_SESSION_ID,
-                connected=False,
-                reason="lost",
-                error_type=None,
-            )
-        )
+        _emit_panel_connection_lost(client)
         with pytest.raises(Elke27DisconnectedError):
             await task
     else:
@@ -1337,7 +1422,7 @@ async def test_reply_publication_timeout_drops_registered_slot(
     assert isinstance(result, Result)
     assert result.ok is True
     assert any(_PUBLICATION_TIMEOUT_LOG in rec.message for rec in caplog.records)
-    assert len(get_private(client, "_reply_publication_by_seq")) == 0
+    assert reply_publication_slot_count(client) == 0
 
     loop.call_soon_threadsafe = real_call_soon_threadsafe  # type: ignore[method-assign]
 

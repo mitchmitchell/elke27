@@ -977,7 +977,11 @@ class Elke27Client:
         try:
             async with asyncio.timeout(budget_s):
                 await sent_event.wait()
-                msg = await future
+                self._raise_if_reply_publication_aborted(seq)
+                while not future.done():
+                    self._raise_if_reply_publication_aborted(seq)
+                    await asyncio.wait({future}, timeout=0.05)
+                msg = future.result()
         except TimeoutError:
             if self._asyncio_cancellation_pending():
                 cancel_error: BaseException = _outcome_unknown("caller cancelled") or E27Timeout(
@@ -1751,6 +1755,11 @@ class Elke27Client:
     def _drop_reply_publication_slot(self, reply_seq: int) -> None:
         self._release_reply_publication_command(reply_seq)
 
+    def _raise_if_reply_publication_aborted(self, reply_seq: int) -> None:
+        fut = self._reply_publication_by_seq.get(reply_seq)
+        if fut is not None and fut.done():
+            fut.result()
+
     def _complete_reply_publication(self, reply_seq: int) -> None:
         fut = self._reply_publication_by_seq.get(reply_seq)
         if fut is not None and not fut.done():
@@ -1766,7 +1775,6 @@ class Elke27Client:
         for fut in self._reply_publication_by_seq.values():
             if not fut.done():
                 fut.set_exception(exc)
-        self._reply_publication_by_seq.clear()
         for reply_seq in reply_seqs:
             with contextlib.suppress(AttributeError):
                 self._kernel.drop_dispatch_correlation(reply_seq)
@@ -3477,83 +3485,79 @@ class Elke27Client:
                     )
                 except _CLIENT_EXCEPTIONS as exc:
                     self._kernel.pending_responses.drop(seq)
-                    self._release_reply_publication_command(seq)
                     detail = f"command_key={command_key} seq={seq}"
                     return _err(self._normalize_error(exc, phase="execute", detail=detail))
 
-                if command_key in self._REPLY_PUBLICATION_COMMANDS:
-                    self._begin_reply_publication_command(seq, expected_route, loop)
+                publication_owner: int | None = None
+                try:
+                    if command_key in self._REPLY_PUBLICATION_COMMANDS:
+                        self._begin_reply_publication_command(seq, expected_route, loop)
+                        publication_owner = seq
 
-                wait_result = await self._await_kernel_command_response(
-                    seq=seq,
-                    command_key=command_key,
-                    sent_event=sent_event,
-                    future=future,
-                    per_attempt_timeout_s=timeout_value,
-                    # Reads have no side effect, so only writes report an unknown outcome.
-                    route=None
-                    if is_read_only_route(spec.domain, spec.command)
-                    else (spec.domain, spec.command),
-                )
-                if not wait_result.ok:
-                    self._drop_reply_publication_slot(seq)
-                    return wait_result
-                msg = wait_result.data
-                if msg is None:
-                    self._drop_reply_publication_slot(seq)
-                    return _err(ProtocolError(f"{command_key} returned no response payload."))
-
-                if not self._has_expected_payload(msg, expected_route):
-                    self._drop_reply_publication_slot(seq)
-                    return _err(
-                        ProtocolError(
-                            f"{command_key} missing response payload for {expected_route[0]}.{expected_route[1]}"
-                        )
+                    wait_result = await self._await_kernel_command_response(
+                        seq=seq,
+                        command_key=command_key,
+                        sent_event=sent_event,
+                        future=future,
+                        per_attempt_timeout_s=timeout_value,
+                        route=None
+                        if is_read_only_route(spec.domain, spec.command)
+                        else (spec.domain, spec.command),
                     )
+                    if not wait_result.ok:
+                        return wait_result
+                    msg = wait_result.data
+                    if msg is None:
+                        return _err(ProtocolError(f"{command_key} returned no response payload."))
 
-                error_code = self._extract_error_code(msg, expected_route)
-                if error_code is not None:
-                    if (
-                        self._is_panel_busy_error_code(error_code)
-                        and command_key not in _SEND_ONCE_COMMANDS
-                        and panel_busy_attempt < self._request_max_transport_retries()
-                    ):
-                        panel_busy_attempt += 1
-                        self._drop_reply_publication_slot(seq)
-                        if self._log.isEnabledFor(logging.DEBUG):
-                            self._log.debug(
-                                "Panel busy (11039) on %s; retry %s/%s",
-                                command_key,
-                                panel_busy_attempt,
-                                self._request_max_transport_retries(),
+                    if not self._has_expected_payload(msg, expected_route):
+                        return _err(
+                            ProtocolError(
+                                f"{command_key} missing response payload for {expected_route[0]}.{expected_route[1]}"
                             )
-                        await self._sleep_transport_backoff(
-                            panel_busy_attempt, skip_for_disarm=skip_busy_backoff
                         )
-                        continue
-                    self._drop_reply_publication_slot(seq)
-                    return _err(
-                        self._panel_error_for_async_execute(
-                            command_key,
-                            error_code,
-                            user_code_sent=self._payload_carried_user_code(payload),
-                        )
-                    )
 
-                response_payload = self._extract_response_payload(msg, expected_route)
-                status_refresh_ok = await self._status_refresh_after_successful_write(
-                    command_key,
-                    params,
-                    response_payload,
-                    # Remaining budget only, so write + refresh + publication wait
-                    # together stay within the command's budget (PR #29 Bugbot).
-                    timeout_s=command_deadline - loop.time(),
-                )
-                if self._command_needs_reply_publication_wait(command_key, response_payload):
-                    await self._await_reply_snapshot_publication(seq, deadline=command_deadline)
-                else:
-                    self._drop_reply_publication_slot(seq)
-                return _ok(response_payload, status_refresh_ok=status_refresh_ok)
+                    error_code = self._extract_error_code(msg, expected_route)
+                    if error_code is not None:
+                        if (
+                            self._is_panel_busy_error_code(error_code)
+                            and command_key not in _SEND_ONCE_COMMANDS
+                            and panel_busy_attempt < self._request_max_transport_retries()
+                        ):
+                            panel_busy_attempt += 1
+                            if self._log.isEnabledFor(logging.DEBUG):
+                                self._log.debug(
+                                    "Panel busy (11039) on %s; retry %s/%s",
+                                    command_key,
+                                    panel_busy_attempt,
+                                    self._request_max_transport_retries(),
+                                )
+                            await self._sleep_transport_backoff(
+                                panel_busy_attempt, skip_for_disarm=skip_busy_backoff
+                            )
+                            continue
+                        return _err(
+                            self._panel_error_for_async_execute(
+                                command_key,
+                                error_code,
+                                user_code_sent=self._payload_carried_user_code(payload),
+                            )
+                        )
+
+                    response_payload = self._extract_response_payload(msg, expected_route)
+                    status_refresh_ok = await self._status_refresh_after_successful_write(
+                        command_key,
+                        params,
+                        response_payload,
+                        timeout_s=command_deadline - loop.time(),
+                    )
+                    if self._command_needs_reply_publication_wait(command_key, response_payload):
+                        await self._await_reply_snapshot_publication(seq, deadline=command_deadline)
+                        publication_owner = None
+                    return _ok(response_payload, status_refresh_ok=status_refresh_ok)
+                finally:
+                    if publication_owner is not None:
+                        self._release_reply_publication_command(publication_owner)
 
         if spec.response_mode != "paged_blocks":
             return _err(ProtocolError(f"Command {command_key!r} has unsupported response_mode."))
