@@ -1135,12 +1135,21 @@ async def test_reply_snapshot_publication_release_paths(
     while deferred_handles:
         fn, args = deferred_handles.pop(0)
         fn(*args)
+    publication_timeout = f"Timed out waiting for reply seq={seq} snapshot publication"
+    async with asyncio.timeout(2.0):
+
+        async def _wait_spent_publication_timeout() -> None:
+            while True:
+                if any(publication_timeout in rec.message for rec in caplog.records):
+                    return
+                if task.done():
+                    return
+                await asyncio.sleep(0)
+
+        await _wait_spent_publication_timeout()
     result = await real_wait_for(task, timeout=2.0)
     assert result.ok is True
-    assert any(
-        f"Timed out waiting for reply seq={seq} snapshot publication" in rec.message
-        for rec in caplog.records
-    )
+    assert any(publication_timeout in rec.message for rec in caplog.records)
     assert wait_for_before == wait_for_snap
     assert seq in drop_dispatch_calls
     assert not reply_publication_seq_active(client, seq)
