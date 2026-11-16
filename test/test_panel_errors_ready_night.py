@@ -46,6 +46,9 @@ class _FakeSession:
         if on_sent is not None:
             on_sent(0.0)
 
+    def close(self) -> None:
+        return None
+
 
 def _make_client() -> tuple[Elke27Client, _FakeSession]:
     client = Elke27Client()

@@ -128,4 +128,31 @@ def synthetic_success_reply(
             },
         }
 
+    if command == "get_table_info":
+        return {
+            "seq": seq,
+            domain: {
+                command: {
+                    "error_code": E27ErrorCode.ELKERR_NONE,
+                    "tablesize": 0,
+                    "table_elements": 0,
+                    "table_csm": 0,
+                    "increment_size": 0,
+                    "element_size": 0,
+                }
+            },
+        }
+
+    if command == "get_attribs":
+        return {
+            "seq": seq,
+            domain: {command: {"error_code": E27ErrorCode.ELKERR_NONE, "count": 0}},
+        }
+
+    if command == "get_configured":
+        return {
+            "seq": seq,
+            domain: {command: {"error_code": E27ErrorCode.ELKERR_NONE, "count": 0, "ids": []}},
+        }
+
     raise ValueError(f"no synthetic reply for {domain}.{command}")

@@ -990,10 +990,8 @@ class Elke27Client:
                     nonlocal publication_handled
                     if publication_fut is None or publication_handled or not publication_fut.done():
                         return
-                    if publication_fut.cancelled():
-                        publication_handled = True
-                        return
-                    publication_fut.exception()
+                    if not publication_fut.cancelled():
+                        publication_fut.exception()
                     publication_handled = True
 
                 _consume_done_publication_future()
@@ -1036,6 +1034,10 @@ class Elke27Client:
                 outcome = _outcome_unknown("reply timeout")
                 if outcome is not None:
                     return _err(outcome)
+            if isinstance(exc, ConnectionLost):
+                disconnected = Elke27DisconnectedError("Connection lost during the command.")
+                disconnected.__cause__ = exc
+                return _err(disconnected)
             detail = f"command_key={command_key} seq={seq}"
             return _err(self._normalize_error(exc, phase="execute", detail=detail))
         finally:
@@ -2292,8 +2294,7 @@ class Elke27Client:
         self._connected = True
         self._clear_all_entity_stale()
         self._reset_panel_identity_if_new_panel(host, port)
-        if not self._skip_connect_bootstrap:
-            self._request_panel_version_info()
+        self._request_panel_version_info()
         if self._snapshot.version == 0:
             self._replace_snapshot(
                 panel_info=self._build_panel_info(),
@@ -3244,8 +3245,6 @@ class Elke27Client:
         timeout_s: float | None = None,
         **params: Any,
     ) -> Result[Mapping[str, Any]]:
-        if self._connected and self._kernel.state.panel.connected:
-            self._ensure_kernel_subscription()
         if command_key == "control_authenticate":
             try:
                 permission_level = permission_for_generator(command_key)

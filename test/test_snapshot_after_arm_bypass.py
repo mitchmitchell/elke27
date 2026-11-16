@@ -21,7 +21,6 @@ from elke27_lib.client import (
     Result,
 )
 from elke27_lib.const import E27ErrorCode
-from elke27_lib.errors import E27Timeout
 from elke27_lib.events import (
     UNSET_AT,
     UNSET_CLASSIFICATION,
@@ -34,8 +33,9 @@ from elke27_lib.events import (
     ZonesStatusBulkUpdated,
     ZoneStatusUpdated,
 )
-from elke27_lib.types import EventType, LinkKeys, PanelInfo
+from elke27_lib.types import EventType, PanelInfo
 from test.helpers.fake_panel_replies import synthetic_success_reply
+from test.helpers.fake_session import connect_with_fake_panel
 from test.helpers.internal import (
     deliver_panel_message,
     get_kernel,
@@ -77,6 +77,23 @@ def _prepare_area_one_disarmed_kernel_only(client: Elke27Client, kernel: Any) ->
 def _connect_client_for_fake_panel(client: Elke27Client, loop: asyncio.AbstractEventLoop) -> None:
     set_private(client, "_connected", True)
     client._event_loop = loop
+
+
+def _bootstrap_transport_reply(
+    sent: dict[str, Any], *, sent_history: list[dict[str, Any]]
+) -> dict[str, Any]:
+    try:
+        return synthetic_success_reply(sent, sent_history=sent_history)
+    except ValueError:
+        seq = sent.get("seq")
+        if not isinstance(seq, int):
+            raise
+        for domain, body in sent.items():
+            if domain in {"seq", "session_id"} or not isinstance(body, dict) or len(body) != 1:
+                continue
+            command = next(iter(body))
+            return {**sent, domain: {command: {"error_code": E27ErrorCode.ELKERR_NONE}}}
+        raise
 
 
 def _sync_zones_ready_snapshot(
@@ -1156,25 +1173,29 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
             lambda _request_timeout_s: 0.5,
         )
         caplog.set_level(logging.WARNING, logger="elke27_lib.client")
+    if not case.close_before_execute:
+        case.prepare(client, kernel)
     if case.close_before_execute:
         caplog.set_level(logging.WARNING, logger="elke27_lib.client")
-
-        async def _noop_kernel_close() -> None:
-            return None
-
-        monkeypatch.setattr(kernel, "close", _noop_kernel_close)
-        monkeypatch.setattr(client, "_skip_connect_bootstrap", True)
-
-        async def _stub_kernel_connect(*_args: object, **_kwargs: object) -> None:
-            kernel.state.panel.session_id = 1
-            kernel.state.panel.connected = True
-
-        monkeypatch.setattr(kernel, "connect", _stub_kernel_connect)
         await client.close()
-        await client.async_connect("127.0.0.1", 2101, LinkKeys("aa", "bb", "cc"))
+        session = await connect_with_fake_panel(monkeypatch, client)
+        async with asyncio.timeout(5.0):
+            idle_rounds = 0
+            while idle_rounds < 3:
+                if session.sent:
+                    prior = [cast(dict[str, Any], m) for m in session.sent]
+                    deliver_panel_message(
+                        kernel,
+                        _bootstrap_transport_reply(cast(dict[str, Any], session.sent[0]), sent_history=prior),
+                    )
+                    session.sent.pop(0)
+                    idle_rounds = 0
+                else:
+                    idle_rounds += 1
+                    await asyncio.sleep(0.05)
+        session.sent.clear()
         client.bind_kernel_loop_thread_for_tests(loop)
-
-    case.prepare(client, kernel)
+        case.prepare(client, kernel)
     snapshot_version_before = client.snapshot.version
 
     deferred_handles: list[tuple[Any, tuple[Any, ...]]] = []
@@ -1253,7 +1274,7 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
     while not session.sent:
         await asyncio.sleep(0.01)
 
-    sent = session.sent[0]
+    sent = cast(dict[str, Any], session.sent[0])
     reply = case.reply_for_sent(sent)
 
     delivery_error: list[BaseException] = []
@@ -1476,7 +1497,7 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         )
         while len(session.sent) < 2:
             await asyncio.sleep(0)
-        follow_reply = case.reply_for_sent(session.sent[1])
+        follow_reply = case.reply_for_sent(cast(dict[str, Any], session.sent[1]))
         deliver_panel_message(kernel, follow_reply)
         for _ in range(200):
             if follow_up.done():
@@ -1488,30 +1509,36 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         assert not any(_PUBLICATION_TIMEOUT_LOG in rec.message for rec in caplog.records)
     elif case.disconnect_before_reply:
         while not session.sent:
-            await asyncio.sleep(0)
-        for _ in range(500):
-            if kernel.dispatcher.pending_count() > 0:
-                break
-            await asyncio.sleep(0)
-        _emit_panel_connection_lost(client)
-        await asyncio.sleep(0)
+            await asyncio.sleep(0.01)
+        async with asyncio.timeout(2.0):
+            while kernel.dispatcher.pending_count() == 0:
+                await asyncio.sleep(0.01)
+        trigger_session_disconnect(kernel, ConnectionResetError())
+        async with asyncio.timeout(2.0):
+            while kernel.dispatcher.pending_count() > 0:
+                await asyncio.sleep(0.01)
         assert kernel.dispatcher.pending_count() == 0
         result = await task
         assert isinstance(result, Result)
         assert not result.ok
-        assert isinstance(result.error, (Elke27DisconnectedError, E27Timeout))
+        assert isinstance(result.error, Elke27DisconnectedError)
     elif case.disconnect_before_flush:
         threading.Thread(target=receive_thread, name=f"fake-receive-{case.id}", daemon=True).start()
         if case.session_kernel_disconnect:
             reply_seq = sent["seq"]
-            for _ in range(500):
-                if (
-                    deferred_handles
-                    and reply_publication_pending(client, reply_seq)
-                    and not task.done()
-                ):
-                    break
-                await asyncio.sleep(0)
+
+            async def _wait_session_loss_window() -> None:
+                while True:
+                    if (
+                        deferred_handles
+                        and reply_publication_pending(client, reply_seq)
+                        and not task.done()
+                    ):
+                        return
+                    await asyncio.sleep(0.01)
+
+            async with asyncio.timeout(2.0):
+                await _wait_session_loss_window()
             assert reply_publication_pending(client, reply_seq)
             assert not task.done()
             trigger_session_disconnect(kernel, ConnectionResetError())
