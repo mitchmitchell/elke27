@@ -10,8 +10,10 @@ import pytest
 
 import elke27_lib
 from elke27_lib import Elke27CommandOutcomeUnknownError, Elke27TimeoutError
-from elke27_lib.client import Elke27Client
+from elke27_lib.client import ArmMode, Elke27Client
+from test.helpers.firmware_fixtures import NIGHT_ARM_MIN_APP_FIELD
 from test.helpers.internal import get_kernel, get_private
+from test.helpers.panel_command_driver import connect_with_app_firmware
 from test.test_transport_command_retry import _FakeSession, _make_client
 
 
@@ -43,6 +45,31 @@ def test_error_is_public_timeout_subclass_with_route() -> None:
     assert err.route == ("area", "set_arm_state")
     assert err.is_transient is True
     assert "area.set_arm_state" in str(err)
+
+
+@pytest.mark.asyncio
+async def test_arm_night_acknowledged_write_refresh_failure_is_outcome_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from elke27_lib.client import Result
+
+    client, _panel = await connect_with_app_firmware(monkeypatch, NIGHT_ARM_MIN_APP_FIELD)
+
+    async def _execute_no_refresh(
+        command_key: str, /, **params: object
+    ) -> Result[dict[str, object]]:
+        del command_key, params
+        return Result(ok=True, data={"area_id": 1, "error_code": 0}, status_refresh_ok=False)
+
+    monkeypatch.setattr(client, "async_execute", _execute_no_refresh)
+
+    with pytest.raises(Elke27CommandOutcomeUnknownError) as exc_info:
+        await client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234")
+    msg = str(exc_info.value)
+    assert exc_info.value.route == ("area", "set_arm_state")
+    assert "acknowledged" in msg
+    assert "status refresh" in msg
+    assert "after it was sent" not in msg
 
 
 async def _run(client: Elke27Client, budget_s: float, **kwargs: Any) -> Any:

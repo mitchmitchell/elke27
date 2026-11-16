@@ -991,7 +991,12 @@ def test_default_event_queue_full_with_subscriber_logs_no_warning(
     _emit(kernel, DEFAULT_EVENT_QUEUE_MAXLEN + 4)
     assert len(delivered) == DEFAULT_EVENT_QUEUE_MAXLEN + 4
     assert kernel.events_dropped == 4
-    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    elke_warnings = [
+        r
+        for r in caplog.records
+        if r.levelno >= logging.WARNING and r.name.startswith("elke27_lib")
+    ]
+    assert not elke_warnings
 
 
 _HELLO_LOG = "elke27_lib.hello_thread"

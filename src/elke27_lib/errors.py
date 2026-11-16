@@ -808,6 +808,25 @@ class Elke27InvalidArgument(ValueError):
         return f"{self.__class__.__name__}({self.__str__()!r})"
 
 
+class Elke27PanelApplicationFirmwareUnknownError(Elke27InvalidArgument):
+    """Arm night was requested before application firmware is known."""
+
+
+class Elke27NightArmFirmwareTooOldError(Elke27InvalidArgument):
+    """Panel application firmware is below the arm night minimum."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        required: tuple[int, ...],
+        actual: tuple[int, ...],
+    ) -> None:
+        super().__init__(message)
+        self.required: tuple[int, ...] = required
+        self.actual: tuple[int, ...] = actual
+
+
 class Elke27StayInstantRequiredError(Elke27Error):
     """Arm night failed because Stay Instant is unavailable for the area."""
 
