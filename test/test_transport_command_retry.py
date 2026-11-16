@@ -1063,6 +1063,7 @@ async def test_reply_snapshot_publication_release_paths(
     client.bind_kernel_loop_thread_for_tests(loop)
     kernel.state.get_or_create_area(1).arm_state = "DISARMED"
     caplog.set_level(logging.WARNING, logger="elke27_lib.client")
+    real_budget = kernel.command_transport_wait_budget_s
     monkeypatch.setattr(kernel, "command_transport_wait_budget_s", lambda _t: 0.08)
 
     async def _slow_refresh(*_args: Any, **_kwargs: Any) -> None:
@@ -1090,11 +1091,9 @@ async def test_reply_snapshot_publication_release_paths(
     )
     publication_timeout = f"Timed out waiting for reply seq={seq} snapshot publication"
     async with asyncio.timeout(2.0):
-        while True:
-            if task.done():
-                break
-            if any(publication_timeout in rec.message for rec in caplog.records):
-                break
+        while not task.done() and not any(
+            publication_timeout in rec.message for rec in caplog.records
+        ):
             await asyncio.sleep(0)
     async with asyncio.timeout(2.0):
         result = await task
@@ -1103,6 +1102,8 @@ async def test_reply_snapshot_publication_release_paths(
     assert not reply_publication_seq_active(client, seq)
     assert kernel.dispatcher.match_pending(seq, pop=False) is None
 
+    monkeypatch.setattr(kernel, "command_transport_wait_budget_s", real_budget)
+    monkeypatch.delattr(client, "_status_refresh_after_successful_write", raising=False)
     caplog.clear()
     sent_before_fast = len(session.sent)
     fast_task = asyncio.create_task(
@@ -1129,6 +1130,7 @@ async def test_reply_snapshot_publication_release_paths(
     async with asyncio.timeout(2.0):
         fast_result = await fast_task
     assert fast_result.ok is True
+    assert not any(publication_timeout in rec.message for rec in caplog.records)
     assert not reply_publication_seq_active(client, fast_seq)
     assert kernel.dispatcher.match_pending(fast_seq, pop=False) is None
 
