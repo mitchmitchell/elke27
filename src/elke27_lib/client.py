@@ -490,6 +490,24 @@ def _table_elements_for_domain(state: PanelState, domain: str) -> int | None:
     return None
 
 
+REPLY_PUBLICATION_COMMAND_KEYS: tuple[str, ...] = (
+    "area_set_arm_state",
+    "area_get_status",
+    "zone_set_status",
+    "zone_get_status",
+    "zone_get_all_zones_status",
+)
+
+_MISSING_REPLY_PUBLICATION_COMMAND_KEYS = tuple(
+    key for key in REPLY_PUBLICATION_COMMAND_KEYS if key not in COMMANDS
+)
+if _MISSING_REPLY_PUBLICATION_COMMAND_KEYS:
+    raise RuntimeError(
+        "Reply publication command keys missing from COMMANDS registry: "
+        + ", ".join(sorted(_MISSING_REPLY_PUBLICATION_COMMAND_KEYS))
+    )
+
+
 class Elke27Client:
     """
     Stable client API for consumers (e.g., Home Assistant).
@@ -608,10 +626,12 @@ class Elke27Client:
         if self._kernel_event_token is not None:
             return
         self._kernel_event_token = self._kernel.subscribe(self._on_kernel_event)
-        if isinstance(self._kernel, E27Kernel):
+        try:
             self._dispatch_listener_remove = self._kernel.add_dispatch_listener(
                 self._on_kernel_dispatch_response
             )
+        except AttributeError:
+            self._dispatch_listener_remove = None
 
     @property
     def state(self):
@@ -1647,22 +1667,14 @@ class Elke27Client:
                 self._mark_zone_stale(zone_id)
         return False
 
-    _REPLY_PUBLICATION_COMMAND_KEYS: tuple[str, ...] = (
-        "area_set_arm_state",
-        "area_get_status",
-        "zone_set_status",
-        "zone_get_status",
-        "zone_get_all_zones_status",
-    )
+    _REPLY_PUBLICATION_COMMAND_KEYS = REPLY_PUBLICATION_COMMAND_KEYS
 
-    _REPLY_PUBLICATION_COMMANDS = frozenset(
-        key for key in _REPLY_PUBLICATION_COMMAND_KEYS if key in COMMANDS
-    )
+    _REPLY_PUBLICATION_COMMANDS = frozenset(REPLY_PUBLICATION_COMMAND_KEYS)
 
     _DISPATCH_COMPLETE_PUBLICATION_ROUTES = frozenset(
         (COMMANDS[key].domain, COMMANDS[key].command)
-        for key in _REPLY_PUBLICATION_COMMAND_KEYS
-        if key in COMMANDS and COMMANDS[key].command.startswith("get_")
+        for key in REPLY_PUBLICATION_COMMAND_KEYS
+        if COMMANDS[key].command.startswith("get_")
     )
 
     @staticmethod
@@ -1676,9 +1688,8 @@ class Elke27Client:
         return False
 
     def _on_kernel_dispatch_response(
-        self, reply_seq: int, route: tuple[str, str], handled: bool
+        self, reply_seq: int, route: tuple[str, str], _handled: bool
     ) -> None:
-        del handled
         if route not in self._DISPATCH_COMPLETE_PUBLICATION_ROUTES:
             return
         if self._event_loop is None:
@@ -1688,10 +1699,7 @@ class Elke27Client:
                 self._complete_dispatch_only_reply_publication, reply_seq
             )
 
-    def _complete_dispatch_only_reply_publication(self, reply_seq: int) -> None:
-        fut = self._reply_publication_by_seq.get(reply_seq)
-        if fut is None or fut.done():
-            return
+    def _replace_snapshot_for_reply_publication(self, reply_seq: int | None) -> None:
         try:
             self._replace_snapshot(
                 panel_info=self._build_panel_info(),
@@ -1707,17 +1715,41 @@ class Elke27Client:
                 thermostats=self._build_thermostat_map(),
             )
         except Exception as snapshot_replace_failed:
-            self._fail_reply_publication(
-                reply_seq,
-                Elke27SnapshotPublicationError("Snapshot replace failed during reply publication."),
-            )
+            if reply_seq is not None:
+                self._fail_reply_publication(
+                    reply_seq,
+                    Elke27SnapshotPublicationError(
+                        "Snapshot replace failed during reply publication."
+                    ),
+                )
             raise snapshot_replace_failed
+
+    def _complete_dispatch_only_reply_publication(self, reply_seq: int) -> None:
+        fut = self._reply_publication_by_seq.get(reply_seq)
+        if fut is None or fut.done():
+            return
+        self._replace_snapshot_for_reply_publication(reply_seq)
         self._complete_reply_publication(reply_seq)
 
-    def _drop_reply_publication_slot(self, reply_seq: int) -> None:
+    def _begin_reply_publication_command(
+        self,
+        reply_seq: int,
+        expected_route: tuple[str, str] | None,
+        loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        self._reply_publication_by_seq[reply_seq] = loop.create_future()
+        with contextlib.suppress(AttributeError):
+            self._kernel.register_dispatch_correlation(reply_seq, expected_route)
+
+    def _release_reply_publication_command(self, reply_seq: int) -> None:
         fut = self._reply_publication_by_seq.pop(reply_seq, None)
         if fut is not None and not fut.done():
             fut.cancel()
+        with contextlib.suppress(AttributeError):
+            self._kernel.drop_dispatch_correlation(reply_seq)
+
+    def _drop_reply_publication_slot(self, reply_seq: int) -> None:
+        self._release_reply_publication_command(reply_seq)
 
     def _complete_reply_publication(self, reply_seq: int) -> None:
         fut = self._reply_publication_by_seq.get(reply_seq)
@@ -1730,10 +1762,14 @@ class Elke27Client:
             fut.set_exception(exc)
 
     def _fail_all_reply_publication_waiters(self, exc: BaseException) -> None:
+        reply_seqs = list(self._reply_publication_by_seq)
         for fut in self._reply_publication_by_seq.values():
             if not fut.done():
                 fut.set_exception(exc)
         self._reply_publication_by_seq.clear()
+        for reply_seq in reply_seqs:
+            with contextlib.suppress(AttributeError):
+                self._kernel.drop_dispatch_correlation(reply_seq)
 
     def _command_needs_reply_publication_wait(
         self, command_key: str, response_payload: Mapping[str, Any] | None
@@ -1756,12 +1792,16 @@ class Elke27Client:
             return
         fut = self._reply_publication_by_seq.get(reply_seq)
         if fut is None:
+            if not self._connected:
+                raise Elke27DisconnectedError(
+                    "Connection lost while waiting for reply snapshot publication."
+                )
             return
         if fut.done():
             try:
                 fut.result()
             finally:
-                self._drop_reply_publication_slot(reply_seq)
+                self._release_reply_publication_command(reply_seq)
             return
         try:
             await asyncio.wait_for(fut, timeout=remaining)
@@ -1771,7 +1811,7 @@ class Elke27Client:
                 reply_seq,
             )
         finally:
-            self._drop_reply_publication_slot(reply_seq)
+            self._release_reply_publication_command(reply_seq)
 
     def _record_local_zone_bypass(self, zone_id: int) -> None:
         zone = self._kernel.state.zones.get(zone_id)
@@ -1922,6 +1962,7 @@ class Elke27Client:
                         "not resending until the next accepted authenticate"
                     )
                 self._authenticated = False
+                self._connected = False
                 if evt.reason == "closed" or not self._reauth_on_reconnect:
                     self._forget_auth_pin()
                 self._reconnect_csm_snapshot = self._kernel.state.csm_snapshot
@@ -2074,29 +2115,7 @@ class Elke27Client:
                 self._apply_stale_clears_from_event(evt)
                 if self._reply_publication_qualifies(evt) and isinstance(evt.seq, int):
                     reply_seq_to_publish = evt.seq
-            try:
-                self._replace_snapshot(
-                    panel_info=self._build_panel_info(),
-                    table_info=self._build_table_info(),
-                    areas=self._build_area_map(),
-                    zones=self._build_zone_map(),
-                    zone_definitions=self._build_zone_definitions(),
-                    outputs=self._build_output_map(),
-                    output_definitions=self._build_output_definitions(),
-                    lights=self._build_light_map(),
-                    barriers=self._build_barrier_map(),
-                    locks=self._build_lock_map(),
-                    thermostats=self._build_thermostat_map(),
-                )
-            except Exception as snapshot_replace_failed:
-                if reply_seq_to_publish is not None:
-                    self._fail_reply_publication(
-                        reply_seq_to_publish,
-                        Elke27SnapshotPublicationError(
-                            "Snapshot replace failed during reply publication."
-                        ),
-                    )
-                raise snapshot_replace_failed
+            self._replace_snapshot_for_reply_publication(reply_seq_to_publish)
             if reply_seq_to_publish is not None:
                 self._complete_reply_publication(reply_seq_to_publish)
         self._maybe_set_ready()
@@ -2975,6 +2994,9 @@ class Elke27Client:
         self._cancel_reauth()
         self._forget_auth_pin()
         self._authenticated = False
+        if self._dispatch_listener_remove is not None:
+            self._dispatch_listener_remove()
+            self._dispatch_listener_remove = None
         try:
             await self._kernel.close()
             return _ok(None)
@@ -3433,9 +3455,6 @@ class Elke27Client:
                     timeout_value
                 )
                 seq = self._kernel.next_seq()
-                if command_key in self._REPLY_PUBLICATION_COMMANDS:
-                    self._reply_publication_by_seq[seq] = loop.create_future()
-                    self._kernel.register_dispatch_correlation(seq, expected_route)
                 future = self._kernel.pending_responses.create(
                     seq,
                     command_key=command_key,
@@ -3458,9 +3477,12 @@ class Elke27Client:
                     )
                 except _CLIENT_EXCEPTIONS as exc:
                     self._kernel.pending_responses.drop(seq)
-                    self._drop_reply_publication_slot(seq)
+                    self._release_reply_publication_command(seq)
                     detail = f"command_key={command_key} seq={seq}"
                     return _err(self._normalize_error(exc, phase="execute", detail=detail))
+
+                if command_key in self._REPLY_PUBLICATION_COMMANDS:
+                    self._begin_reply_publication_command(seq, expected_route, loop)
 
                 wait_result = await self._await_kernel_command_response(
                     seq=seq,

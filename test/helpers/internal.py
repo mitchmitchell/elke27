@@ -41,17 +41,30 @@ def inject_unconfirmed_publication_event(client: object, case_id: str, reply_seq
             changed_fields=(),
             status_confirmed=False,
         )
-    elif case_id == "area_get_status":
-        event = AreaStatusUpdated(
-            kind=AreaStatusUpdated.KIND,
-            at=UNSET_AT,
-            seq=reply_seq,
-            classification=UNSET_CLASSIFICATION,
-            route=("area", "get_status"),
-            session_id=UNSET_SESSION_ID,
-            area_id=1,
-            changed_fields=(),
-            status_confirmed=False,
-        )
+    elif case_id in {"area_get_status", "zone_get_status"}:
+        if case_id == "area_get_status":
+            event = AreaStatusUpdated(
+                kind=AreaStatusUpdated.KIND,
+                at=UNSET_AT,
+                seq=reply_seq,
+                classification=UNSET_CLASSIFICATION,
+                route=("area", "get_status"),
+                session_id=UNSET_SESSION_ID,
+                area_id=1,
+                changed_fields=(),
+                status_confirmed=False,
+            )
+        else:
+            event = ZoneStatusUpdated(
+                kind=ZoneStatusUpdated.KIND,
+                at=UNSET_AT,
+                seq=reply_seq,
+                classification=UNSET_CLASSIFICATION,
+                route=("zone", "get_status"),
+                session_id=UNSET_SESSION_ID,
+                zone_id=1,
+                changed_fields=(),
+                status_confirmed=False,
+            )
     if event is not None:
         get_private(client, "_handle_kernel_event")(event)

@@ -1270,6 +1270,9 @@ class E27Kernel:
             )
         )
 
+    def drop_dispatch_correlation(self, seq: int) -> None:
+        self.dispatcher.drop_pending(seq)
+
     # -------------------------
     # Session -> E27Kernel -> Dispatcher wiring
     # -------------------------
