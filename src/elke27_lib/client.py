@@ -26,7 +26,6 @@ import time
 import types
 import types as types_mod
 import typing
-from collections import defaultdict
 from collections.abc import (
     AsyncIterator,
     Callable,
@@ -102,6 +101,7 @@ from .errors import (
     Elke27PanelError,
     Elke27PermissionError,
     Elke27PinRequiredError,
+    Elke27SnapshotPublicationError,
     Elke27StayInstantRequiredError,
     Elke27TimeoutError,
     InvalidCredentials,
@@ -167,7 +167,7 @@ from .handlers.area import (
     clear_all_area_exit_delay_pending,
     make_area_configured_merge,
 )
-from .handlers.zone import bulk_zone_status_reply_will_publish, make_zone_configured_merge
+from .handlers.zone import make_zone_configured_merge
 from .kernel_loop import (
     DiscoverResult,
     E27Kernel,
@@ -535,14 +535,14 @@ class Elke27Client:
         self._subscriber_lock: threading.Lock = threading.Lock()
         self._subscriber_error_types: set[type] = set()
         self._kernel_event_token: int | None = None
+        self._dispatch_listener_remove: Callable[[], None] | None = None
         self._now_monotonic: Callable[[], float] = now_monotonic or time.monotonic
         self._snapshot: PanelSnapshot = PanelSnapshot.empty()
         self._snapshot_version: int = 0
         self._stale_area_ids: set[int] = set()
         self._stale_zone_ids: set[int] = set()
         self._arm_write_inflight_area_ids: collections.Counter[int] = collections.Counter()
-        self._published_reply_seqs: set[int] = set()
-        self._reply_publication_waiters: dict[int, list[asyncio.Future[None]]] = defaultdict(list)
+        self._reply_publication_by_seq: dict[int, asyncio.Future[None]] = {}
         # PIN of the last authenticate the panel accepted, and the session it was
         # accepted in. Cleared on disconnect, close, auth failure and session change.
         self._last_auth_pin: int | None = None
@@ -608,6 +608,11 @@ class Elke27Client:
         if self._kernel_event_token is not None:
             return
         self._kernel_event_token = self._kernel.subscribe(self._on_kernel_event)
+        add_dispatch_listener = getattr(self._kernel, "add_dispatch_listener", None)
+        if add_dispatch_listener is not None:
+            self._dispatch_listener_remove = add_dispatch_listener(
+                self._on_kernel_dispatch_response
+            )
 
     @property
     def state(self):
@@ -1643,41 +1648,93 @@ class Elke27Client:
                 self._mark_zone_stale(zone_id)
         return False
 
+    _REPLY_PUBLICATION_COMMAND_KEYS: tuple[str, ...] = (
+        "area_set_arm_state",
+        "area_get_status",
+        "zone_set_status",
+        "zone_get_status",
+        "zone_get_all_zones_status",
+    )
+
     _REPLY_PUBLICATION_COMMANDS = frozenset(
-        {
-            "area_set_arm_state",
-            "area_get_status",
-            "zone_set_status",
-            "zone_get_all_zones_status",
-        }
+        key for key in _REPLY_PUBLICATION_COMMAND_KEYS if key in COMMANDS
+    )
+
+    _DISPATCH_COMPLETE_PUBLICATION_ROUTES = frozenset(
+        (COMMANDS[key].domain, COMMANDS[key].command)
+        for key in _REPLY_PUBLICATION_COMMAND_KEYS
+        if key in COMMANDS and COMMANDS[key].command.startswith("get_")
     )
 
     @staticmethod
     def _reply_publication_qualifies(evt: Event) -> bool:
         if isinstance(evt, AreaStatusUpdated):
-            if evt.route == ("area", "get_status"):
-                return True
             return evt.status_confirmed
         if isinstance(evt, ZoneStatusUpdated):
-            if evt.route == ("zone", "get_status"):
-                return True
             return evt.status_confirmed
         if isinstance(evt, ZonesStatusBulkUpdated):
             return True
         return False
 
+    def _on_kernel_dispatch_response(
+        self, reply_seq: int, route: tuple[str, str], handled: bool
+    ) -> None:
+        del handled
+        if route not in self._DISPATCH_COMPLETE_PUBLICATION_ROUTES:
+            return
+        if self._event_loop is None:
+            return
+        with contextlib.suppress(RuntimeError):
+            self._event_loop.call_soon_threadsafe(
+                self._complete_dispatch_only_reply_publication, reply_seq
+            )
+
+    def _complete_dispatch_only_reply_publication(self, reply_seq: int) -> None:
+        fut = self._reply_publication_by_seq.get(reply_seq)
+        if fut is None or fut.done():
+            return
+        try:
+            self._replace_snapshot(
+                panel_info=self._build_panel_info(),
+                table_info=self._build_table_info(),
+                areas=self._build_area_map(),
+                zones=self._build_zone_map(),
+                zone_definitions=self._build_zone_definitions(),
+                outputs=self._build_output_map(),
+                output_definitions=self._build_output_definitions(),
+                lights=self._build_light_map(),
+                barriers=self._build_barrier_map(),
+                locks=self._build_lock_map(),
+                thermostats=self._build_thermostat_map(),
+            )
+        except Exception as snapshot_replace_failed:
+            self._fail_reply_publication(
+                reply_seq,
+                Elke27SnapshotPublicationError("Snapshot replace failed during reply publication."),
+            )
+            raise snapshot_replace_failed
+        self._complete_reply_publication(reply_seq)
+
+    def _drop_reply_publication_slot(self, reply_seq: int) -> None:
+        fut = self._reply_publication_by_seq.pop(reply_seq, None)
+        if fut is not None and not fut.done():
+            fut.cancel()
+
     def _complete_reply_publication(self, reply_seq: int) -> None:
-        self._published_reply_seqs.add(reply_seq)
-        for fut in list(self._reply_publication_waiters.pop(reply_seq, [])):
-            if not fut.done():
-                fut.set_result(None)
+        fut = self._reply_publication_by_seq.get(reply_seq)
+        if fut is not None and not fut.done():
+            fut.set_result(None)
+
+    def _fail_reply_publication(self, reply_seq: int, exc: BaseException) -> None:
+        fut = self._reply_publication_by_seq.get(reply_seq)
+        if fut is not None and not fut.done():
+            fut.set_exception(exc)
 
     def _fail_all_reply_publication_waiters(self, exc: BaseException) -> None:
-        for waiters in self._reply_publication_waiters.values():
-            for fut in waiters:
-                if not fut.done():
-                    fut.set_exception(exc)
-        self._reply_publication_waiters.clear()
+        for fut in self._reply_publication_by_seq.values():
+            if not fut.done():
+                fut.set_exception(exc)
+        self._reply_publication_by_seq.clear()
 
     def _command_needs_reply_publication_wait(
         self, command_key: str, response_payload: Mapping[str, Any] | None
@@ -1686,13 +1743,9 @@ class Elke27Client:
             return False
         if command_key in {"area_set_arm_state", "zone_set_status"}:
             return self._command_reply_includes_confirmed_status(command_key, response_payload)
-        if command_key == "zone_get_all_zones_status":
-            return bulk_zone_status_reply_will_publish(self._kernel.state, response_payload or {})
         return True
 
     async def _await_reply_snapshot_publication(self, reply_seq: int, *, deadline: float) -> None:
-        if reply_seq in self._published_reply_seqs:
-            return
         loop = asyncio.get_running_loop()
         remaining = deadline - loop.time()
         if remaining <= 0:
@@ -1700,12 +1753,17 @@ class Elke27Client:
                 "Timed out waiting for reply seq=%s snapshot publication",
                 reply_seq,
             )
+            self._drop_reply_publication_slot(reply_seq)
             return
-        fut: asyncio.Future[None] = loop.create_future()
-        self._reply_publication_waiters[reply_seq].append(fut)
-        if reply_seq in self._published_reply_seqs:
-            if not fut.done():
-                fut.set_result(None)
+        fut = self._reply_publication_by_seq.get(reply_seq)
+        if fut is None:
+            return
+        if fut.done():
+            try:
+                fut.result()
+            finally:
+                self._drop_reply_publication_slot(reply_seq)
+            return
         try:
             await asyncio.wait_for(fut, timeout=remaining)
         except TimeoutError:
@@ -1714,9 +1772,7 @@ class Elke27Client:
                 reply_seq,
             )
         finally:
-            pending = self._reply_publication_waiters.get(reply_seq, [])
-            if fut in pending:
-                pending.remove(fut)
+            self._drop_reply_publication_slot(reply_seq)
 
     def _record_local_zone_bypass(self, zone_id: int) -> None:
         zone = self._kernel.state.zones.get(zone_id)
@@ -2033,11 +2089,17 @@ class Elke27Client:
                     locks=self._build_lock_map(),
                     thermostats=self._build_thermostat_map(),
                 )
-            except BaseException:
-                raise
-            else:
+            except Exception as snapshot_replace_failed:
                 if reply_seq_to_publish is not None:
-                    self._complete_reply_publication(reply_seq_to_publish)
+                    self._fail_reply_publication(
+                        reply_seq_to_publish,
+                        Elke27SnapshotPublicationError(
+                            "Snapshot replace failed during reply publication."
+                        ),
+                    )
+                raise snapshot_replace_failed
+            if reply_seq_to_publish is not None:
+                self._complete_reply_publication(reply_seq_to_publish)
         self._maybe_set_ready()
 
         if not self._subscriber_lock.acquire(timeout=30.0):
@@ -3372,6 +3434,8 @@ class Elke27Client:
                     timeout_value
                 )
                 seq = self._kernel.next_seq()
+                if command_key in self._REPLY_PUBLICATION_COMMANDS:
+                    self._reply_publication_by_seq[seq] = loop.create_future()
                 future = self._kernel.pending_responses.create(
                     seq,
                     command_key=command_key,
@@ -3394,6 +3458,7 @@ class Elke27Client:
                     )
                 except _CLIENT_EXCEPTIONS as exc:
                     self._kernel.pending_responses.drop(seq)
+                    self._drop_reply_publication_slot(seq)
                     detail = f"command_key={command_key} seq={seq}"
                     return _err(self._normalize_error(exc, phase="execute", detail=detail))
 
@@ -3409,12 +3474,15 @@ class Elke27Client:
                     else (spec.domain, spec.command),
                 )
                 if not wait_result.ok:
+                    self._drop_reply_publication_slot(seq)
                     return wait_result
                 msg = wait_result.data
                 if msg is None:
+                    self._drop_reply_publication_slot(seq)
                     return _err(ProtocolError(f"{command_key} returned no response payload."))
 
                 if not self._has_expected_payload(msg, expected_route):
+                    self._drop_reply_publication_slot(seq)
                     return _err(
                         ProtocolError(
                             f"{command_key} missing response payload for {expected_route[0]}.{expected_route[1]}"
@@ -3429,6 +3497,7 @@ class Elke27Client:
                         and panel_busy_attempt < self._request_max_transport_retries()
                     ):
                         panel_busy_attempt += 1
+                        self._drop_reply_publication_slot(seq)
                         if self._log.isEnabledFor(logging.DEBUG):
                             self._log.debug(
                                 "Panel busy (11039) on %s; retry %s/%s",
@@ -3440,6 +3509,7 @@ class Elke27Client:
                             panel_busy_attempt, skip_for_disarm=skip_busy_backoff
                         )
                         continue
+                    self._drop_reply_publication_slot(seq)
                     return _err(
                         self._panel_error_for_async_execute(
                             command_key,
@@ -3459,6 +3529,8 @@ class Elke27Client:
                 )
                 if self._command_needs_reply_publication_wait(command_key, response_payload):
                     await self._await_reply_snapshot_publication(seq, deadline=command_deadline)
+                else:
+                    self._drop_reply_publication_slot(seq)
                 return _ok(response_payload, status_refresh_ok=status_refresh_ok)
 
         if spec.response_mode != "paged_blocks":

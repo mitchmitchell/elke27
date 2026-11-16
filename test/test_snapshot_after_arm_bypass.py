@@ -12,7 +12,13 @@ from typing import Any, cast
 
 import pytest
 
-from elke27_lib.client import ArmMode, Elke27Client, Elke27DisconnectedError, Result
+from elke27_lib.client import (
+    ArmMode,
+    Elke27Client,
+    Elke27DisconnectedError,
+    Elke27SnapshotPublicationError,
+    Result,
+)
 from elke27_lib.const import E27ErrorCode
 from elke27_lib.events import (
     UNSET_AT,
@@ -35,6 +41,11 @@ from test.test_panel_errors_ready_night import _FakeSession, _make_client
 def _sync_area_disarmed_snapshot(client: Elke27Client, kernel: Any) -> None:
     kernel.state.get_or_create_area(1).arm_state = "DISARMED"
     client._replace_snapshot(areas=client._build_area_map())
+
+
+def _prepare_area_one_disarmed_kernel_only(client: Elke27Client, kernel: Any) -> None:
+    del client
+    kernel.state.get_or_create_area(1).arm_state = "DISARMED"
 
 
 def _sync_zones_ready_snapshot(
@@ -579,28 +590,9 @@ async def test_unrelated_zone_status_does_not_release_arm_publication_wait() -> 
     assert client.snapshot.areas[1].arm_mode == ArmMode.ARMED_AWAY
 
 
-def test_snapshot_failure_does_not_publish_reply_seq() -> None:
-    client = Elke27Client()
-    reply_seq = 42
-    client._replace_snapshot = lambda **_kwargs: (_ for _ in ()).throw(  # type: ignore[method-assign]
-        RuntimeError("snap")
-    )
-
-    with pytest.raises(RuntimeError, match="snap"):
-        client._handle_kernel_event(
-            AreaStatusUpdated(
-                kind=AreaStatusUpdated.KIND,
-                at=UNSET_AT,
-                seq=reply_seq,
-                classification=UNSET_CLASSIFICATION,
-                route=("area", "get_status"),
-                session_id=UNSET_SESSION_ID,
-                area_id=1,
-                changed_fields=(),
-                status_confirmed=True,
-            )
-        )
-    assert reply_seq not in client._published_reply_seqs
+class _SnapshotAreaMapFailsClient(Elke27Client):
+    def _build_area_map(self):
+        raise ValueError("snapshot area map build failed for test")
 
 
 @dataclass(frozen=True)
@@ -612,6 +604,8 @@ class _ReceiveThreadPublicationCase:
     prepare: Callable[[Elke27Client, Any], None]
     disconnect_before_flush: bool = False
     same_zone_unrelated_bulk_before_write: bool = False
+    snapshot_build_fails: bool = False
+    ack_only_zone_write: bool = False
 
 
 def _receive_thread_publication_cases() -> tuple[_ReceiveThreadPublicationCase, ...]:
@@ -669,6 +663,44 @@ def _receive_thread_publication_cases() -> tuple[_ReceiveThreadPublicationCase, 
             prepare=lambda client, kernel: _sync_zones_ready_snapshot(client, kernel, (1,)),
         ),
         _ReceiveThreadPublicationCase(
+            id="zone_set_status_ack_only_refresh",
+            call=lambda client: client.async_execute(
+                "zone_set_status",
+                zone_id=1,
+                bypassed=True,
+                pin=1234,
+                timeout_s=2.0,
+            ),
+            reply_for_sent=lambda sent: {
+                "seq": sent["seq"],
+                "zone": {
+                    "set_status": {
+                        "zone_id": 1,
+                        "error_code": E27ErrorCode.ELKERR_NONE,
+                    }
+                },
+            },
+            check=_check_zone_write_publication_same_zone,
+            prepare=lambda client, kernel: _sync_zones_ready_snapshot(client, kernel, (1,)),
+            ack_only_zone_write=True,
+        ),
+        _ReceiveThreadPublicationCase(
+            id="zone_get_status",
+            call=lambda client: client.async_execute("zone_get_status", zone_id=1),
+            reply_for_sent=lambda sent: {
+                "seq": sent["seq"],
+                "zone": {
+                    "get_status": {
+                        "zone_id": 1,
+                        "BYPASSED": True,
+                        "error_code": E27ErrorCode.ELKERR_NONE,
+                    }
+                },
+            },
+            check=_check_zone_get_status_publication,
+            prepare=lambda client, kernel: _sync_zones_ready_snapshot(client, kernel, (1,)),
+        ),
+        _ReceiveThreadPublicationCase(
             id="same_zone_unrelated_bulk_zone_write",
             call=lambda client: client.async_execute(
                 "zone_set_status",
@@ -690,6 +722,23 @@ def _receive_thread_publication_cases() -> tuple[_ReceiveThreadPublicationCase, 
             check=_check_zone_write_publication_same_zone,
             prepare=lambda client, kernel: _sync_zones_ready_snapshot(client, kernel, (1,)),
             same_zone_unrelated_bulk_before_write=True,
+        ),
+        _ReceiveThreadPublicationCase(
+            id="area_get_status_snapshot_build_failure",
+            call=lambda client: client.async_execute("area_get_status", area_id=1, timeout_s=2.0),
+            reply_for_sent=lambda sent: {
+                "seq": sent["seq"],
+                "area": {
+                    "get_status": {
+                        "area_id": 1,
+                        "arm_state": "DISARMED",
+                        "error_code": E27ErrorCode.ELKERR_NONE,
+                    }
+                },
+            },
+            check=lambda _client, _result, _version_before: None,
+            prepare=_prepare_area_one_disarmed_kernel_only,
+            snapshot_build_fails=True,
         ),
         _ReceiveThreadPublicationCase(
             id="disconnect_during_deferred_publication",
@@ -740,6 +789,13 @@ def _check_zone_write_publication_same_zone(
     assert client.get_snapshot().zones[1].bypassed is True
 
 
+def _check_zone_get_status_publication(
+    client: Elke27Client, result: Result[Mapping[str, Any]], _version_before: int
+) -> None:
+    assert result.status_refresh_ok is None
+    assert client.get_snapshot().zones[1].bypassed is True
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "case",
@@ -759,11 +815,19 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
     before reply snapshot publication without ``_await_reply_snapshot_publication``.
     Removing the wait makes each parametrized route fail this test.
     """
-    client, session = _make_client()
+    if case.snapshot_build_fails:
+        client = _SnapshotAreaMapFailsClient()
+        kernel = get_kernel(client)
+        kernel.load_features_blocking()
+        session = _FakeSession()
+        cast(Any, kernel)._session = session
+        kernel.state.panel.session_id = 1
+    else:
+        client, session = _make_client()
+        kernel = get_kernel(client)
     loop = asyncio.get_running_loop()
     cast(Any, client)._connected = True
     client._event_loop = loop
-    kernel = get_kernel(client)
     case.prepare(client, kernel)
     snapshot_version_before = client.snapshot.version
 
@@ -790,7 +854,12 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
             fn(*args)
 
     flush_task: asyncio.Task[None] | None = None
-    skip_auto_flush = case.disconnect_before_flush or case.same_zone_unrelated_bulk_before_write
+    skip_auto_flush = (
+        case.disconnect_before_flush
+        or case.same_zone_unrelated_bulk_before_write
+        or case.snapshot_build_fails
+        or case.ack_only_zone_write
+    )
     if not skip_auto_flush:
         flush_task = asyncio.create_task(flush_deferred_snapshot_handles())
     task = asyncio.create_task(case.call(client))
@@ -810,7 +879,58 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         except BaseException as exc:  # noqa: BLE001
             delivery_error.append(exc)
 
-    if case.same_zone_unrelated_bulk_before_write:
+    if case.snapshot_build_fails:
+        threading.Thread(target=receive_thread, name=f"fake-receive-{case.id}", daemon=True).start()
+        while not deferred_handles:
+            await asyncio.sleep(0)
+        assert not task.done()
+        with pytest.raises(ValueError, match="snapshot area map build failed"):
+            while deferred_handles:
+                fn, args = deferred_handles.pop(0)
+                fn(*args)
+        with pytest.raises(Elke27SnapshotPublicationError):
+            await task
+    elif case.ack_only_zone_write:
+        threading.Thread(target=receive_thread, name=f"fake-receive-{case.id}", daemon=True).start()
+        while len(session.sent) < 1:
+            await asyncio.sleep(0)
+        while not deferred_handles:
+            await asyncio.sleep(0)
+        assert not task.done()
+        assert client.get_snapshot().zones[1].bypassed is False
+        while len(session.sent) < 2:
+            await asyncio.sleep(0)
+        get_status_sent = session.sent[1]
+        get_status_reply = {
+            "seq": get_status_sent["seq"],
+            "zone": {
+                "get_status": {
+                    "zone_id": 1,
+                    "BYPASSED": True,
+                    "error_code": E27ErrorCode.ELKERR_NONE,
+                }
+            },
+        }
+
+        def receive_refresh() -> None:
+            on_message(get_status_reply)
+
+        threading.Thread(
+            target=receive_refresh, name=f"fake-receive-refresh-{case.id}", daemon=True
+        ).start()
+        while not deferred_handles:
+            await asyncio.sleep(0)
+        assert not task.done()
+        assert client.get_snapshot().zones[1].bypassed is False
+        while deferred_handles:
+            fn, args = deferred_handles.pop(0)
+            fn(*args)
+        result = await task
+        assert delivery_error == []
+        assert isinstance(result, Result)
+        assert result.ok is True
+        case.check(client, result, snapshot_version_before)
+    elif case.same_zone_unrelated_bulk_before_write:
         bulk_reply = {
             "seq": sent["seq"] + 100,
             "zone": {
@@ -966,7 +1086,7 @@ async def test_zone_bulk_unknown_char_publication_wait_no_timeout(
 
 
 @pytest.mark.asyncio
-async def test_zone_bulk_empty_status_skips_publication_wait(
+async def test_zone_bulk_empty_status_publication_wait_no_timeout(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     client, session = _make_client()
@@ -1025,6 +1145,25 @@ async def test_area_get_status_publication_wait_no_timeout(
     assert result.ok is True
     assert client.get_snapshot().areas[1].arm_mode == ArmMode.DISARMED
     assert not any(_PUBLICATION_TIMEOUT_LOG in rec.message for rec in caplog.records)
+
+    for _ in range(4):
+        await _drive_until_done(
+            client,
+            session,
+            client.async_execute("area_get_status", area_id=1, timeout_s=2.0),
+            first_reply={
+                "seq": 0,
+                "area": {
+                    "get_status": {
+                        "area_id": 1,
+                        "arm_state": "DISARMED",
+                        "error_code": E27ErrorCode.ELKERR_NONE,
+                    }
+                },
+            },
+            max_replies=1,
+        )
+    assert len(get_private(client, "_reply_publication_by_seq")) == 0
 
 
 def _area_status_evt(*, confirmed: bool, reply_seq: int) -> AreaStatusUpdated:

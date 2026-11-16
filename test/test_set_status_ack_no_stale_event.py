@@ -9,7 +9,15 @@ import pytest
 
 from elke27_lib import session_thread as session_mod
 from elke27_lib.client import Elke27Client, LinkKeys
-from elke27_lib.events import OutputStatusUpdated, TstatStatusUpdated
+from elke27_lib.events import (
+    UNSET_AT,
+    UNSET_CLASSIFICATION,
+    UNSET_SESSION_ID,
+    AreaStatusUpdated,
+    OutputStatusUpdated,
+    TstatStatusUpdated,
+    ZoneStatusUpdated,
+)
 from elke27_lib.handlers import output as output_handler
 from elke27_lib.handlers import tstat as tstat_handler
 from elke27_lib.states import PanelState
@@ -189,3 +197,96 @@ async def test_reconnect_with_unchanged_status_replies_still_becomes_ready(
     _panel_bootstrap(second)
     assert await client.wait_ready(timeout_s=1.0) is True
     await client.async_disconnect()
+
+
+def _area_status_evt(*, confirmed: bool, reply_seq: int) -> AreaStatusUpdated:
+    return AreaStatusUpdated(
+        kind=AreaStatusUpdated.KIND,
+        at=UNSET_AT,
+        seq=reply_seq,
+        classification=UNSET_CLASSIFICATION,
+        route=("area", "set_arm_state"),
+        session_id=UNSET_SESSION_ID,
+        area_id=1,
+        changed_fields=(),
+        status_confirmed=confirmed,
+    )
+
+
+def test_ack_only_arm_reply_does_not_release_registered_publication_wait() -> None:
+    client = Elke27Client()
+    loop = asyncio.new_event_loop()
+    client._event_loop = loop
+    reply_seq = 7
+    client._reply_publication_by_seq[reply_seq] = loop.create_future()
+
+    client._handle_kernel_event(_area_status_evt(confirmed=False, reply_seq=reply_seq))
+    assert not client._reply_publication_by_seq[reply_seq].done()
+
+    client._handle_kernel_event(_area_status_evt(confirmed=True, reply_seq=reply_seq))
+    assert client._reply_publication_by_seq[reply_seq].done()
+
+
+def test_ack_only_zone_reply_does_not_release_registered_publication_wait() -> None:
+    client = Elke27Client()
+    loop = asyncio.new_event_loop()
+    client._event_loop = loop
+    reply_seq = 9
+    client._reply_publication_by_seq[reply_seq] = loop.create_future()
+
+    def _evt(confirmed: bool) -> ZoneStatusUpdated:
+        return ZoneStatusUpdated(
+            kind=ZoneStatusUpdated.KIND,
+            at=UNSET_AT,
+            seq=reply_seq,
+            classification=UNSET_CLASSIFICATION,
+            route=("zone", "set_status"),
+            session_id=UNSET_SESSION_ID,
+            zone_id=3,
+            changed_fields=(),
+            status_confirmed=confirmed,
+        )
+
+    client._handle_kernel_event(_evt(False))
+    assert not client._reply_publication_by_seq[reply_seq].done()
+
+    client._handle_kernel_event(_evt(True))
+    assert client._reply_publication_by_seq[reply_seq].done()
+
+
+def test_unconfirmed_status_get_read_does_not_complete_registered_wait() -> None:
+    client = Elke27Client()
+    loop = asyncio.new_event_loop()
+    client._event_loop = loop
+    reply_seq = 11
+    client._reply_publication_by_seq[reply_seq] = loop.create_future()
+
+    client._handle_kernel_event(
+        AreaStatusUpdated(
+            kind=AreaStatusUpdated.KIND,
+            at=UNSET_AT,
+            seq=reply_seq,
+            classification=UNSET_CLASSIFICATION,
+            route=("area", "get_status"),
+            session_id=UNSET_SESSION_ID,
+            area_id=1,
+            changed_fields=(),
+            status_confirmed=False,
+        )
+    )
+    assert not client._reply_publication_by_seq[reply_seq].done()
+
+    client._handle_kernel_event(
+        ZoneStatusUpdated(
+            kind=ZoneStatusUpdated.KIND,
+            at=UNSET_AT,
+            seq=reply_seq,
+            classification=UNSET_CLASSIFICATION,
+            route=("zone", "get_status"),
+            session_id=UNSET_SESSION_ID,
+            zone_id=1,
+            changed_fields=(),
+            status_confirmed=False,
+        )
+    )
+    assert not client._reply_publication_by_seq[reply_seq].done()

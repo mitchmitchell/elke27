@@ -267,7 +267,7 @@ PRIVATE_ACCESS_CEILING: dict[str, int] = {
     "test/test_rule_get_rules_paging.py": 6,
     "test/test_session_extra.py": 51,
     "test/test_session_io_tstat_regression.py": 41,
-    "test/test_set_status_ack_no_stale_event.py": 1,
+    "test/test_set_status_ack_no_stale_event.py": 19,
     "test/test_snapshot_after_arm_bypass.py": 91,
     "test/test_timeout_start_on_send.py": 1,
     "test/test_transport_command_retry.py": 85,
@@ -483,7 +483,7 @@ def test_retry_and_resend_docstrings_are_pinned_by_tests() -> None:
 # form). Prefer typed members; if one is truly needed, raise the count in the same PR
 # so review sees it. Lower the count when you remove one.
 GETATTR_LITERAL_CEILING: dict[str, int] = {
-    "src/elke27_lib/client.py": 32,
+    "src/elke27_lib/client.py": 33,
     "src/elke27_lib/handlers/area.py": 2,
     "src/elke27_lib/handlers/bus_ios.py": 1,
     "src/elke27_lib/handlers/control.py": 4,

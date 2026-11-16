@@ -371,20 +371,19 @@ def make_zone_get_all_zones_status_handler(state: PanelState, emit: EmitFn, now:
             return True
 
         outcome = _reconcile_bulk_zone_status(state, payload, now=now())
-        if outcome.updated_ids:
-            emit(
-                ZonesStatusBulkUpdated(
-                    kind=ZonesStatusBulkUpdated.KIND,
-                    at=UNSET_AT,
-                    seq=UNSET_SEQ,
-                    classification=UNSET_CLASSIFICATION,
-                    route=UNSET_ROUTE,
-                    session_id=UNSET_SESSION_ID,
-                    updated_count=len(outcome.updated_ids),
-                    updated_ids=outcome.updated_ids,
-                ),
-                ctx,
-            )
+        emit(
+            ZonesStatusBulkUpdated(
+                kind=ZonesStatusBulkUpdated.KIND,
+                at=UNSET_AT,
+                seq=UNSET_SEQ,
+                classification=UNSET_CLASSIFICATION,
+                route=UNSET_ROUTE,
+                session_id=UNSET_SESSION_ID,
+                updated_count=len(outcome.updated_ids),
+                updated_ids=outcome.updated_ids,
+            ),
+            ctx,
+        )
 
         if outcome.warnings:
             emit(
@@ -1030,38 +1029,6 @@ _ZONE_STATUS_ALL_KNOWN = (
     | _ZONE_STATUS_VIOLATED
     | _ZONE_STATUS_BYPASSED
 )
-
-
-def bulk_zone_status_reply_will_publish(state: PanelState, payload: Mapping[str, Any]) -> bool:
-    warnings: list[str] = []
-    status_text = payload.get("status")
-    if isinstance(status_text, str):
-        compact = "".join(status_text.split()).upper()
-        if not compact:
-            return False
-        for idx, ch in enumerate(compact):
-            zone_id = idx + 1
-            if not _should_apply_bulk_zone(state, zone_id):
-                continue
-            if state.zones.get(zone_id) is None:
-                continue
-            if _zone_status_char_recognized(ch, warnings):
-                return True
-        return False
-
-    items = _extract_zone_status_items(payload, warnings)
-    if not items:
-        return False
-
-    for item in items:
-        zone_id = _coerce_zone_id(item.get("zone_id") or item.get("id") or item.get("zone"))
-        if zone_id is None:
-            continue
-        if not _should_apply_bulk_zone(state, zone_id):
-            continue
-        if state.zones.get(zone_id) is not None:
-            return True
-    return False
 
 
 def _reconcile_bulk_zone_status(

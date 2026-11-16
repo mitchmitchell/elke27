@@ -425,6 +425,7 @@ class E27Kernel:
         self._events_dropped_warned = False
         self._seq = 1
         self._subscribers = {}
+        self._dispatch_listeners: list[Callable[[int, tuple[str, str], bool], None]] = []
         self._next_subscriber_id = 1
         self._request_timeout_s = request_timeout_s
         self._request_max_retries = request_max_retries
@@ -1246,6 +1247,17 @@ class E27Kernel:
     def unsubscribe(self, token: int) -> bool:
         return self._subscribers.pop(token, None) is not None
 
+    def add_dispatch_listener(
+        self, listener: Callable[[int, tuple[str, str], bool], None]
+    ) -> Callable[[], None]:
+        self._dispatch_listeners.append(listener)
+
+        def remove() -> None:
+            with contextlib.suppress(ValueError):
+                self._dispatch_listeners.remove(listener)
+
+        return remove
+
     # -------------------------
     # Session -> E27Kernel -> Dispatcher wiring
     # -------------------------
@@ -1299,6 +1311,17 @@ class E27Kernel:
 
         # Dispatcher handles routing + correlation + dispatch-error envelopes.
         result = self.dispatcher.dispatch(msg)
+        if (
+            isinstance(seq_val, int)
+            and seq_val > 0
+            and result.classification == "RESPONSE"
+            and self._dispatch_listeners
+        ):
+            for listener in list(self._dispatch_listeners):
+                try:
+                    listener(seq_val, result.route, result.handled)
+                except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
+                    self._log.warning("Dispatch listener failed: %s", exc, exc_info=True)
         if self._log.isEnabledFor(logging.DEBUG):
             self._log.debug(
                 "Inbound routed: route=%s.%s seq=%s dispatched=%s",
