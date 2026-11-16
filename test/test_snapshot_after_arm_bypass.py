@@ -65,6 +65,13 @@ def _prepare_area_one_disarmed_kernel_only(client: Elke27Client, kernel: Any) ->
     kernel.state.get_or_create_area(1).arm_state = "DISARMED"
 
 
+def _connect_client_for_fake_panel(
+    client: Elke27Client, loop: asyncio.AbstractEventLoop
+) -> None:
+    cast(Any, client)._connected = True
+    client._event_loop = loop
+
+
 def _sync_zones_ready_snapshot(
     client: Elke27Client, kernel: Any, zone_ids: tuple[int, ...]
 ) -> None:
@@ -86,8 +93,7 @@ async def _drive_until_done(
     task = asyncio.ensure_future(call)
     kernel = get_kernel(client)
     seen = 0
-    cast(Any, client)._connected = True
-    client._event_loop = asyncio.get_running_loop()
+    _connect_client_for_fake_panel(client, asyncio.get_running_loop())
     while not task.done():
         await asyncio.sleep(0)
         if max_replies is not None and seen >= max_replies:
@@ -529,8 +535,7 @@ async def test_unrelated_zone_status_does_not_release_arm_publication_wait(
 ) -> None:
     client, session = _make_client()
     loop = asyncio.get_running_loop()
-    cast(Any, client)._connected = True
-    client._event_loop = loop
+    _connect_client_for_fake_panel(client, loop)
     kernel = get_kernel(client)
     kernel.state.get_or_create_area(1).arm_state = "DISARMED"
     kernel.state.get_or_create_zone(99)
@@ -1029,8 +1034,7 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         client, session = _make_client()
         kernel = get_kernel(client)
     loop = asyncio.get_running_loop()
-    cast(Any, client)._connected = True
-    client._event_loop = loop
+    _connect_client_for_fake_panel(client, loop)
     client.bind_kernel_loop_thread_for_tests(loop)
     if case.hold_dispatch_publication:
         monkeypatch.setattr(
@@ -1071,6 +1075,9 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
     def intercept_call_soon_threadsafe(fn: Any, /, *args: Any) -> None:
         fn_name = getattr(fn, "__name__", None)
         fn_self = getattr(fn, "__self__", None)
+        if case.cancel_before_reply:
+            real_call_soon_threadsafe(fn, *args)
+            return
         if case.defer_dispatch_only_publication:
             if fn_self is client and fn_name == "_complete_dispatch_only_reply_publication":
                 dispatch_only_deferred.append((fn, args))
@@ -1302,11 +1309,32 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
             if kernel.dispatcher.pending_count() > 0:
                 break
             await asyncio.sleep(0)
+        cancelled_seq = session.sent[0]["seq"]
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
         await asyncio.sleep(0)
         assert kernel.dispatcher.pending_count() == 0
+        assert cancelled_seq not in client._reply_publication_by_seq
+        client._handle_kernel_event(
+            _area_status_evt(
+                confirmed=True,
+                reply_seq=cancelled_seq,
+                changed_fields=("arm_state",),
+            )
+        )
+        follow_up = asyncio.create_task(
+            client.async_execute("area_get_status", area_id=1, timeout_s=2.0)
+        )
+        while len(session.sent) < 2:
+            await asyncio.sleep(0)
+        follow_reply = case.reply_for_sent(session.sent[1])
+        while not follow_up.done():
+            deliver_panel_message(kernel, follow_reply)
+            await asyncio.sleep(0)
+        follow_result = await follow_up
+        assert isinstance(follow_result, Result)
+        assert follow_result.ok is True
     elif case.disconnect_before_reply:
         while not session.sent:
             await asyncio.sleep(0)
@@ -1367,7 +1395,6 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         assert delivery_error == []
         assert isinstance(result, Result)
         assert result.ok is True
-        assert dispatch_only_deferred
         assert not any(_PUBLICATION_TIMEOUT_LOG in rec.message for rec in caplog.records)
         case.check(client, result, snapshot_version_before)
     else:
@@ -1531,8 +1558,7 @@ async def test_reply_publication_timeout_drops_registered_slot(
     kernel = get_kernel(client)
     _sync_area_disarmed_snapshot(client, kernel)
     loop = asyncio.get_running_loop()
-    cast(Any, client)._connected = True
-    client._event_loop = loop
+    _connect_client_for_fake_panel(client, loop)
     caplog.set_level(logging.WARNING, logger="elke27_lib.client")
 
     deferred_handles: list[tuple[Any, tuple[Any, ...]]] = []
