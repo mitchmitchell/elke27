@@ -984,7 +984,10 @@ def _receive_thread_publication_cases() -> tuple[_ReceiveThreadPublicationCase, 
             check=_check_command_ok_only,
             prepare=_sync_area_disarmed_snapshot,
             close_before_execute=True,
+<<<<<<< HEAD
             defer_dispatch_only_publication=True,
+=======
+>>>>>>> f7346c54cd28e35d1fbc4d99af896a03085ad76f
             short_publication_budget=True,
         ),
         _ReceiveThreadPublicationCase(
