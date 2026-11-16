@@ -1140,7 +1140,13 @@ async def test_reply_snapshot_publication_release_paths(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "disconnect",
+    ["panel_close", "client_close"],
+    ids=["inactive_session", "no_session"],
+)
 async def test_async_execute_send_failure_clears_dispatch_correlation(
+    disconnect: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     loop = asyncio.get_running_loop()
@@ -1149,18 +1155,10 @@ async def test_async_execute_send_failure_clears_dispatch_correlation(
     panel = await connect_with_fake_panel(monkeypatch, client)
     client.bind_kernel_loop_thread_for_tests(loop)
     await seed_area_disarmed(panel, 1)
-    panel.close()
-    pending_before_execute = kernel.dispatcher.pending_count()
-    result = await client.async_execute("area_get_status", area_id=1, timeout_s=5.0)
-    assert not result.ok
-    assert kernel.dispatcher.pending_count() == pending_before_execute
-
-    kernel = E27Kernel()
-    client = Elke27Client(kernel=kernel, skip_connect_bootstrap=True)
-    panel = await connect_with_fake_panel(monkeypatch, client)
-    client.bind_kernel_loop_thread_for_tests(loop)
-    await seed_area_disarmed(panel, 1)
-    await client.close()
+    if disconnect == "panel_close":
+        panel.close()
+    else:
+        await client.close()
     pending_before_execute = kernel.dispatcher.pending_count()
     result = await client.async_execute("area_get_status", area_id=1, timeout_s=5.0)
     assert not result.ok
