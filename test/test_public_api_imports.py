@@ -216,15 +216,19 @@ async def test_async_link_roundtrip_and_auth_error(monkeypatch: MonkeyPatch) -> 
         )
 
 
+from test.helpers.fake_kernel_dispatch import FakeKernelDispatchSupport
+
+
 @pytest.mark.asyncio
 async def test_async_connect_disconnect_and_wait_ready(monkeypatch: MonkeyPatch) -> None:
     del monkeypatch
 
-    class _FakeKernel:
+    class _FakeKernel(FakeKernelDispatchSupport):
         _ready: bool
         state: object
 
         def __init__(self) -> None:
+            super().__init__()
             self._ready = False
             self.state = type(
                 "_State",

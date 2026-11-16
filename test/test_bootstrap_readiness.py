@@ -20,14 +20,16 @@ from elke27_lib.events import (
 )
 from elke27_lib.kernel_loop import E27Kernel
 from elke27_lib.states import PanelState
+from test.helpers.fake_kernel_dispatch import FakeKernelDispatchSupport
 from test.helpers.internal import get_private
 
 
-class _FakeKernel:
+class _FakeKernel(FakeKernelDispatchSupport):
     state: PanelState
     requests: list[tuple[tuple[str, str], dict[str, object]]]
 
     def __init__(self) -> None:
+        super().__init__()
         self.state = PanelState()
         self.state.panel.session_id = 1
         self.state.table_info_by_domain = {

@@ -42,7 +42,10 @@ class _FakeSession:
         loop.call_later(self._delay_s, _fire)
 
 
-class _FakeKernel:
+from test.helpers.fake_kernel_dispatch import FakeKernelDispatchSupport
+
+
+class _FakeKernel(FakeKernelDispatchSupport):
     _pending_responses: PendingResponseManager
     _seq: int
     _sent_events: dict[int, asyncio.Event]
@@ -50,6 +53,7 @@ class _FakeKernel:
     session: _FakeSession
 
     def __init__(self, delay_s: float) -> None:
+        super().__init__()
         self._pending_responses = PendingResponseManager()
         self._seq = 1
         self._sent_events = {}

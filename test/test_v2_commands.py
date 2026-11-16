@@ -35,11 +35,15 @@ class _FakeState:
         self.panel = _FakePanel()
 
 
-class _FakeKernel:
+from test.helpers.fake_kernel_dispatch import FakeKernelDispatchSupport
+
+
+class _FakeKernel(FakeKernelDispatchSupport):
     sent: list[tuple[str, dict[str, object]]]
     state: _FakeState
 
     def __init__(self) -> None:
+        super().__init__()
         self.sent = []
         self.state = _FakeState()
 

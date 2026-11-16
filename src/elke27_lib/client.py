@@ -622,16 +622,16 @@ class Elke27Client:
         """Test-only: record the kernel asyncio loop as bound to the current thread."""
         self._kernel.bind_loop_thread_for_tests(loop)
 
+    def reply_publication_inflight_count(self) -> int:
+        return len(self._reply_publication_by_seq)
+
     def _ensure_kernel_subscription(self) -> None:
         if self._kernel_event_token is not None:
             return
         self._kernel_event_token = self._kernel.subscribe(self._on_kernel_event)
-        try:
-            self._dispatch_listener_remove = self._kernel.add_dispatch_listener(
-                self._on_kernel_dispatch_response
-            )
-        except AttributeError:
-            self._dispatch_listener_remove = None
+        self._dispatch_listener_remove = self._kernel.add_dispatch_listener(
+            self._on_kernel_dispatch_response
+        )
 
     @property
     def state(self):
@@ -977,10 +977,18 @@ class Elke27Client:
         try:
             async with asyncio.timeout(budget_s):
                 await sent_event.wait()
-                self._raise_if_reply_publication_aborted(seq)
                 while not future.done():
-                    self._raise_if_reply_publication_aborted(seq)
-                    await asyncio.wait({future}, timeout=0.05)
+                    wait_on: set[asyncio.Future[Any]] = {cast(asyncio.Future[Any], future)}
+                    publication_fut = self._reply_publication_by_seq.get(seq)
+                    if publication_fut is not None:
+                        wait_on.add(cast(asyncio.Future[Any], publication_fut))
+                    done, _pending = await asyncio.wait(
+                        wait_on, return_when=asyncio.FIRST_COMPLETED
+                    )
+                    if publication_fut is not None and publication_fut in done:
+                        publication_fut.result()
+                    if future in done:
+                        break
                 msg = future.result()
         except TimeoutError:
             if self._asyncio_cancellation_pending():
@@ -1671,8 +1679,6 @@ class Elke27Client:
                 self._mark_zone_stale(zone_id)
         return False
 
-    _REPLY_PUBLICATION_COMMAND_KEYS = REPLY_PUBLICATION_COMMAND_KEYS
-
     _REPLY_PUBLICATION_COMMANDS = frozenset(REPLY_PUBLICATION_COMMAND_KEYS)
 
     _DISPATCH_COMPLETE_PUBLICATION_ROUTES = frozenset(
@@ -1742,23 +1748,13 @@ class Elke27Client:
         loop: asyncio.AbstractEventLoop,
     ) -> None:
         self._reply_publication_by_seq[reply_seq] = loop.create_future()
-        with contextlib.suppress(AttributeError):
-            self._kernel.register_dispatch_correlation(reply_seq, expected_route)
+        self._kernel.register_dispatch_correlation(reply_seq, expected_route)
 
     def _release_reply_publication_command(self, reply_seq: int) -> None:
         fut = self._reply_publication_by_seq.pop(reply_seq, None)
         if fut is not None and not fut.done():
             fut.cancel()
-        with contextlib.suppress(AttributeError):
-            self._kernel.drop_dispatch_correlation(reply_seq)
-
-    def _drop_reply_publication_slot(self, reply_seq: int) -> None:
-        self._release_reply_publication_command(reply_seq)
-
-    def _raise_if_reply_publication_aborted(self, reply_seq: int) -> None:
-        fut = self._reply_publication_by_seq.get(reply_seq)
-        if fut is not None and fut.done():
-            fut.result()
+        self._kernel.drop_dispatch_correlation(reply_seq)
 
     def _complete_reply_publication(self, reply_seq: int) -> None:
         fut = self._reply_publication_by_seq.get(reply_seq)
@@ -1776,8 +1772,7 @@ class Elke27Client:
             if not fut.done():
                 fut.set_exception(exc)
         for reply_seq in reply_seqs:
-            with contextlib.suppress(AttributeError):
-                self._kernel.drop_dispatch_correlation(reply_seq)
+            self._kernel.drop_dispatch_correlation(reply_seq)
 
     def _command_needs_reply_publication_wait(
         self, command_key: str, response_payload: Mapping[str, Any] | None
@@ -1796,7 +1791,7 @@ class Elke27Client:
                 "Timed out waiting for reply seq=%s snapshot publication",
                 reply_seq,
             )
-            self._drop_reply_publication_slot(reply_seq)
+            self._release_reply_publication_command(reply_seq)
             return
         fut = self._reply_publication_by_seq.get(reply_seq)
         if fut is None:
