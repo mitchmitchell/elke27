@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import gc
 import logging
 import threading
 import time
@@ -21,6 +22,7 @@ from elke27_lib.client import (
     Result,
 )
 from elke27_lib.const import E27ErrorCode
+from elke27_lib.errors import ConnectionLost
 from elke27_lib.events import (
     UNSET_AT,
     UNSET_CLASSIFICATION,
@@ -35,7 +37,7 @@ from elke27_lib.events import (
 )
 from elke27_lib.types import EventType, PanelInfo
 from test.helpers.fake_panel_replies import synthetic_success_reply
-from test.helpers.internal import deliver_panel_message, get_kernel
+from test.helpers.internal import deliver_panel_message, get_kernel, session_disconnect, set_private
 from test.helpers.receive_thread_publication import inject_unconfirmed_publication_event
 from test.test_panel_errors_ready_night import _FakeSession, _make_client
 
@@ -67,7 +69,7 @@ def _prepare_area_one_disarmed_kernel_only(client: Elke27Client, kernel: Any) ->
 
 
 def _connect_client_for_fake_panel(client: Elke27Client, loop: asyncio.AbstractEventLoop) -> None:
-    cast(Any, client)._connected = True
+    set_private(client, "_connected", True)
     client._event_loop = loop
 
 
@@ -640,6 +642,9 @@ class _ReceiveThreadPublicationCase:
     assert_dispatch_clear_on_success: bool = False
     empty_bulk_status: bool = False
     dispatch_only_snapshot_build_fails: bool = False
+    close_before_execute: bool = False
+    session_reset_after_send: bool = False
+    expect_connection_lost: bool = False
 
 
 def _receive_thread_publication_cases() -> tuple[_ReceiveThreadPublicationCase, ...]:
@@ -963,6 +968,61 @@ def _receive_thread_publication_cases() -> tuple[_ReceiveThreadPublicationCase, 
             prepare=_prepare_area_one_disarmed_kernel_only,
             dispatch_only_snapshot_build_fails=True,
         ),
+        _ReceiveThreadPublicationCase(
+            id="close_reconnect_area_get_status",
+            call=lambda client: client.async_execute("area_get_status", area_id=1, timeout_s=2.0),
+            reply_for_sent=lambda sent: {
+                "seq": sent["seq"],
+                "area": {
+                    "get_status": {
+                        "area_id": 1,
+                        "arm_state": "DISARMED",
+                        "error_code": E27ErrorCode.ELKERR_NONE,
+                    }
+                },
+            },
+            check=_check_command_ok_only,
+            prepare=_sync_area_disarmed_snapshot,
+            close_before_execute=True,
+            defer_dispatch_only_publication=True,
+            short_publication_budget=True,
+        ),
+        _ReceiveThreadPublicationCase(
+            id="session_loss_area_get_status",
+            call=lambda client: client.async_execute("area_get_status", area_id=1, timeout_s=2.0),
+            reply_for_sent=lambda sent: {
+                "seq": sent["seq"],
+                "area": {
+                    "get_status": {
+                        "area_id": 1,
+                        "arm_state": "DISARMED",
+                        "error_code": E27ErrorCode.ELKERR_NONE,
+                    }
+                },
+            },
+            check=lambda _client, _result, _version_before: None,
+            prepare=_sync_area_disarmed_snapshot,
+            session_reset_after_send=True,
+            expect_connection_lost=True,
+        ),
+        _ReceiveThreadPublicationCase(
+            id="session_loss_zone_get_status",
+            call=lambda client: client.async_execute("zone_get_status", zone_id=1),
+            reply_for_sent=lambda sent: {
+                "seq": sent["seq"],
+                "zone": {
+                    "get_status": {
+                        "zone_id": 1,
+                        "BYPASSED": False,
+                        "error_code": E27ErrorCode.ELKERR_NONE,
+                    }
+                },
+            },
+            check=lambda _client, _result, _version_before: None,
+            prepare=lambda client, kernel: _sync_zones_ready_snapshot(client, kernel, (1,)),
+            session_reset_after_send=True,
+            expect_connection_lost=True,
+        ),
     )
 
 
@@ -1063,7 +1123,7 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         kernel = get_kernel(client)
         kernel.load_features_blocking()
         session = _FakeSession()
-        cast(Any, kernel)._session = session
+        set_private(kernel, "_session", session)
         kernel.state.panel.session_id = 1
     else:
         client, session = _make_client()
@@ -1091,12 +1151,31 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
             lambda _request_timeout_s: 0.5,
         )
         caplog.set_level(logging.WARNING, logger="elke27_lib.client")
+    if case.close_before_execute:
+        caplog.set_level(logging.WARNING, logger="elke27_lib.client")
+
+        async def _noop_kernel_close() -> None:
+            return None
+
+        monkeypatch.setattr(kernel, "close", _noop_kernel_close)
+        await client.close()
+        _connect_client_for_fake_panel(client, loop)
+        client._ensure_kernel_subscription()
+
     case.prepare(client, kernel)
     snapshot_version_before = client.snapshot.version
 
     deferred_handles: list[tuple[Any, tuple[Any, ...]]] = []
-    dispatch_only_deferred: list[tuple[Any, tuple[Any, ...]]] = []
+    drop_dispatch_seqs: list[int] = []
     real_call_soon_threadsafe = loop.call_soon_threadsafe
+    real_drop_dispatch = kernel.drop_dispatch_correlation
+
+    def _track_drop_dispatch(seq: int) -> None:
+        drop_dispatch_seqs.append(seq)
+        real_drop_dispatch(seq)
+
+    if case.assert_dispatch_clear_on_success:
+        monkeypatch.setattr(kernel, "drop_dispatch_correlation", _track_drop_dispatch)
 
     def intercept_call_soon_threadsafe(fn: Any, /, *args: Any) -> None:
         fn_name = getattr(fn, "__name__", None)
@@ -1106,7 +1185,7 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
             return
         if case.defer_dispatch_only_publication:
             if fn_self is client and fn_name == "_complete_dispatch_only_reply_publication":
-                dispatch_only_deferred.append((fn, args))
+                deferred_handles.append((fn, args))
                 return
             real_call_soon_threadsafe(fn, *args)
             return
@@ -1142,13 +1221,28 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         or case.publication_before_reply_pump
         or case.defer_dispatch_only_publication
         or case.dispatch_only_snapshot_build_fails
+        or case.session_reset_after_send
     )
+    if case.session_reset_after_send:
+        caplog.set_level(logging.ERROR, logger="asyncio")
     if not skip_auto_flush:
         flush_task = asyncio.create_task(flush_deferred_snapshot_handles())
     task = asyncio.create_task(case.call(client))
 
     while not session.sent:
         await asyncio.sleep(0.01)
+
+    if case.session_reset_after_send:
+        session_disconnect(kernel, ConnectionResetError())
+        result = await task
+        gc.collect()
+        assert isinstance(result, Result)
+        assert not result.ok
+        assert isinstance(result.error, ConnectionLost)
+        assert not any(
+            "Future exception was never retrieved" in rec.message for rec in caplog.records
+        )
+        return
 
     sent = session.sent[0]
     reply = case.reply_for_sent(sent)
@@ -1373,8 +1467,10 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         while len(session.sent) < 2:
             await asyncio.sleep(0)
         follow_reply = case.reply_for_sent(session.sent[1])
-        while not follow_up.done():
-            deliver_panel_message(kernel, follow_reply)
+        deliver_panel_message(kernel, follow_reply)
+        for _ in range(200):
+            if follow_up.done():
+                break
             await asyncio.sleep(0)
         follow_result = await follow_up
         assert isinstance(follow_result, Result)
@@ -1438,6 +1534,15 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         case.check(client, result, snapshot_version_before)
     elif case.defer_dispatch_only_publication:
         threading.Thread(target=receive_thread, name=f"fake-receive-{case.id}", daemon=True).start()
+        if case.close_before_execute:
+            for _ in range(500):
+                if deferred_handles or task.done():
+                    break
+                await asyncio.sleep(0)
+            assert not task.done()
+            while deferred_handles:
+                fn, args = deferred_handles.pop(0)
+                fn(*args)
         result = await task
         assert delivery_error == []
         assert isinstance(result, Result)
@@ -1458,6 +1563,7 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
             reply_seq = session.sent[0]["seq"]
             assert kernel.dispatcher.match_pending(reply_seq, pop=False) is None
             assert kernel.dispatcher.pending_count() == 0
+            assert drop_dispatch_seqs == [reply_seq]
         if case.short_publication_budget:
             assert not any(_PUBLICATION_TIMEOUT_LOG in rec.message for rec in caplog.records)
         assert flush_task is not None

@@ -17,3 +17,8 @@ def get_kernel(client: object) -> Any:
 
 def deliver_panel_message(kernel: object, msg: dict[str, object]) -> None:
     get_private(kernel, "_on_message")(msg)
+
+
+def session_disconnect(kernel: object, err: BaseException) -> None:
+    get_private(kernel, "state").panel.connected = True
+    get_private(kernel, "_on_session_disconnected")(err)
