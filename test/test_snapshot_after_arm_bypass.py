@@ -9,7 +9,7 @@ import threading
 import time
 from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 import pytest
 
@@ -79,14 +79,18 @@ def _connect_client_for_fake_panel(client: Elke27Client, loop: asyncio.AbstractE
     set_private(client, "_event_loop", loop)
 
 
-async def _wait_until_sent(session: _FakeSession, *, timeout_s: float = 2.0) -> None:
+class _SentSession(Protocol):
+    sent: list[Any]
+
+
+async def _wait_until_sent(session: _SentSession, *, timeout_s: float = 2.0) -> None:
     async with asyncio.timeout(timeout_s):
         while not session.sent:
             await asyncio.sleep(0.01)
 
 
 async def _wait_until_send_count(
-    session: _FakeSession, count: int, *, timeout_s: float = 2.0
+    session: _SentSession, count: int, *, timeout_s: float = 2.0
 ) -> None:
     async with asyncio.timeout(timeout_s):
         while len(session.sent) < count:

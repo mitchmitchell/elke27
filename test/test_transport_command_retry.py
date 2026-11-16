@@ -1060,12 +1060,27 @@ async def test_reply_snapshot_publication_release_paths(
     client = _make_client(session)
     kernel = get_kernel(client)
     loop = asyncio.get_running_loop()
-    set_private(client, "_connected", True)
-    set_private(client, "_event_loop", loop)
     kernel.state.panel.connected = True
     client.bind_kernel_loop_thread_for_tests(loop)
     kernel.state.get_or_create_area(1).arm_state = "DISARMED"
     caplog.set_level(logging.WARNING, logger="elke27_lib.client")
+    drop_dispatch_calls: list[int] = []
+    real_drop_dispatch = kernel.drop_dispatch_correlation
+
+    def _spy_drop_dispatch(seq: int) -> None:
+        drop_dispatch_calls.append(seq)
+        real_drop_dispatch(seq)
+
+    monkeypatch.setattr(kernel, "drop_dispatch_correlation", _spy_drop_dispatch)
+    pending_keep_seq: int | None = None
+    real_match_pending = kernel.dispatcher.match_pending
+
+    def _keep_match_pending(seq: int, *, pop: bool = True) -> Any:
+        if pending_keep_seq is not None and seq == pending_keep_seq and pop:
+            return real_match_pending(seq, pop=False)
+        return real_match_pending(seq, pop=pop)
+
+    monkeypatch.setattr(kernel.dispatcher, "match_pending", _keep_match_pending)
     deferred_handles: list[tuple[Any, tuple[Any, ...]]] = []
     real_call_soon_threadsafe = loop.call_soon_threadsafe
 
@@ -1089,12 +1104,19 @@ async def test_reply_snapshot_publication_release_paths(
         wait_for_before += 1
         return await real_wait_for(coro, timeout=timeout)
 
+    async def _slow_refresh(*_args: Any, **_kwargs: Any) -> None:
+        await asyncio.sleep(0.12)
+
+    monkeypatch.setattr(client, "_status_refresh_after_successful_write", _slow_refresh)
     monkeypatch.setattr(asyncio, "wait_for", counting_wait_for)
     task = asyncio.create_task(client.async_execute("area_get_status", area_id=1, timeout_s=5.0))
     async with asyncio.timeout(2.0):
         while not session.sent:
             await asyncio.sleep(0.01)
     seq = session.sent[0]["seq"]
+    assert kernel.dispatcher.match_pending(seq, pop=False) is not None
+    pending_keep_seq = seq
+    wait_for_snap = wait_for_before
     reply = {
         "seq": seq,
         "area": {
@@ -1106,15 +1128,10 @@ async def test_reply_snapshot_publication_release_paths(
         },
     }
 
-    def receive_thread() -> None:
-        deliver_panel_message(kernel, reply)
-
-    threading.Thread(target=receive_thread, daemon=True).start()
+    deliver_panel_message(kernel, reply)
     async with asyncio.timeout(2.0):
-        while not deferred_handles:
+        while not deferred_handles and not task.done():
             await asyncio.sleep(0)
-    await asyncio.sleep(0.09)
-    wait_for_snap = wait_for_before
     while deferred_handles:
         fn, args = deferred_handles.pop(0)
         fn(*args)
@@ -1125,21 +1142,51 @@ async def test_reply_snapshot_publication_release_paths(
         for rec in caplog.records
     )
     assert wait_for_before == wait_for_snap
+    assert seq in drop_dispatch_calls
     assert not reply_publication_seq_active(client, seq)
     assert kernel.dispatcher.match_pending(seq, pop=False) is None
     assert kernel.dispatcher.pending_count() == 0
 
-    monkeypatch.setattr(kernel, "command_transport_wait_budget_s", lambda _t: 5.0)
-    session.sent.clear()
-    task2 = asyncio.create_task(client.async_execute("area_get_status", area_id=1, timeout_s=5.0))
+
+@pytest.mark.asyncio
+async def test_reply_publication_completed_future_release_async_execute(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _FakeSession()
+    client = _make_client(session)
+    kernel = get_kernel(client)
+    loop = asyncio.get_running_loop()
+    kernel.state.panel.connected = True
+    client.bind_kernel_loop_thread_for_tests(loop)
+    kernel.state.get_or_create_area(1).arm_state = "DISARMED"
+    drop_dispatch_calls: list[int] = []
+    real_drop_dispatch = kernel.drop_dispatch_correlation
+
+    def _spy_drop_dispatch(seq: int) -> None:
+        drop_dispatch_calls.append(seq)
+        real_drop_dispatch(seq)
+
+    monkeypatch.setattr(kernel, "drop_dispatch_correlation", _spy_drop_dispatch)
+    pending_keep_seq: int | None = None
+    real_match_pending = kernel.dispatcher.match_pending
+
+    def _keep_match_pending(seq: int, *, pop: bool = True) -> Any:
+        if pending_keep_seq is not None and seq == pending_keep_seq and pop:
+            return real_match_pending(seq, pop=False)
+        return real_match_pending(seq, pop=pop)
+
+    monkeypatch.setattr(kernel.dispatcher, "match_pending", _keep_match_pending)
+    task = asyncio.create_task(client.async_execute("area_get_status", area_id=1, timeout_s=5.0))
     async with asyncio.timeout(2.0):
         while not session.sent:
             await asyncio.sleep(0.01)
-    seq2 = session.sent[0]["seq"]
+    seq = session.sent[0]["seq"]
+    assert kernel.dispatcher.match_pending(seq, pop=False) is not None
+    pending_keep_seq = seq
     deliver_panel_message(
         kernel,
         {
-            "seq": seq2,
+            "seq": seq,
             "area": {
                 "get_status": {
                     "area_id": 1,
@@ -1149,10 +1196,12 @@ async def test_reply_snapshot_publication_release_paths(
             },
         },
     )
-    result2 = await task2
-    assert result2.ok is True
-    assert not reply_publication_seq_active(client, seq2)
-    assert kernel.dispatcher.match_pending(seq2, pop=False) is None
+    await asyncio.sleep(0)
+    result = await task
+    assert result.ok is True
+    assert seq in drop_dispatch_calls
+    assert not reply_publication_seq_active(client, seq)
+    assert kernel.dispatcher.match_pending(seq, pop=False) is None
     assert kernel.dispatcher.pending_count() == 0
 
 
