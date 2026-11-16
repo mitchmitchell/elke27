@@ -524,7 +524,9 @@ async def test_unchanged_arm_reply_publication_wait_returns_promptly() -> None:
 
 
 @pytest.mark.asyncio
-async def test_unrelated_zone_status_does_not_release_arm_publication_wait() -> None:
+async def test_unrelated_zone_status_does_not_release_arm_publication_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     client, session = _make_client()
     loop = asyncio.get_running_loop()
     cast(Any, client)._connected = True
@@ -546,7 +548,7 @@ async def test_unrelated_zone_status_does_not_release_arm_publication_wait() -> 
             return
         real_call_soon_threadsafe(fn, *args)
 
-    loop.call_soon_threadsafe = intercept_call_soon_threadsafe  # type: ignore[method-assign]
+    monkeypatch.setattr(loop, "call_soon_threadsafe", intercept_call_soon_threadsafe)
 
     task = asyncio.create_task(
         client.async_execute(
@@ -601,7 +603,6 @@ async def test_unrelated_zone_status_does_not_release_arm_publication_wait() -> 
         fn(*args)
 
     result = await task
-    loop.call_soon_threadsafe = real_call_soon_threadsafe  # type: ignore[method-assign]
 
     assert isinstance(result, Result)
     assert result.ok is True
@@ -1053,6 +1054,16 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
     case.prepare(client, kernel)
     snapshot_version_before = client.snapshot.version
 
+    release_drop_seqs: list[int] = []
+    if case.assert_dispatch_clear_on_success:
+        real_kernel_drop = kernel.drop_dispatch_correlation
+
+        def tracked_kernel_drop(seq: int) -> None:
+            release_drop_seqs.append(seq)
+            real_kernel_drop(seq)
+
+        monkeypatch.setattr(kernel, "drop_dispatch_correlation", tracked_kernel_drop)
+
     deferred_handles: list[tuple[Any, tuple[Any, ...]]] = []
     dispatch_only_deferred: list[tuple[Any, tuple[Any, ...]]] = []
     real_call_soon_threadsafe = loop.call_soon_threadsafe
@@ -1370,6 +1381,7 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         assert result.ok is True
         case.check(client, result, snapshot_version_before)
         if case.assert_dispatch_clear_on_success:
+            assert release_drop_seqs == [session.sent[0]["seq"]]
             assert kernel.dispatcher.pending_count() == 0
         if case.short_publication_budget:
             assert not any(_PUBLICATION_TIMEOUT_LOG in rec.message for rec in caplog.records)
