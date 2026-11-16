@@ -322,7 +322,8 @@ def test_zone_helpers() -> None:
     outcome = zone_handler._reconcile_bulk_zone_status(state, {"status": "1X"}, now=10.0)
     assert 1 in outcome.updated_ids
     assert outcome.warnings
-    assert zone_handler.bulk_zone_status_publication_zone_ids(state, {"status": "1X"}) == (1,)
+    assert zone_handler.bulk_zone_status_reply_will_publish(state, {"status": "1X"}) is True
+    assert zone_handler.bulk_zone_status_reply_will_publish(state, {"status": "XX"}) is False
 
     warnings.clear()
     outcome = zone_handler._reconcile_bulk_zone_status(state, {"zones": []}, now=10.0)

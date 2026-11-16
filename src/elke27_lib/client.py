@@ -167,7 +167,7 @@ from .handlers.area import (
     clear_all_area_exit_delay_pending,
     make_area_configured_merge,
 )
-from .handlers.zone import bulk_zone_status_publication_zone_ids, make_zone_configured_merge
+from .handlers.zone import bulk_zone_status_reply_will_publish, make_zone_configured_merge
 from .kernel_loop import (
     DiscoverResult,
     E27Kernel,
@@ -540,11 +540,9 @@ class Elke27Client:
         self._snapshot_version: int = 0
         self._stale_area_ids: set[int] = set()
         self._stale_zone_ids: set[int] = set()
-        self._area_status_seq: dict[int, int] = {}
         self._arm_write_inflight_area_ids: collections.Counter[int] = collections.Counter()
-        self._zone_status_seq: dict[int, int] = {}
-        self._area_status_waiters: dict[int, list[asyncio.Future[None]]] = defaultdict(list)
-        self._zone_status_waiters: dict[int, list[asyncio.Future[None]]] = defaultdict(list)
+        self._published_reply_seqs: set[int] = set()
+        self._reply_publication_waiters: dict[int, list[asyncio.Future[None]]] = defaultdict(list)
         # PIN of the last authenticate the panel accepted, and the session it was
         # accepted in. Cleared on disconnect, close, auth failure and session change.
         self._last_auth_pin: int | None = None
@@ -1645,57 +1643,78 @@ class Elke27Client:
                 self._mark_zone_stale(zone_id)
         return False
 
-    def _notify_entity_status_publication(
-        self, domain: Literal["area", "zone"], entity_id: int
-    ) -> None:
-        seq_map = self._area_status_seq if domain == "area" else self._zone_status_seq
-        waiters_map = self._area_status_waiters if domain == "area" else self._zone_status_waiters
-        seq_map[entity_id] = seq_map.get(entity_id, 0) + 1
-        for fut in list(waiters_map.pop(entity_id, [])):
+    _REPLY_PUBLICATION_COMMANDS = frozenset(
+        {
+            "area_set_arm_state",
+            "area_get_status",
+            "zone_set_status",
+            "zone_get_all_zones_status",
+        }
+    )
+
+    @staticmethod
+    def _reply_publication_qualifies(evt: Event) -> bool:
+        if isinstance(evt, AreaStatusUpdated):
+            if evt.route == ("area", "get_status"):
+                return True
+            return evt.status_confirmed
+        if isinstance(evt, ZoneStatusUpdated):
+            if evt.route == ("zone", "get_status"):
+                return True
+            return evt.status_confirmed
+        if isinstance(evt, ZonesStatusBulkUpdated):
+            return True
+        return False
+
+    def _complete_reply_publication(self, reply_seq: int) -> None:
+        self._published_reply_seqs.add(reply_seq)
+        for fut in list(self._reply_publication_waiters.pop(reply_seq, [])):
             if not fut.done():
                 fut.set_result(None)
 
-    async def _await_entity_status_publication(
-        self,
-        *,
-        domain: Literal["area", "zone"],
-        entity_id: int,
-        seen_before: int,
-        deadline: float,
-    ) -> None:
-        """Wait for ``AreaStatusUpdated`` / ``ZoneStatusUpdated`` covering ``entity_id``."""
-        seq_map = self._area_status_seq if domain == "area" else self._zone_status_seq
-        if seq_map.get(entity_id, 0) > seen_before:
+    def _fail_all_reply_publication_waiters(self, exc: BaseException) -> None:
+        for waiters in self._reply_publication_waiters.values():
+            for fut in waiters:
+                if not fut.done():
+                    fut.set_exception(exc)
+        self._reply_publication_waiters.clear()
+
+    def _command_needs_reply_publication_wait(
+        self, command_key: str, response_payload: Mapping[str, Any] | None
+    ) -> bool:
+        if command_key not in self._REPLY_PUBLICATION_COMMANDS:
+            return False
+        if command_key in {"area_set_arm_state", "zone_set_status"}:
+            return self._command_reply_includes_confirmed_status(command_key, response_payload)
+        if command_key == "zone_get_all_zones_status":
+            return bulk_zone_status_reply_will_publish(self._kernel.state, response_payload or {})
+        return True
+
+    async def _await_reply_snapshot_publication(self, reply_seq: int, *, deadline: float) -> None:
+        if reply_seq in self._published_reply_seqs:
             return
         loop = asyncio.get_running_loop()
         remaining = deadline - loop.time()
         if remaining <= 0:
             self._log.warning(
-                "Timed out waiting for %s %s status publication (seq=%s current=%s)",
-                domain,
-                entity_id,
-                seen_before,
-                seq_map.get(entity_id, 0),
+                "Timed out waiting for reply seq=%s snapshot publication",
+                reply_seq,
             )
             return
         fut: asyncio.Future[None] = loop.create_future()
-        waiters_map = self._area_status_waiters if domain == "area" else self._zone_status_waiters
-        waiters_map[entity_id].append(fut)
-        if seq_map.get(entity_id, 0) > seen_before:
+        self._reply_publication_waiters[reply_seq].append(fut)
+        if reply_seq in self._published_reply_seqs:
             if not fut.done():
                 fut.set_result(None)
         try:
             await asyncio.wait_for(fut, timeout=remaining)
         except TimeoutError:
             self._log.warning(
-                "Timed out waiting for %s %s status publication (seq=%s current=%s)",
-                domain,
-                entity_id,
-                seen_before,
-                seq_map.get(entity_id, 0),
+                "Timed out waiting for reply seq=%s snapshot publication",
+                reply_seq,
             )
         finally:
-            pending = waiters_map.get(entity_id, [])
+            pending = self._reply_publication_waiters.get(reply_seq, [])
             if fut in pending:
                 pending.remove(fut)
 
@@ -1861,6 +1880,11 @@ class Elke27Client:
                 )
                 self._enqueue_event(disconnected_evt)
                 self._signal_event_stream_end()
+                self._fail_all_reply_publication_waiters(
+                    Elke27DisconnectedError(
+                        "Connection lost while waiting for snapshot publication."
+                    )
+                )
                 self._reset_bootstrap_state()
 
         v2_evt = Elke27Event(
@@ -1871,16 +1895,6 @@ class Elke27Client:
             raw_type=evt.kind,
         )
         self._enqueue_event(v2_evt)
-
-        if isinstance(evt, AreaStatusUpdated):
-            if evt.status_confirmed:
-                self._notify_entity_status_publication("area", evt.area_id)
-        elif isinstance(evt, ZoneStatusUpdated):
-            if evt.status_confirmed:
-                self._notify_entity_status_publication("zone", evt.zone_id)
-        elif isinstance(evt, ZonesStatusBulkUpdated):
-            for zone_id in evt.updated_ids:
-                self._notify_entity_status_publication("zone", zone_id)
 
         if isinstance(evt, AreaConfiguredInventoryReady):
             self._mark_inventory_ready("area")
@@ -2000,21 +2014,30 @@ class Elke27Client:
             TstatStatusUpdated.KIND,
             ZoneStatusUpdated.KIND,
         }:
+            reply_seq_to_publish: int | None = None
             if isinstance(evt, (AreaStatusUpdated, ZoneStatusUpdated, ZonesStatusBulkUpdated)):
                 self._apply_stale_clears_from_event(evt)
-            self._replace_snapshot(
-                panel_info=self._build_panel_info(),
-                table_info=self._build_table_info(),
-                areas=self._build_area_map(),
-                zones=self._build_zone_map(),
-                zone_definitions=self._build_zone_definitions(),
-                outputs=self._build_output_map(),
-                output_definitions=self._build_output_definitions(),
-                lights=self._build_light_map(),
-                barriers=self._build_barrier_map(),
-                locks=self._build_lock_map(),
-                thermostats=self._build_thermostat_map(),
-            )
+                if self._reply_publication_qualifies(evt) and isinstance(evt.seq, int):
+                    reply_seq_to_publish = evt.seq
+            try:
+                self._replace_snapshot(
+                    panel_info=self._build_panel_info(),
+                    table_info=self._build_table_info(),
+                    areas=self._build_area_map(),
+                    zones=self._build_zone_map(),
+                    zone_definitions=self._build_zone_definitions(),
+                    outputs=self._build_output_map(),
+                    output_definitions=self._build_output_definitions(),
+                    lights=self._build_light_map(),
+                    barriers=self._build_barrier_map(),
+                    locks=self._build_lock_map(),
+                    thermostats=self._build_thermostat_map(),
+                )
+            except BaseException:
+                raise
+            else:
+                if reply_seq_to_publish is not None:
+                    self._complete_reply_publication(reply_seq_to_publish)
         self._maybe_set_ready()
 
         if not self._subscriber_lock.acquire(timeout=30.0):
@@ -3330,34 +3353,6 @@ class Elke27Client:
             skip_busy_backoff = (
                 spec.key == "area_set_arm_state" and params.get("arm_state") == "DISARMED"
             )
-            publication_wait: tuple[Literal["area", "zone"], int, int] | None = None
-            zone_bulk_publication_before: dict[int, int] | None = None
-            if command_key == "area_set_arm_state":
-                area_id = params.get("area_id")
-                if isinstance(area_id, int) and area_id > 0:
-                    publication_wait = (
-                        "area",
-                        area_id,
-                        self._area_status_seq.get(area_id, 0),
-                    )
-            elif command_key == "area_get_status":
-                area_id = params.get("area_id")
-                if isinstance(area_id, int) and area_id > 0:
-                    publication_wait = (
-                        "area",
-                        area_id,
-                        self._area_status_seq.get(area_id, 0),
-                    )
-            elif command_key == "zone_set_status":
-                zone_id = params.get("zone_id")
-                if isinstance(zone_id, int) and zone_id > 0:
-                    publication_wait = (
-                        "zone",
-                        zone_id,
-                        self._zone_status_seq.get(zone_id, 0),
-                    )
-            elif command_key == "zone_get_all_zones_status":
-                zone_bulk_publication_before = dict(self._zone_status_seq)
             panel_busy_attempt = 0
             timeout_value = timeout_s if timeout_s is not None else self._kernel.request_timeout_s
             while True:
@@ -3462,27 +3457,8 @@ class Elke27Client:
                     # together stay within the command's budget (PR #29 Bugbot).
                     timeout_s=command_deadline - loop.time(),
                 )
-                if publication_wait is not None:
-                    domain, entity_id, seen_before = publication_wait
-                    await self._await_entity_status_publication(
-                        domain=domain,
-                        entity_id=entity_id,
-                        seen_before=seen_before,
-                        deadline=command_deadline,
-                    )
-                if (
-                    command_key == "zone_get_all_zones_status"
-                    and zone_bulk_publication_before is not None
-                ):
-                    for zone_id in bulk_zone_status_publication_zone_ids(
-                        self._kernel.state, response_payload
-                    ):
-                        await self._await_entity_status_publication(
-                            domain="zone",
-                            entity_id=zone_id,
-                            seen_before=zone_bulk_publication_before.get(zone_id, 0),
-                            deadline=command_deadline,
-                        )
+                if self._command_needs_reply_publication_wait(command_key, response_payload):
+                    await self._await_reply_snapshot_publication(seq, deadline=command_deadline)
                 return _ok(response_payload, status_refresh_ok=status_refresh_ok)
 
         if spec.response_mode != "paged_blocks":

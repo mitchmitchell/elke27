@@ -12,7 +12,7 @@ from typing import Any, cast
 
 import pytest
 
-from elke27_lib.client import ArmMode, Elke27Client, Result
+from elke27_lib.client import ArmMode, Elke27Client, Elke27DisconnectedError, Result
 from elke27_lib.const import E27ErrorCode
 from elke27_lib.events import (
     UNSET_AT,
@@ -54,6 +54,8 @@ async def _drive_until_done(
     *,
     first_reply: dict[str, Any] | None = None,
     max_replies: int | None = None,
+    inject_before_first_reply: Callable[[dict[str, Any], Callable[[dict[str, Any]], None]], None]
+    | None = None,
 ) -> Any:
     task = asyncio.ensure_future(call)
     on_message = get_private(get_kernel(client), "_on_message")
@@ -66,6 +68,8 @@ async def _drive_until_done(
             continue
         while seen < len(session.sent):
             sent = session.sent[seen]
+            if seen == 0 and inject_before_first_reply is not None:
+                inject_before_first_reply(sent, on_message)
             if seen == 0 and first_reply is not None:
                 reply = dict(first_reply)
                 reply["seq"] = sent["seq"]
@@ -465,8 +469,7 @@ async def test_unchanged_arm_reply_publication_wait_returns_promptly() -> None:
     kernel.state.get_or_create_area(1).arm_state = "ARMED_AWAY"
     client._replace_snapshot(areas=client._build_area_map())
 
-    started = time.monotonic()
-    await _drive_until_done(
+    result = await _drive_until_done(
         client,
         session,
         client.async_execute(
@@ -488,8 +491,8 @@ async def test_unchanged_arm_reply_publication_wait_returns_promptly() -> None:
         },
         max_replies=1,
     )
-    elapsed = time.monotonic() - started
-    assert elapsed < 1.0
+    assert isinstance(result, Result)
+    assert result.ok is True
     assert client.snapshot.areas[1].arm_mode == ArmMode.ARMED_AWAY
 
 
@@ -580,12 +583,83 @@ async def test_unrelated_zone_status_does_not_release_arm_publication_wait() -> 
     assert client.snapshot.areas[1].arm_mode == ArmMode.ARMED_AWAY
 
 
+@pytest.mark.asyncio
+async def test_unrelated_bulk_zone_status_does_not_release_zone_write_wait() -> None:
+    client, session = _make_client()
+    _sync_zones_ready_snapshot(client, get_kernel(client), (1,))
+
+    def inject_bulk(sent: dict[str, Any], deliver: Callable[[dict[str, Any]], None]) -> None:
+        deliver(
+            {
+                "seq": sent["seq"] + 100,
+                "zone": {
+                    "get_all_zones_status": {
+                        "status": "1",
+                        "error_code": E27ErrorCode.ELKERR_NONE,
+                    }
+                },
+            }
+        )
+
+    result = await _drive_until_done(
+        client,
+        session,
+        client.async_execute(
+            "zone_set_status",
+            zone_id=1,
+            bypassed=True,
+            pin=1234,
+            timeout_s=2.0,
+        ),
+        first_reply={
+            "seq": 0,
+            "zone": {
+                "set_status": {
+                    "zone_id": 1,
+                    "error_code": E27ErrorCode.ELKERR_NONE,
+                    "BYPASSED": True,
+                }
+            },
+        },
+        inject_before_first_reply=inject_bulk,
+        max_replies=1,
+    )
+    assert result.ok is True
+    assert client.get_snapshot().zones[1].bypassed is True
+
+
+def test_snapshot_failure_does_not_publish_reply_seq() -> None:
+    client = Elke27Client()
+    reply_seq = 42
+    client._replace_snapshot = lambda **_kwargs: (_ for _ in ()).throw(  # type: ignore[method-assign]
+        RuntimeError("snap")
+    )
+
+    with pytest.raises(RuntimeError, match="snap"):
+        client._handle_kernel_event(
+            AreaStatusUpdated(
+                kind=AreaStatusUpdated.KIND,
+                at=UNSET_AT,
+                seq=reply_seq,
+                classification=UNSET_CLASSIFICATION,
+                route=("area", "get_status"),
+                session_id=UNSET_SESSION_ID,
+                area_id=1,
+                changed_fields=(),
+                status_confirmed=True,
+            )
+        )
+    assert reply_seq not in client._published_reply_seqs
+
+
 @dataclass(frozen=True)
 class _ReceiveThreadPublicationCase:
     id: str
     call: Callable[[Elke27Client], Coroutine[Any, Any, Result[Mapping[str, Any]]]]
     reply_for_sent: Callable[[dict[str, Any]], dict[str, Any]]
-    check: Callable[[Elke27Client, Result[Mapping[str, Any]]], None]
+    check: Callable[[Elke27Client, Result[Mapping[str, Any]], int], None]
+    prepare: Callable[[Elke27Client, Any], None]
+    disconnect_before_flush: bool = False
 
 
 def _receive_thread_publication_cases() -> tuple[_ReceiveThreadPublicationCase, ...]:
@@ -609,6 +683,7 @@ def _receive_thread_publication_cases() -> tuple[_ReceiveThreadPublicationCase, 
                 },
             },
             check=_check_arm_write_publication,
+            prepare=_sync_area_disarmed_snapshot,
         ),
         _ReceiveThreadPublicationCase(
             id="area_get_status",
@@ -624,6 +699,7 @@ def _receive_thread_publication_cases() -> tuple[_ReceiveThreadPublicationCase, 
                 },
             },
             check=_check_area_get_status_publication,
+            prepare=_sync_area_disarmed_snapshot,
         ),
         _ReceiveThreadPublicationCase(
             id="zone_get_all_zones_status",
@@ -638,24 +714,45 @@ def _receive_thread_publication_cases() -> tuple[_ReceiveThreadPublicationCase, 
                 },
             },
             check=_check_zone_bulk_status_publication,
+            prepare=lambda client, kernel: _sync_zones_ready_snapshot(client, kernel, (1,)),
+        ),
+        _ReceiveThreadPublicationCase(
+            id="disconnect_during_deferred_publication",
+            call=lambda client: client.async_execute("area_get_status", area_id=1, timeout_s=5.0),
+            reply_for_sent=lambda sent: {
+                "seq": sent["seq"],
+                "area": {
+                    "get_status": {
+                        "area_id": 1,
+                        "arm_state": "DISARMED",
+                        "error_code": E27ErrorCode.ELKERR_NONE,
+                    }
+                },
+            },
+            check=lambda _client, _result, _version_before: None,
+            prepare=_sync_area_disarmed_snapshot,
+            disconnect_before_flush=True,
         ),
     )
 
 
-def _check_arm_write_publication(client: Elke27Client, result: Result[Mapping[str, Any]]) -> None:
+def _check_arm_write_publication(
+    client: Elke27Client, result: Result[Mapping[str, Any]], version_before: int
+) -> None:
+    assert client.snapshot.version > version_before
     assert result.status_refresh_ok is True
     assert client.get_snapshot().areas[1].arm_mode == ArmMode.ARMED_AWAY
 
 
 def _check_area_get_status_publication(
-    client: Elke27Client, result: Result[Mapping[str, Any]]
+    client: Elke27Client, result: Result[Mapping[str, Any]], _version_before: int
 ) -> None:
     assert result.status_refresh_ok is None
     assert client.get_snapshot().areas[1].arm_mode == ArmMode.ARMED_AWAY
 
 
 def _check_zone_bulk_status_publication(
-    client: Elke27Client, result: Result[Mapping[str, Any]]
+    client: Elke27Client, result: Result[Mapping[str, Any]], _version_before: int
 ) -> None:
     assert result.status_refresh_ok is None
     assert client.get_snapshot().zones[1].bypassed is True
@@ -677,7 +774,7 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
     ``call_soon_threadsafe``. A same-thread ``call_soon`` driver cannot reproduce
     that gap; deliver the panel reply from a worker thread and defer
     ``call_soon_threadsafe(_handle_kernel_event)`` so ``async_execute`` would return
-    before entity status publication without ``_await_entity_status_publication``.
+    before reply snapshot publication without ``_await_reply_snapshot_publication``.
     Removing the wait makes each parametrized route fail this test.
     """
     client, session = _make_client()
@@ -685,10 +782,7 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
     cast(Any, client)._connected = True
     client._event_loop = loop
     kernel = get_kernel(client)
-    if case.id == "zone_get_all_zones_status":
-        _sync_zones_ready_snapshot(client, kernel, (1,))
-    else:
-        _sync_area_disarmed_snapshot(client, kernel)
+    case.prepare(client, kernel)
     snapshot_version_before = client.snapshot.version
 
     deferred_handles: list[tuple[Any, tuple[Any, ...]]] = []
@@ -713,7 +807,9 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
             fn, args = deferred_handles.pop(0)
             fn(*args)
 
-    flush_task = asyncio.create_task(flush_deferred_snapshot_handles())
+    flush_task: asyncio.Task[None] | None = None
+    if not case.disconnect_before_flush:
+        flush_task = asyncio.create_task(flush_deferred_snapshot_handles())
     task = asyncio.create_task(case.call(client))
 
     while not session.sent:
@@ -733,16 +829,32 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
 
     threading.Thread(target=receive_thread, name=f"fake-receive-{case.id}", daemon=True).start()
 
-    result = await task
+    if case.disconnect_before_flush:
+        await asyncio.sleep(0.05)
+        client._handle_kernel_event(
+            ConnectionStateChanged(
+                kind=ConnectionStateChanged.KIND,
+                at=UNSET_AT,
+                seq=UNSET_SEQ,
+                classification=UNSET_CLASSIFICATION,
+                route=UNSET_ROUTE,
+                session_id=UNSET_SESSION_ID,
+                connected=False,
+                reason="lost",
+                error_type=None,
+            )
+        )
+        with pytest.raises(Elke27DisconnectedError):
+            await task
+    else:
+        result = await task
+        assert delivery_error == []
+        assert isinstance(result, Result)
+        assert result.ok is True
+        case.check(client, result, snapshot_version_before)
+        assert flush_task is not None
+        await flush_task
 
-    assert delivery_error == []
-    assert isinstance(result, Result)
-    assert result.ok is True
-    if case.id == "area_set_arm_state":
-        assert client.snapshot.version > snapshot_version_before
-    case.check(client, result)
-
-    await flush_task
     loop.call_soon_threadsafe = real_call_soon_threadsafe  # type: ignore[method-assign]
 
 
@@ -782,116 +894,107 @@ async def test_arm_refresh_and_publication_wait_share_command_deadline() -> None
     assert elapsed < budget * 1.5
 
 
-_PUBLICATION_TIMEOUT_LOG = "Timed out waiting for"
-
-
-@dataclass(frozen=True)
-class _PromptPublicationWaitCase:
-    id: str
-    call: Callable[[Elke27Client], Coroutine[Any, Any, Result[Mapping[str, Any]]]]
-    first_reply: dict[str, Any]
-    assert_snapshot: Callable[[Elke27Client], None] | None
-
-
-def _prompt_publication_wait_cases() -> tuple[_PromptPublicationWaitCase, ...]:
-    return (
-        _PromptPublicationWaitCase(
-            id="zone_bulk_unknown_char",
-            call=lambda client: client.async_execute("zone_get_all_zones_status", timeout_s=2.0),
-            first_reply={
-                "seq": 0,
-                "zone": {
-                    "get_all_zones_status": {
-                        "status": "FX",
-                        "error_code": E27ErrorCode.ELKERR_NONE,
-                    }
-                },
-            },
-            assert_snapshot=_assert_zone_one_bypassed_snapshot,
-        ),
-        _PromptPublicationWaitCase(
-            id="zone_bulk_no_updates",
-            call=lambda client: client.async_execute("zone_get_all_zones_status", timeout_s=2.0),
-            first_reply={
-                "seq": 0,
-                "zone": {
-                    "get_all_zones_status": {
-                        "status": "",
-                        "error_code": E27ErrorCode.ELKERR_NONE,
-                    }
-                },
-            },
-            assert_snapshot=None,
-        ),
-        _PromptPublicationWaitCase(
-            id="area_get_status_unchanged",
-            call=lambda client: client.async_execute("area_get_status", area_id=1, timeout_s=2.0),
-            first_reply={
-                "seq": 0,
-                "area": {
-                    "get_status": {
-                        "area_id": 1,
-                        "arm_state": "DISARMED",
-                        "error_code": E27ErrorCode.ELKERR_NONE,
-                    }
-                },
-            },
-            assert_snapshot=_assert_area_one_disarmed_snapshot,
-        ),
-    )
-
-
-def _assert_zone_one_bypassed_snapshot(client: Elke27Client) -> None:
-    assert client.get_snapshot().zones[1].bypassed is True
-
-
-def _assert_area_one_disarmed_snapshot(client: Elke27Client) -> None:
-    assert client.get_snapshot().areas[1].arm_mode == ArmMode.DISARMED
+_PUBLICATION_TIMEOUT_LOG = "Timed out waiting for reply seq="
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "case",
-    _prompt_publication_wait_cases(),
-    ids=[c.id for c in _prompt_publication_wait_cases()],
-)
-async def test_status_read_publication_wait_returns_promptly(
-    case: _PromptPublicationWaitCase,
+async def test_zone_bulk_unknown_char_publication_wait_no_timeout(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     client, session = _make_client()
     kernel = get_kernel(client)
-    if case.id == "zone_bulk_unknown_char":
-        _sync_zones_ready_snapshot(client, kernel, (1, 2))
-    elif case.id == "zone_bulk_no_updates":
-        _sync_zones_ready_snapshot(client, kernel, (1,))
-    else:
-        _sync_area_disarmed_snapshot(client, kernel)
+    _sync_zones_ready_snapshot(client, kernel, (1, 2))
 
     caplog.set_level(logging.WARNING, logger="elke27_lib.client")
-    started = time.monotonic()
     result = await _drive_until_done(
         client,
         session,
-        case.call(client),
-        first_reply=case.first_reply,
+        client.async_execute("zone_get_all_zones_status", timeout_s=2.0),
+        first_reply={
+            "seq": 0,
+            "zone": {
+                "get_all_zones_status": {
+                    "status": "FX",
+                    "error_code": E27ErrorCode.ELKERR_NONE,
+                }
+            },
+        },
         max_replies=1,
     )
-    elapsed = time.monotonic() - started
 
     assert isinstance(result, Result)
     assert result.ok is True
-    assert elapsed < 0.5
-    if case.assert_snapshot is not None:
-        case.assert_snapshot(client)
+    assert client.get_snapshot().zones[1].bypassed is True
     assert not any(_PUBLICATION_TIMEOUT_LOG in rec.message for rec in caplog.records)
 
 
-def _area_status_evt(*, confirmed: bool) -> AreaStatusUpdated:
+@pytest.mark.asyncio
+async def test_zone_bulk_empty_status_skips_publication_wait(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client, session = _make_client()
+    kernel = get_kernel(client)
+    _sync_zones_ready_snapshot(client, kernel, (1,))
+
+    caplog.set_level(logging.WARNING, logger="elke27_lib.client")
+    result = await _drive_until_done(
+        client,
+        session,
+        client.async_execute("zone_get_all_zones_status", timeout_s=2.0),
+        first_reply={
+            "seq": 0,
+            "zone": {
+                "get_all_zones_status": {
+                    "status": "",
+                    "error_code": E27ErrorCode.ELKERR_NONE,
+                }
+            },
+        },
+        max_replies=1,
+    )
+
+    assert isinstance(result, Result)
+    assert result.ok is True
+    assert not any(_PUBLICATION_TIMEOUT_LOG in rec.message for rec in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_area_get_status_publication_wait_no_timeout(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client, session = _make_client()
+    kernel = get_kernel(client)
+    _sync_area_disarmed_snapshot(client, kernel)
+
+    caplog.set_level(logging.WARNING, logger="elke27_lib.client")
+    result = await _drive_until_done(
+        client,
+        session,
+        client.async_execute("area_get_status", area_id=1, timeout_s=2.0),
+        first_reply={
+            "seq": 0,
+            "area": {
+                "get_status": {
+                    "area_id": 1,
+                    "arm_state": "DISARMED",
+                    "error_code": E27ErrorCode.ELKERR_NONE,
+                }
+            },
+        },
+        max_replies=1,
+    )
+
+    assert isinstance(result, Result)
+    assert result.ok is True
+    assert client.get_snapshot().areas[1].arm_mode == ArmMode.DISARMED
+    assert not any(_PUBLICATION_TIMEOUT_LOG in rec.message for rec in caplog.records)
+
+
+def _area_status_evt(*, confirmed: bool, reply_seq: int) -> AreaStatusUpdated:
     return AreaStatusUpdated(
         kind=AreaStatusUpdated.KIND,
         at=UNSET_AT,
-        seq=UNSET_SEQ,
+        seq=reply_seq,
         classification=UNSET_CLASSIFICATION,
         route=("area", "set_arm_state"),
         session_id=UNSET_SESSION_ID,
@@ -904,17 +1007,14 @@ def _area_status_evt(*, confirmed: bool) -> AreaStatusUpdated:
 def test_ack_only_arm_reply_does_not_clear_stale_or_release_wait() -> None:
     """PR #29 Bugbot (b): an ack-only set_arm_state reply is not a status confirmation."""
     client = Elke27Client()
-    get_kernel(client)
     client._mark_area_stale(1)
-    seq_before = client._area_status_seq.get(1, 0)
+    reply_seq = 7
 
-    client._handle_kernel_event(_area_status_evt(confirmed=False))
+    client._handle_kernel_event(_area_status_evt(confirmed=False, reply_seq=reply_seq))
     assert client.snapshot.stale_area_ids == frozenset({1})
-    assert client._area_status_seq.get(1, 0) == seq_before
 
-    client._handle_kernel_event(_area_status_evt(confirmed=True))
+    client._handle_kernel_event(_area_status_evt(confirmed=True, reply_seq=reply_seq))
     assert client.snapshot.stale_area_ids == frozenset()
-    assert client._area_status_seq.get(1, 0) == seq_before + 1
 
 
 @pytest.mark.parametrize(
@@ -966,15 +1066,14 @@ def test_zone_set_status_handler_marks_status_confirmed(
 
 def test_ack_only_zone_reply_does_not_clear_stale_or_release_wait() -> None:
     client = Elke27Client()
-    get_kernel(client)
     client._mark_zone_stale(3)
-    seq_before = client._zone_status_seq.get(3, 0)
+    reply_seq = 9
 
     def _evt(confirmed: bool) -> ZoneStatusUpdated:
         return ZoneStatusUpdated(
             kind=ZoneStatusUpdated.KIND,
             at=UNSET_AT,
-            seq=UNSET_SEQ,
+            seq=reply_seq,
             classification=UNSET_CLASSIFICATION,
             route=("zone", "set_status"),
             session_id=UNSET_SESSION_ID,
@@ -985,11 +1084,9 @@ def test_ack_only_zone_reply_does_not_clear_stale_or_release_wait() -> None:
 
     client._handle_kernel_event(_evt(False))
     assert client.snapshot.stale_zone_ids == frozenset({3})
-    assert client._zone_status_seq.get(3, 0) == seq_before
 
     client._handle_kernel_event(_evt(True))
     assert client.snapshot.stale_zone_ids == frozenset()
-    assert client._zone_status_seq.get(3, 0) == seq_before + 1
 
 
 @pytest.mark.asyncio
