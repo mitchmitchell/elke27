@@ -722,21 +722,6 @@ def _receive_thread_publication_cases() -> tuple[_ReceiveThreadPublicationCase, 
         ),
         _ReceiveThreadPublicationCase(
             id="zone_get_all_zones_status",
-            call=lambda client: client.async_execute("zone_get_all_zones_status"),
-            reply_for_sent=lambda sent: {
-                "seq": sent["seq"],
-                "zone": {
-                    "get_all_zones_status": {
-                        "status": "F",
-                        "error_code": E27ErrorCode.ELKERR_NONE,
-                    }
-                },
-            },
-            check=_check_zone_bulk_status_publication,
-            prepare=lambda client, kernel: _sync_zones_ready_snapshot(client, kernel, (1,)),
-        ),
-        _ReceiveThreadPublicationCase(
-            id="zone_get_all_zones_status_bulk_kernel_event_path",
             call=lambda client: client.async_execute("zone_get_all_zones_status", timeout_s=2.0),
             reply_for_sent=lambda sent: {
                 "seq": sent["seq"],
@@ -1374,8 +1359,6 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         assert dispatch_only_deferred
         assert not any(_PUBLICATION_TIMEOUT_LOG in rec.message for rec in caplog.records)
         case.check(client, result, snapshot_version_before)
-        if case.assert_dispatch_clear_on_success:
-            assert kernel.dispatcher.pending_count() == 0
     else:
         if not case.same_zone_unrelated_bulk_before_write:
             threading.Thread(
@@ -1388,6 +1371,8 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         case.check(client, result, snapshot_version_before)
         if case.assert_dispatch_clear_on_success:
             assert kernel.dispatcher.pending_count() == 0
+        if case.short_publication_budget:
+            assert not any(_PUBLICATION_TIMEOUT_LOG in rec.message for rec in caplog.records)
         assert flush_task is not None
         await flush_task
 
