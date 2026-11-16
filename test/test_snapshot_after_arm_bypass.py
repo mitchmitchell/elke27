@@ -34,9 +34,9 @@ from elke27_lib.events import (
 )
 from elke27_lib.types import EventType, PanelInfo
 from test.helpers.fake_panel_replies import synthetic_success_reply
-from test.helpers.internal import (
+from test.helpers.internal import get_kernel
+from test.helpers.receive_thread_publication import (
     deliver_panel_message,
-    get_kernel,
     inject_unconfirmed_publication_event,
     reply_publication_slot_count,
 )
@@ -974,7 +974,7 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         )
     if case.ack_only_arm_write or case.ack_only_zone_write:
         kernel.command_transport_wait_budget_s = (  # type: ignore[method-assign]
-            lambda _request_timeout_s: 1_000_000.0
+            lambda _request_timeout_s: 30.0
         )
     case.prepare(client, kernel)
     snapshot_version_before = client.snapshot.version
@@ -1049,6 +1049,8 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
             await task
     elif case.ack_only_arm_write:
         threading.Thread(target=receive_thread, name=f"fake-receive-{case.id}", daemon=True).start()
+        while not deferred_handles:
+            await asyncio.sleep(0)
         while len(session.sent) < 2:
             await asyncio.sleep(0)
         get_status_sent = session.sent[1]
@@ -1067,6 +1069,9 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         )
         while not deferred_handles:
             await asyncio.sleep(0)
+        for _ in range(200):
+            await asyncio.sleep(0)
+        assert reply_publication_slot_count(client) > 0
         assert not task.done()
         assert client.get_snapshot().areas[1].arm_mode == ArmMode.DISARMED
         while deferred_handles:
@@ -1079,6 +1084,8 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         case.check(client, result, snapshot_version_before)
     elif case.ack_only_zone_write:
         threading.Thread(target=receive_thread, name=f"fake-receive-{case.id}", daemon=True).start()
+        while not deferred_handles:
+            await asyncio.sleep(0)
         while len(session.sent) < 2:
             await asyncio.sleep(0)
         get_status_sent = session.sent[1]
@@ -1097,6 +1104,9 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         )
         while not deferred_handles:
             await asyncio.sleep(0)
+        for _ in range(200):
+            await asyncio.sleep(0)
+        assert reply_publication_slot_count(client) > 0
         assert not task.done()
         assert client.get_snapshot().zones[1].bypassed is False
         while deferred_handles:
