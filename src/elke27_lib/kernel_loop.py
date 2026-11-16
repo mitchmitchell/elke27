@@ -1749,7 +1749,9 @@ class E27Kernel:
                 kept.append(item)
             queue.extend(kept)
 
-    def cancel_command_transport(self, seq: int, exc: BaseException) -> None:
+    def cancel_command_transport(
+        self, seq: int, exc: BaseException, *, drop_pending_response: bool = False
+    ) -> None:
         """Stop transport retries for a command and fail its pending future."""
         self._cancel_transport_retry_timer_for_seq(seq)
         self._remove_queued_seq(seq)
@@ -1758,7 +1760,7 @@ class E27Kernel:
             cancel_outbound = getattr(session, "cancel_outbound_pending_seq", None)
             if cancel_outbound is not None:
                 cancel_outbound(seq)
-        drop_only = isinstance(exc, E27Timeout) and "cancelled" in str(exc)
+        drop_only = drop_pending_response
 
         def _finish_cancel() -> None:
             self.dispatcher.drop_pending(seq)

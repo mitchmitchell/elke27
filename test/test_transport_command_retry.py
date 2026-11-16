@@ -700,7 +700,7 @@ async def test_cancel_command_transport_drops_outbound_queued_frame() -> None:
     kernel = E27Kernel()
     cast(Any, kernel)._session = _OutboundSession()
 
-    kernel.cancel_command_transport(96, E27Timeout("cancelled"))
+    kernel.cancel_command_transport(96, E27Timeout("cancelled"), drop_pending_response=True)
     assert outbound.cancel_pending_seq(96) is False
 
 
