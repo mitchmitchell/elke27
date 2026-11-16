@@ -912,6 +912,12 @@ def _check_zone_get_status_publication(
     assert client.get_snapshot().zones[1].bypassed is True
 
 
+def _run_deferred_at(deferred_handles: list[tuple[Any, tuple[Any, ...]]], index: int) -> None:
+    while len(deferred_handles) > index:
+        fn, args = deferred_handles.pop(index)
+        fn(*args)
+
+
 def _emit_panel_connection_lost(client: Elke27Client) -> None:
     client._handle_kernel_event(
         ConnectionStateChanged(
@@ -965,6 +971,10 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
     if case.hold_dispatch_publication:
         kernel.command_transport_wait_budget_s = (  # type: ignore[method-assign]
             lambda _request_timeout_s: 1.5
+        )
+    if case.ack_only_arm_write or case.ack_only_zone_write:
+        kernel.command_transport_wait_budget_s = (  # type: ignore[method-assign]
+            lambda _request_timeout_s: 1_000_000.0
         )
     case.prepare(client, kernel)
     snapshot_version_before = client.snapshot.version
@@ -1042,26 +1052,20 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         while len(session.sent) < 2:
             await asyncio.sleep(0)
         get_status_sent = session.sent[1]
-        get_status_reply = {
-            "seq": get_status_sent["seq"],
-            "area": {
-                "get_status": {
-                    "area_id": 1,
-                    "arm_state": "ARMED_AWAY",
-                    "error_code": E27ErrorCode.ELKERR_NONE,
-                }
+        deliver_panel_message(
+            kernel,
+            {
+                "seq": get_status_sent["seq"],
+                "area": {
+                    "get_status": {
+                        "area_id": 1,
+                        "arm_state": "ARMED_AWAY",
+                        "error_code": E27ErrorCode.ELKERR_NONE,
+                    }
+                },
             },
-        }
-
-        def receive_refresh() -> None:
-            deliver_panel_message(kernel, get_status_reply)
-
-        threading.Thread(
-            target=receive_refresh, name=f"fake-receive-refresh-{case.id}", daemon=True
-        ).start()
+        )
         while not deferred_handles:
-            await asyncio.sleep(0)
-        for _ in range(200):
             await asyncio.sleep(0)
         assert not task.done()
         assert client.get_snapshot().areas[1].arm_mode == ArmMode.DISARMED
@@ -1078,26 +1082,20 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         while len(session.sent) < 2:
             await asyncio.sleep(0)
         get_status_sent = session.sent[1]
-        get_status_reply = {
-            "seq": get_status_sent["seq"],
-            "zone": {
-                "get_status": {
-                    "zone_id": 1,
-                    "BYPASSED": True,
-                    "error_code": E27ErrorCode.ELKERR_NONE,
-                }
+        deliver_panel_message(
+            kernel,
+            {
+                "seq": get_status_sent["seq"],
+                "zone": {
+                    "get_status": {
+                        "zone_id": 1,
+                        "BYPASSED": True,
+                        "error_code": E27ErrorCode.ELKERR_NONE,
+                    }
+                },
             },
-        }
-
-        def receive_refresh() -> None:
-            deliver_panel_message(kernel, get_status_reply)
-
-        threading.Thread(
-            target=receive_refresh, name=f"fake-receive-refresh-{case.id}", daemon=True
-        ).start()
+        )
         while not deferred_handles:
-            await asyncio.sleep(0)
-        for _ in range(200):
             await asyncio.sleep(0)
         assert not task.done()
         assert client.get_snapshot().zones[1].bypassed is False
@@ -1114,7 +1112,11 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         while not deferred_handles:
             await asyncio.sleep(0)
         sent = session.sent[0]
+        held_before_inject = len(deferred_handles)
         inject_unconfirmed_publication_event(client, case.id, sent["seq"])
+        while len(deferred_handles) <= held_before_inject:
+            await asyncio.sleep(0)
+        _run_deferred_at(deferred_handles, held_before_inject)
         for _ in range(200):
             await asyncio.sleep(0)
         assert not task.done()
