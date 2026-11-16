@@ -2292,7 +2292,8 @@ class Elke27Client:
         self._connected = True
         self._clear_all_entity_stale()
         self._reset_panel_identity_if_new_panel(host, port)
-        self._request_panel_version_info()
+        if not self._skip_connect_bootstrap:
+            self._request_panel_version_info()
         if self._snapshot.version == 0:
             self._replace_snapshot(
                 panel_info=self._build_panel_info(),
@@ -3020,11 +3021,14 @@ class Elke27Client:
         self._forget_auth_pin()
         self._authenticated = False
         self._detach_kernel_subscription()
+        self._connected = False
         try:
             await self._kernel.close()
             return _ok(None)
         except _CLIENT_EXCEPTIONS as exc:
             return _err(self._normalize_error(exc, phase="close"))
+        finally:
+            self._kernel.state.panel.connected = False
 
     async def disconnect(self) -> Result[None]:
         return await self.close()
@@ -3240,7 +3244,8 @@ class Elke27Client:
         timeout_s: float | None = None,
         **params: Any,
     ) -> Result[Mapping[str, Any]]:
-        self._ensure_kernel_subscription()
+        if self._connected and self._kernel.state.panel.connected:
+            self._ensure_kernel_subscription()
         if command_key == "control_authenticate":
             try:
                 permission_level = permission_for_generator(command_key)

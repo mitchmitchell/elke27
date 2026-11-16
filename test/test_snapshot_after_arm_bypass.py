@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import gc
 import logging
 import threading
@@ -22,6 +21,7 @@ from elke27_lib.client import (
     Result,
 )
 from elke27_lib.const import E27ErrorCode
+from elke27_lib.errors import E27Timeout
 from elke27_lib.events import (
     UNSET_AT,
     UNSET_CLASSIFICATION,
@@ -34,7 +34,7 @@ from elke27_lib.events import (
     ZonesStatusBulkUpdated,
     ZoneStatusUpdated,
 )
-from elke27_lib.types import EventType, PanelInfo
+from elke27_lib.types import EventType, LinkKeys, PanelInfo
 from test.helpers.fake_panel_replies import synthetic_success_reply
 from test.helpers.internal import (
     deliver_panel_message,
@@ -1134,6 +1134,7 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         kernel = get_kernel(client)
     loop = asyncio.get_running_loop()
     _connect_client_for_fake_panel(client, loop)
+    kernel.state.panel.connected = True
     client.bind_kernel_loop_thread_for_tests(loop)
     if case.hold_dispatch_publication:
         monkeypatch.setattr(
@@ -1162,8 +1163,16 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
             return None
 
         monkeypatch.setattr(kernel, "close", _noop_kernel_close)
+        monkeypatch.setattr(client, "_skip_connect_bootstrap", True)
+
+        async def _stub_kernel_connect(*_args: object, **_kwargs: object) -> None:
+            kernel.state.panel.session_id = 1
+            kernel.state.panel.connected = True
+
+        monkeypatch.setattr(kernel, "connect", _stub_kernel_connect)
         await client.close()
-        _connect_client_for_fake_panel(client, loop)
+        await client.async_connect("127.0.0.1", 2101, LinkKeys("aa", "bb", "cc"))
+        client.bind_kernel_loop_thread_for_tests(loop)
 
     case.prepare(client, kernel)
     snapshot_version_before = client.snapshot.version
@@ -1368,7 +1377,7 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         while not deferred_handles:
             await asyncio.sleep(0)
         assert not task.done()
-        with contextlib.suppress(ValueError):
+        with pytest.raises(ValueError, match="snapshot area map build failed"):
             while deferred_handles:
                 fn, args = deferred_handles.pop(0)
                 fn(*args)
@@ -1490,6 +1499,7 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         result = await task
         assert isinstance(result, Result)
         assert not result.ok
+        assert isinstance(result.error, (Elke27DisconnectedError, E27Timeout))
     elif case.disconnect_before_flush:
         threading.Thread(target=receive_thread, name=f"fake-receive-{case.id}", daemon=True).start()
         if case.session_kernel_disconnect:

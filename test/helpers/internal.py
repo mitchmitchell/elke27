@@ -20,7 +20,6 @@ def deliver_panel_message(kernel: object, msg: dict[str, object]) -> None:
 
 
 def trigger_session_disconnect(kernel: Any, err: Exception) -> None:
-    kernel.state.panel.connected = True
     get_private(kernel, "_on_session_disconnected")(err)
 
 

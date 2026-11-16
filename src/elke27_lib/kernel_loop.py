@@ -90,6 +90,12 @@ RequestBuilder = Callable[..., Mapping[str, Any] | bool]  # returns payload dict
 # Session setup failures where the panel refused HELLO; hello.py logs them at
 # WARNING, so the client does not also report a lost connection (#61).
 _HELLO_REFUSAL_ERRORS = (E27HelloNoSession, E27HelloRejected, E27HelloLinkRequired)
+_DISPATCH_LISTENER_CALLBACK_FAILURES = (
+    AttributeError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+)
 
 
 class RequestRegistry:
@@ -1326,12 +1332,6 @@ class E27Kernel:
 
         # Dispatcher handles routing + correlation + dispatch-error envelopes.
         result = self.dispatcher.dispatch(msg)
-        _dispatch_listener_callback_failures = (
-            AttributeError,
-            RuntimeError,
-            TypeError,
-            ValueError,
-        )
         if (
             isinstance(seq_val, int)
             and seq_val > 0
@@ -1341,7 +1341,7 @@ class E27Kernel:
             for listener in list(self._dispatch_listeners):
                 try:
                     listener(seq_val, result.route, result.handled)
-                except _dispatch_listener_callback_failures as dispatch_listener_failed:
+                except _DISPATCH_LISTENER_CALLBACK_FAILURES as dispatch_listener_failed:
                     self._log.warning(
                         "Dispatch listener failed: %s",
                         dispatch_listener_failed,
