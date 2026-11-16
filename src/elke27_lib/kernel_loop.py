@@ -1758,21 +1758,25 @@ class E27Kernel:
             cancel_outbound = getattr(session, "cancel_outbound_pending_seq", None)
             if cancel_outbound is not None:
                 cancel_outbound(seq)
+        drop_only = isinstance(exc, E27Timeout) and "cancelled" in str(exc)
+
+        def _finish_cancel() -> None:
+            self.dispatcher.drop_pending(seq)
+            if drop_only:
+                self._pending_responses.drop(seq)
+            elif not self._pending_responses.fail(seq, exc):
+                self._pending_responses.drop(seq)
+            self._signal_sent_event(seq)
+
         if (
             self._request_state is _RequestState.IN_FLIGHT
             and self._active_seq == seq
             and not self._active_released
         ):
-            self.dispatcher.drop_pending(seq)
-            if not self._pending_responses.fail(seq, exc):
-                self._pending_responses.drop(seq)
-            self._signal_sent_event(seq)
+            _finish_cancel()
             self._complete_active(reason="cancelled")
             return
-        self.dispatcher.drop_pending(seq)
-        if not self._pending_responses.fail(seq, exc):
-            self._pending_responses.drop(seq)
-        self._signal_sent_event(seq)
+        _finish_cancel()
 
     def _fail_queued_command(self, item: _QueuedRequest, exc: BaseException) -> None:
         self._cancel_transport_retry_timer_for_seq(item.seq)

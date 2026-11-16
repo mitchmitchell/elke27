@@ -155,4 +155,16 @@ def synthetic_success_reply(
             domain: {command: {"error_code": E27ErrorCode.ELKERR_NONE, "count": 0, "ids": []}},
         }
 
+    if command == "get_defs":
+        return {
+            "seq": seq,
+            domain: {
+                command: {
+                    "error_code": E27ErrorCode.ELKERR_NONE,
+                    "block_id": request_payload.get("block_id", 1),
+                    "data": "",
+                }
+            },
+        }
+
     raise ValueError(f"no synthetic reply for {domain}.{command}")

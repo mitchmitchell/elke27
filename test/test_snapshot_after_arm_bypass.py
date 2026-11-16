@@ -82,18 +82,7 @@ def _connect_client_for_fake_panel(client: Elke27Client, loop: asyncio.AbstractE
 def _bootstrap_transport_reply(
     sent: dict[str, Any], *, sent_history: list[dict[str, Any]]
 ) -> dict[str, Any]:
-    try:
-        return synthetic_success_reply(sent, sent_history=sent_history)
-    except ValueError:
-        seq = sent.get("seq")
-        if not isinstance(seq, int):
-            raise
-        for domain, body in sent.items():
-            if domain in {"seq", "session_id"} or not isinstance(body, dict) or len(body) != 1:
-                continue
-            command = next(iter(body))
-            return {**sent, domain: {command: {"error_code": E27ErrorCode.ELKERR_NONE}}}
-        raise
+    return synthetic_success_reply(sent, sent_history=sent_history)
 
 
 def _sync_zones_ready_snapshot(
@@ -1485,6 +1474,10 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         with pytest.raises(asyncio.CancelledError):
             await task
         await asyncio.sleep(0)
+        gc.collect()
+        assert not any(
+            "Future exception was never retrieved" in rec.message for rec in caplog.records
+        )
         assert kernel.dispatcher.pending_count() == 0
         assert not reply_publication_seq_active(client, cancelled_seq)
         client._handle_kernel_event(
@@ -1510,6 +1503,7 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         assert follow_result.ok is True
         assert not any(_PUBLICATION_TIMEOUT_LOG in rec.message for rec in caplog.records)
     elif case.disconnect_before_reply:
+        caplog.set_level(logging.ERROR, logger="asyncio")
         reply_seq = sent["seq"]
         while not session.sent:
             await asyncio.sleep(0.01)
@@ -1527,6 +1521,10 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         _emit_panel_connection_lost(client)
         assert drop_dispatch_seqs == [reply_seq]
         result = await task
+        gc.collect()
+        assert not any(
+            "Future exception was never retrieved" in rec.message for rec in caplog.records
+        )
         assert isinstance(result, Result)
         assert not result.ok
         assert isinstance(result.error, Elke27DisconnectedError)

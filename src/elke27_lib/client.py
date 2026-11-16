@@ -980,19 +980,23 @@ class Elke27Client:
                 "outcome unknown.",
             )
 
+        publication_fut: asyncio.Future[None] | None = None
+        publication_handled = False
+        msg: Mapping[str, Any] | None = None
+
+        def _consume_done_publication_future() -> None:
+            nonlocal publication_handled
+            if publication_fut is None or publication_handled or not publication_fut.done():
+                return
+            if not publication_fut.cancelled():
+                publication_fut.exception()
+            publication_handled = True
+
         try:
             async with asyncio.timeout(budget_s):
                 await sent_event.wait()
                 publication_fut = self._reply_publication_by_seq.get(seq)
                 publication_handled = publication_fut is None
-
-                def _consume_done_publication_future() -> None:
-                    nonlocal publication_handled
-                    if publication_fut is None or publication_handled or not publication_fut.done():
-                        return
-                    if not publication_fut.cancelled():
-                        publication_fut.exception()
-                    publication_handled = True
 
                 _consume_done_publication_future()
                 while not future.done():
@@ -1014,6 +1018,8 @@ class Elke27Client:
                     f"async_execute cancelled for {command_key} seq={seq}"
                 )
                 self._kernel.cancel_command_transport(seq, cancel_error)
+                if future.done():
+                    future.exception()
                 raise asyncio.CancelledError() from cancel_error
             timeout_error: BaseException = _outcome_unknown("deadline") or E27Timeout(
                 f"async_execute timeout waiting for {command_key} seq={seq}"
@@ -1025,6 +1031,8 @@ class Elke27Client:
                 f"async_execute cancelled for {command_key} seq={seq}"
             )
             self._kernel.cancel_command_transport(seq, cancel_error)
+            if future.done():
+                future.exception()
             if isinstance(cancel_error, Elke27CommandOutcomeUnknownError):
                 # CancelledError must still propagate; chain the outcome for callers/logs.
                 raise asyncio.CancelledError(*cancelled.args) from cancel_error
@@ -1035,15 +1043,22 @@ class Elke27Client:
                 if outcome is not None:
                     return _err(outcome)
             if isinstance(exc, ConnectionLost):
-                disconnected = Elke27DisconnectedError("Connection lost during the command.")
-                disconnected.__cause__ = exc
-                return _err(disconnected)
+                return _err(self._disconnected_from_connection_lost(exc))
             detail = f"command_key={command_key} seq={seq}"
             return _err(self._normalize_error(exc, phase="execute", detail=detail))
         finally:
             self._kernel.forget_request_sent(seq)
+            _consume_done_publication_future()
+            if future.done():
+                future.exception()
 
-        return _ok(msg)
+        return _ok(cast(Mapping[str, Any], msg))
+
+    @staticmethod
+    def _disconnected_from_connection_lost(err: ConnectionLost) -> Elke27DisconnectedError:
+        disconnected = Elke27DisconnectedError("Connection lost during the command.")
+        disconnected.__cause__ = err
+        return disconnected
 
     @staticmethod
     def _wire_pin_string_error(
@@ -1095,7 +1110,7 @@ class Elke27Client:
         if isinstance(err, (E27AuthFailed, InvalidPinError, InvalidCredentials)):
             raise Elke27AuthError("Authentication failed for this operation.") from None
         if isinstance(err, ConnectionLost):
-            raise Elke27DisconnectedError("Connection lost during the command.") from err
+            raise self._disconnected_from_connection_lost(err) from err
         if isinstance(err, (E27Timeout, E27TransportError, TimeoutError, asyncio.TimeoutError)):
             raise Elke27TimeoutError("Operation timed out.") from None
         if isinstance(err, E27NotReady):
@@ -3021,15 +3036,12 @@ class Elke27Client:
         self._cancel_reauth()
         self._forget_auth_pin()
         self._authenticated = False
-        self._detach_kernel_subscription()
         self._connected = False
         try:
             await self._kernel.close()
             return _ok(None)
         except _CLIENT_EXCEPTIONS as exc:
             return _err(self._normalize_error(exc, phase="close"))
-        finally:
-            self._kernel.state.panel.connected = False
 
     async def disconnect(self) -> Result[None]:
         return await self.close()

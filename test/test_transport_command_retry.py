@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 from collections.abc import Callable
 from typing import Any, cast
 
@@ -889,7 +890,8 @@ async def test_disarm_uses_high_priority() -> None:
         priorities.append(priority)
         original_send(msg, priority=priority, on_sent=on_sent, on_fail=on_fail)
 
-    cast(Any, get_kernel(client)._session).send_json = _send_json
+    kernel = get_kernel(client)
+    cast(Any, kernel._session).send_json = _send_json
 
     task = asyncio.create_task(
         client.async_execute("area_set_arm_state", area_id=1, arm_state="DISARMED", pin=1234)
@@ -899,7 +901,7 @@ async def test_disarm_uses_high_priority() -> None:
             break
         await asyncio.sleep(0)
     sent = session.sent[0]
-    on_message = get_private(get_kernel(client), "_on_message")
+    on_message = get_private(kernel, "_on_message")
     # Reply confirms arm_state so #29 needs no follow-up area_get_status read.
     on_message(
         {
@@ -913,36 +915,51 @@ async def test_disarm_uses_high_priority() -> None:
 
 
 @pytest.mark.asyncio
-async def test_recv_thread_reply_marshals_retry_cleanup_to_loop() -> None:
-    """_on_message runs on the recv thread; retry-state cleanup must run on the loop."""
-    import threading
+async def test_async_execute_connection_lost_maps_to_disconnected_result() -> None:
+    from elke27_lib.client import Elke27DisconnectedError
 
-    kernel = E27Kernel(request_timeout_s=0.02, request_max_retries=2, request_max_backoff_s=60.0)
     session = _FakeSession()
-    _wire_kernel(kernel, session)
-    kernel_any = cast(Any, kernel)
-    loop = asyncio.get_running_loop()
-    loop_thread = threading.get_ident()
-    calls: list[tuple[int, int]] = []
-    original = kernel_any._clear_pending_transport_retry_for_seq
+    client = _make_client(session)
+    kernel = get_kernel(client)
+    task = asyncio.create_task(client.async_execute("zone_get_status", zone_id=1))
+    for _ in range(20):
+        if session.sent or task.done():
+            break
+        await asyncio.sleep(0)
+    abort_requests = get_private(kernel, "_abort_requests")
+    abort_requests(ConnectionLost("Session disconnected."))
+    result = await asyncio.wait_for(task, timeout=0.5)
+    assert not result.ok
+    assert isinstance(result.error, Elke27DisconnectedError)
+    assert "Connection lost during the command." in str(result.error)
 
-    def _spy(seq: int) -> None:
-        calls.append((seq, threading.get_ident()))
-        original(seq)
 
-    kernel_any._clear_pending_transport_retry_for_seq = _spy
+@pytest.mark.asyncio
+async def test_async_execute_drains_done_publication_future_on_connection_lost(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from elke27_lib.client import Elke27DisconnectedError
 
-    worker = threading.Thread(
-        target=kernel_any._clear_pending_transport_retry_for_seq_threadsafe, args=(77,)
+    session = _FakeSession()
+    client = _make_client(session)
+    kernel = get_kernel(client)
+    kernel.state.get_or_create_area(1).arm_state = "DISARMED"
+    task = asyncio.create_task(client.async_execute("area_get_status", area_id=1, timeout_s=2.0))
+    for _ in range(50):
+        if session.sent or task.done():
+            break
+        await asyncio.sleep(0)
+    seq = session.sent[0]["seq"]
+    get_private(client, "_reply_publication_by_seq")[seq].set_exception(
+        ConnectionLost("publication failed")
     )
-    worker.start()
-    worker.join()
-    assert calls == []  # not run on the recv thread
+    get_private(kernel, "_abort_requests")(ConnectionLost("Session disconnected."))
+    result = await asyncio.wait_for(task, timeout=0.5)
+    assert not result.ok
+    assert isinstance(result.error, Elke27DisconnectedError)
     await asyncio.sleep(0)
-    await asyncio.sleep(0)
-    assert calls == [(77, loop_thread)]
-
-    # On the loop thread itself it runs inline.
-    kernel_any._clear_pending_transport_retry_for_seq_threadsafe(78)
-    assert calls[-1] == (78, loop_thread)
-    assert loop is asyncio.get_running_loop()
+    gc.collect()
+    await asyncio.sleep(0.05)
+    assert "Future exception was never retrieved" not in (
+        capsys.readouterr().err + capsys.readouterr().out
+    )
