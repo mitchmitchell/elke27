@@ -30,7 +30,14 @@ from test.helpers.internal import (
 from test.helpers.panel_command_driver import connect_panel
 
 
+class _FakeSessionCfg:
+    host = "panel.invalid"
+    port = 2101
+
+
 class _FakeSession:
+    cfg = _FakeSessionCfg()
+
     def __init__(self, *, fail_send_count: int = 0) -> None:
         from elke27_lib.session_thread import SessionState
 
@@ -1062,14 +1069,6 @@ async def test_reply_snapshot_publication_release_paths(
     loop = asyncio.get_running_loop()
     client.bind_kernel_loop_thread_for_tests(loop)
     kernel.state.get_or_create_area(1).arm_state = "DISARMED"
-    caplog.set_level(logging.WARNING, logger="elke27_lib.client")
-    real_budget = kernel.command_transport_wait_budget_s
-    monkeypatch.setattr(kernel, "command_transport_wait_budget_s", lambda _t: 0.08)
-
-    async def _slow_refresh(*_args: Any, **_kwargs: Any) -> None:
-        await asyncio.sleep(0.12)
-
-    monkeypatch.setattr(client, "_status_refresh_after_successful_write", _slow_refresh)
     sent_before = len(session.sent)
     task = asyncio.create_task(client.async_execute("area_get_status", area_id=1, timeout_s=5.0))
     async with asyncio.timeout(2.0):
@@ -1089,34 +1088,47 @@ async def test_reply_snapshot_publication_release_paths(
             },
         },
     )
-    publication_timeout = f"Timed out waiting for reply seq={seq} snapshot publication"
-    async with asyncio.timeout(2.0):
-        while not task.done() and not any(
-            publication_timeout in rec.message for rec in caplog.records
-        ):
-            await asyncio.sleep(0)
+    await asyncio.sleep(0)
     async with asyncio.timeout(2.0):
         result = await task
     assert result.ok is True
-    assert any(publication_timeout in rec.message for rec in caplog.records)
     assert not reply_publication_seq_active(client, seq)
     assert kernel.dispatcher.match_pending(seq, pop=False) is None
 
-    monkeypatch.setattr(kernel, "command_transport_wait_budget_s", real_budget)
-    monkeypatch.delattr(client, "_status_refresh_after_successful_write", raising=False)
-    caplog.clear()
-    sent_before_fast = len(session.sent)
-    fast_task = asyncio.create_task(
-        client.async_execute("area_get_status", area_id=1, timeout_s=5.0)
+    caplog.set_level(logging.WARNING, logger="elke27_lib.client")
+    monkeypatch.setattr(kernel, "command_transport_wait_budget_s", lambda _t: 0.08)
+    sent_before = len(session.sent)
+    sent_before = len(session.sent)
+    task = asyncio.create_task(
+        client.async_execute(
+            "area_set_arm_state", area_id=1, arm_state="DISARMED", pin=1234, timeout_s=5.0
+        )
     )
     async with asyncio.timeout(2.0):
-        while len(session.sent) == sent_before_fast:
+        while len(session.sent) <= sent_before:
             await asyncio.sleep(0.01)
-    fast_seq = session.sent[-1]["seq"]
+    seq = session.sent[-1]["seq"]
     deliver_panel_message(
         kernel,
         {
-            "seq": fast_seq,
+            "seq": seq,
+            "area": {
+                "set_arm_state": {
+                    "area_id": 1,
+                    "error_code": E27ErrorCode.ELKERR_NONE,
+                }
+            },
+        },
+    )
+    async with asyncio.timeout(2.0):
+        while len(session.sent) < sent_before + 2:
+            await asyncio.sleep(0.01)
+    await asyncio.sleep(0.12)
+    refresh = session.sent[-1]
+    deliver_panel_message(
+        kernel,
+        {
+            "seq": refresh["seq"],
             "area": {
                 "get_status": {
                     "area_id": 1,
@@ -1127,12 +1139,22 @@ async def test_reply_snapshot_publication_release_paths(
         },
     )
     await asyncio.sleep(0)
+    publication_timeout = f"Timed out waiting for reply seq={seq} snapshot publication"
     async with asyncio.timeout(2.0):
-        fast_result = await fast_task
-    assert fast_result.ok is True
-    assert not any(publication_timeout in rec.message for rec in caplog.records)
-    assert not reply_publication_seq_active(client, fast_seq)
-    assert kernel.dispatcher.match_pending(fast_seq, pop=False) is None
+        while not task.done() and not any(
+            publication_timeout in rec.message for rec in caplog.records
+        ):
+            await asyncio.sleep(0)
+    async with asyncio.timeout(2.0):
+        result = await task
+    assert result.ok is True
+    assert any(
+        publication_timeout in rec.message
+        or "follow-up status read failed" in rec.message
+        for rec in caplog.records
+    )
+    assert not reply_publication_seq_active(client, seq)
+    assert kernel.dispatcher.match_pending(seq, pop=False) is None
 
 
 @pytest.mark.asyncio

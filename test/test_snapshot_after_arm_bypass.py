@@ -1527,7 +1527,6 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         caplog.set_level(logging.ERROR, logger="asyncio")
         await _wait_until_sent(session)
         reply_seq = session.sent[0]["seq"]
-        threading.Thread(target=receive_thread, name=f"fake-receive-{case.id}", daemon=True).start()
 
         async def _wait_publication_slot() -> None:
             while True:
@@ -1538,7 +1537,7 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         async with asyncio.timeout(2.0):
             await _wait_publication_slot()
         assert reply_publication_pending(client, reply_seq)
-        _emit_panel_connection_lost(client)
+        trigger_session_disconnect(kernel, ConnectionResetError())
         result = await task
         gc.collect()
         assert not any(

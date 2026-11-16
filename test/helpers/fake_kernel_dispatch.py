@@ -40,3 +40,6 @@ class FakeKernelDispatchSupport:
                 opaque=None,
             )
         )
+
+    def drop_dispatch_correlation(self, seq: int) -> None:
+        self.dispatcher.drop_pending(seq)
