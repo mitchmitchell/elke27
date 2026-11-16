@@ -742,9 +742,7 @@ def _receive_thread_publication_cases() -> tuple[_ReceiveThreadPublicationCase, 
         ),
         _ReceiveThreadPublicationCase(
             id="area_get_status_dispatch_publication_fallback",
-            call=lambda client: client.async_execute(
-                "area_get_status", area_id=1, timeout_s=1.5
-            ),
+            call=lambda client: client.async_execute("area_get_status", area_id=1, timeout_s=1.5),
             reply_for_sent=lambda sent: {
                 "seq": sent["seq"],
                 "area": {
