@@ -8,13 +8,24 @@ from typing import Any, cast
 
 import pytest
 
-from elke27_lib import Elke27InvalidArgument, Elke27PanelError, Elke27StayInstantRequiredError
+from elke27_lib import (
+    Elke27CommandOutcomeUnknownError,
+    Elke27InvalidArgument,
+    Elke27NightArmFirmwareTooOldError,
+    Elke27PanelApplicationFirmwareUnknownError,
+    Elke27PanelError,
+    Elke27StayInstantRequiredError,
+)
 from elke27_lib.client import ArmMode, Elke27Client, PanelSnapshot, Result
 from elke27_lib.const import E27ErrorCode
 from elke27_lib.handlers.control import make_control_get_version_info_handler
 from elke27_lib.states import PanelState
 from elke27_lib.types import DelayStateExit, LinkKeys
-from test.helpers.firmware_fixtures import NIGHT_ARM_MIN_APP_FIELD, pack_application_firmware
+from test.helpers.firmware_fixtures import (
+    NIGHT_ARM_MIN_APP_FIELD,
+    NIGHT_ARM_MIN_FIRMWARE_TUPLE,
+    pack_application_firmware,
+)
 from test.helpers.panel_command_driver import (
     area_set_arm_messages,
     connect_panel,
@@ -63,8 +74,13 @@ async def test_arm_night_rejected_when_application_firmware_too_old(
         monkeypatch, pack_application_firmware(0, 0, 5, 36)
     )
     sent_before = len(panel.sent)
-    with pytest.raises(Elke27InvalidArgument, match=r"application firmware 0\.0\.5\.37 or later"):
+    with pytest.raises(Elke27NightArmFirmwareTooOldError) as exc_info:
         await client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234")
+    err = exc_info.value
+    assert isinstance(err, Elke27InvalidArgument)
+    assert err.required == NIGHT_ARM_MIN_FIRMWARE_TUPLE
+    assert err.actual == (0, 0, 5, 36)
+    assert "requires panel application firmware 0.0.5.37 or later" in str(err)
     assert panel.sent[sent_before:] == []
 
 
@@ -74,8 +90,25 @@ async def test_high_ssp_low_app_does_not_enable_night(monkeypatch: pytest.Monkey
         monkeypatch, pack_application_firmware(0, 0, 5, 36), ssp="99.99.99"
     )
     sent_before = len(panel.sent)
-    with pytest.raises(Elke27InvalidArgument, match=r"application firmware 0\.0\.5\.37 or later"):
+    with pytest.raises(Elke27NightArmFirmwareTooOldError) as exc_info:
         await client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234")
+    err = exc_info.value
+    assert err.actual == (0, 0, 5, 36)
+    assert "requires panel application firmware 0.0.5.37 or later" in str(err)
+    assert panel.sent[sent_before:] == []
+
+
+@pytest.mark.asyncio
+async def test_arm_night_rejected_when_application_firmware_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, panel = await connect_panel(monkeypatch)
+    sent_before = len(panel.sent)
+    with pytest.raises(Elke27PanelApplicationFirmwareUnknownError) as exc_info:
+        await client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234")
+    err = exc_info.value
+    assert isinstance(err, Elke27InvalidArgument)
+    assert "Panel application firmware version is unknown" in str(err)
     assert panel.sent[sent_before:] == []
 
 
@@ -369,7 +402,7 @@ async def test_arm_night_stay_arm_state_with_stay_inst_cmd_raises(
 
 
 @pytest.mark.asyncio
-async def test_arm_night_missing_snapshot_area_raises_stay_instant(
+async def test_arm_night_missing_snapshot_area_raises_outcome_unknown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, panel = await connect_with_app_firmware(monkeypatch, NIGHT_ARM_MIN_APP_FIELD)
@@ -394,12 +427,16 @@ async def test_arm_night_missing_snapshot_area_raises_stay_instant(
 
     monkeypatch.setattr(client, "async_execute", execute_then_strip_area_snapshot)
 
-    with pytest.raises(Elke27StayInstantRequiredError):
+    with pytest.raises(Elke27CommandOutcomeUnknownError) as exc_info:
         await drive_until_done(
             client,
             panel,
             client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234"),
         )
+    msg = str(exc_info.value)
+    assert "acknowledged" in msg
+    assert "missing from the snapshot" in msg
+    assert exc_info.value.route == ("area", "set_arm_state")
 
 
 @pytest.mark.parametrize("ee_timer", [0, None])

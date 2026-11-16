@@ -97,6 +97,8 @@ from .errors import (
     Elke27InvalidArgument,
     Elke27LinkRequiredError,
     Elke27LinkSlotsFullError,
+    Elke27NightArmFirmwareTooOldError,
+    Elke27PanelApplicationFirmwareUnknownError,
     Elke27PanelError,
     Elke27PermissionError,
     Elke27PinRequiredError,
@@ -2638,7 +2640,11 @@ class Elke27Client:
     def _raise_if_night_arm_ignored(self, area_id: int) -> None:
         after = self.snapshot.areas.get(area_id)
         if after is None:
-            raise Elke27StayInstantRequiredError()
+            raise Elke27CommandOutcomeUnknownError(
+                ("area", "set_arm_state"),
+                "The panel acknowledged area.set_arm_state but the area is missing from "
+                "the snapshot after refresh; the resulting arm state is unknown.",
+            )
         if after.arm_mode is ArmMode.ARMED_NIGHT:
             return
         if (
@@ -2722,10 +2728,14 @@ class Elke27Client:
             app_version = self._kernel.state.panel.app_version
             app_tuple = application_firmware_tuple_from_app_field(app_version)
             if app_tuple is None:
-                raise Elke27InvalidArgument("Panel application firmware version is unknown.")
+                raise Elke27PanelApplicationFirmwareUnknownError(
+                    "Panel application firmware version is unknown."
+                )
             if not version_tuple_at_least(app_tuple, NIGHT_ARM_MIN_FIRMWARE):
-                raise Elke27InvalidArgument(
-                    "Arm night requires application firmware 0.0.5.37 or later."
+                raise Elke27NightArmFirmwareTooOldError(
+                    "Arm night requires panel application firmware 0.0.5.37 or later.",
+                    required=NIGHT_ARM_MIN_FIRMWARE,
+                    actual=app_tuple,
                 )
         pin_value = _normalize_area_pin(pin, action="arm")
         arm_state = _panel_arm_state_for_mode(mode)
