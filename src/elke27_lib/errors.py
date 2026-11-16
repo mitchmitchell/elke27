@@ -725,6 +725,8 @@ class Elke27ProtocolError(Elke27Error):
 
 
 class Elke27SnapshotPublicationError(Elke27ProtocolError):
+    """Snapshot update tied to a command reply could not be published."""
+
     def __init__(
         self,
         message: str = "Snapshot publication failed.",

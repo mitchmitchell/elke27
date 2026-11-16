@@ -630,6 +630,10 @@ class Elke27Client:
             self._kernel.unsubscribe(self._kernel_event_token)
             self._kernel_event_token = None
 
+    def _prepare_panel_connect_listeners(self) -> None:
+        self._event_loop = asyncio.get_running_loop()
+        self._ensure_kernel_subscription()
+
     def _ensure_kernel_subscription(self) -> None:
         if self._kernel_event_token is not None and self._dispatch_listener_remove is not None:
             return
@@ -1832,10 +1836,6 @@ class Elke27Client:
             return
         fut = self._reply_publication_by_seq.get(reply_seq)
         if fut is None:
-            if not self._connected:
-                raise Elke27DisconnectedError(
-                    "Connection lost while waiting for reply snapshot publication."
-                )
             return
         if fut.done():
             try:
@@ -2277,8 +2277,7 @@ class Elke27Client:
         if port <= 0:
             raise Elke27InvalidArgument("port must be a positive integer.")
         self._reset_bootstrap_state()
-        self._event_loop = asyncio.get_running_loop()
-        self._ensure_kernel_subscription()
+        self._prepare_panel_connect_listeners()
         identity = self._v2_client_identity or self._default_identity()
         session_cfg = SessionConfig(host=host, port=port, wire_log=True)
         connect_exc: BaseException | None = None
@@ -3019,7 +3018,7 @@ class Elke27Client:
         session_config: SessionConfig | None = None,
     ) -> Result[None]:
         try:
-            self._event_loop = asyncio.get_running_loop()
+            self._prepare_panel_connect_listeners()
             await asyncio.to_thread(self._kernel.load_features_blocking, self._feature_modules)
             await self._kernel.connect(
                 link_keys,

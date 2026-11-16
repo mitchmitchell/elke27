@@ -197,3 +197,82 @@ async def test_close_then_result_connect_receives_events_and_dispatch(
     )
     exec_result = await asyncio.wait_for(exec_task, timeout=2.0)
     assert exec_result.ok is True
+
+
+@pytest.mark.asyncio
+async def test_disconnect_then_result_connect_receives_events_and_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from elke27_lib.linking_thread import E27Identity
+
+    client = Elke27Client(skip_connect_bootstrap=True)
+    loop = asyncio.get_running_loop()
+    assert (await client.disconnect()).ok is True
+    FakePanelSession.instances.clear()
+    monkeypatch.setattr(session_mod, "Session", FakePanelSession)
+    identity = E27Identity(mn="m", sn="s", fwver="f", hwver="h", osver="o")
+    session_config = SessionConfig(host="panel.invalid", port=2101, wire_log=True)
+    connect_result = await client.connect(
+        LinkKeys("aa", "bb", "cc"),
+        panel={"host": "panel.invalid", "port": 2101},
+        client_identity=identity,
+        session_config=session_config,
+    )
+    assert connect_result.ok is True
+    client.bind_kernel_loop_thread_for_tests(loop)
+    panel = FakePanelSession.instances[-1]
+    exec_task = asyncio.create_task(
+        client.async_execute("output_get_status", output_id=1, timeout_s=2.0)
+    )
+    async with asyncio.timeout(2.0):
+        while not panel.sent:
+            await asyncio.sleep(0.01)
+    sent = cast(dict[str, Any], panel.sent[-1])
+    await panel.deliver(
+        {
+            "seq": sent["seq"],
+            "output": {
+                "get_status": {
+                    "output_id": 1,
+                    "error_code": E27ErrorCode.ELKERR_NONE,
+                }
+            },
+        }
+    )
+    exec_result = await asyncio.wait_for(exec_task, timeout=2.0)
+    assert exec_result.ok is True
+
+
+@pytest.mark.asyncio
+async def test_close_and_repeated_connect_prepare_single_dispatch_listener(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from elke27_lib.linking_thread import E27Identity
+
+    add_calls: list[int] = []
+    real_add = kernel_mod.E27Kernel.add_dispatch_listener
+
+    def tracked_add(self: kernel_mod.E27Kernel, listener: Any) -> Any:
+        add_calls.append(1)
+        return real_add(self, listener)
+
+    monkeypatch.setattr(kernel_mod.E27Kernel, "add_dispatch_listener", tracked_add)
+    client = Elke27Client(skip_connect_bootstrap=True)
+    assert add_calls == [1]
+    add_calls.clear()
+    assert (await client.close()).ok is True
+    FakePanelSession.instances.clear()
+    monkeypatch.setattr(session_mod, "Session", FakePanelSession)
+    identity = E27Identity(mn="m", sn="s", fwver="f", hwver="h", osver="o")
+    session_config = SessionConfig(host="panel.invalid", port=2101, wire_log=True)
+    for _ in range(3):
+        assert (
+            await client.connect(
+                LinkKeys("aa", "bb", "cc"),
+                panel={"host": "panel.invalid", "port": 2101},
+                client_identity=identity,
+                session_config=session_config,
+            )
+        ).ok is True
+        await client.close()
+    assert add_calls == []

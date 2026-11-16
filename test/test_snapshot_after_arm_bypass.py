@@ -76,7 +76,16 @@ def _prepare_area_one_disarmed_kernel_only(client: Elke27Client, kernel: Any) ->
 
 def _connect_client_for_fake_panel(client: Elke27Client, loop: asyncio.AbstractEventLoop) -> None:
     set_private(client, "_connected", True)
-    client._event_loop = loop
+    set_private(client, "_event_loop", loop)
+    client.state.panel.connected = True
+
+
+async def _wait_until_deferred_nonempty(
+    deferred_handles: list[tuple[Any, tuple[Any, ...]]], *, timeout_s: float = 2.0
+) -> None:
+    async with asyncio.timeout(timeout_s):
+        while not deferred_handles:
+            await asyncio.sleep(0)
 
 
 def _bootstrap_transport_reply(
@@ -1232,8 +1241,7 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
     monkeypatch.setattr(loop, "call_soon_threadsafe", intercept_call_soon_threadsafe)
 
     async def flush_deferred_snapshot_handles() -> None:
-        while not deferred_handles:
-            await asyncio.sleep(0)
+        await _wait_until_deferred_nonempty(deferred_handles)
         await asyncio.sleep(0.02)
         while deferred_handles:
             fn, args = deferred_handles.pop(0)
@@ -1399,8 +1407,7 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         assert isinstance(result.error, Elke27SnapshotPublicationError)
     elif case.hold_dispatch_publication:
         threading.Thread(target=receive_thread, name=f"fake-receive-{case.id}", daemon=True).start()
-        while not deferred_handles:
-            await asyncio.sleep(0)
+        await _wait_until_deferred_nonempty(deferred_handles)
         assert not task.done()
         while deferred_handles:
             fn, args = deferred_handles.pop(0)
@@ -1430,8 +1437,7 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
             name=f"fake-receive-bulk-{case.id}",
             daemon=True,
         ).start()
-        while not deferred_handles:
-            await asyncio.sleep(0)
+        await _wait_until_deferred_nonempty(deferred_handles)
         await asyncio.sleep(0.02)
         while deferred_handles:
             fn, args = deferred_handles.pop(0)
@@ -1449,8 +1455,7 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
             daemon=True,
         ).start()
         await write_delivered.wait()
-        for _ in range(200):
-            await asyncio.sleep(0)
+        await asyncio.sleep(0.05)
         assert delivery_error == []
         assert not task.done()
         assert client.get_snapshot().zones[1].bypassed is False
@@ -1463,12 +1468,12 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         assert result.ok is True
         case.check(client, result, snapshot_version_before)
     elif case.cancel_before_reply:
-        while not session.sent:
-            await asyncio.sleep(0)
-        for _ in range(500):
-            if kernel.dispatcher.pending_count() > 0:
-                break
-            await asyncio.sleep(0)
+        async with asyncio.timeout(2.0):
+            while not session.sent:
+                await asyncio.sleep(0.01)
+        async with asyncio.timeout(2.0):
+            while kernel.dispatcher.pending_count() == 0:
+                await asyncio.sleep(0)
         cancelled_seq = session.sent[0]["seq"]
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -1490,14 +1495,14 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         follow_up = asyncio.create_task(
             client.async_execute("area_get_status", area_id=1, timeout_s=2.0)
         )
-        while len(session.sent) < 2:
-            await asyncio.sleep(0)
+        async with asyncio.timeout(2.0):
+            while len(session.sent) < 2:
+                await asyncio.sleep(0.01)
         follow_reply = case.reply_for_sent(cast(dict[str, Any], session.sent[1]))
         deliver_panel_message(kernel, follow_reply)
-        for _ in range(200):
-            if follow_up.done():
-                break
-            await asyncio.sleep(0)
+        async with asyncio.timeout(2.0):
+            while not follow_up.done():
+                await asyncio.sleep(0)
         follow_result = await follow_up
         assert isinstance(follow_result, Result)
         assert follow_result.ok is True
