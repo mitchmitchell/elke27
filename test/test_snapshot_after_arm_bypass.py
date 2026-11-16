@@ -65,9 +65,7 @@ def _prepare_area_one_disarmed_kernel_only(client: Elke27Client, kernel: Any) ->
     kernel.state.get_or_create_area(1).arm_state = "DISARMED"
 
 
-def _connect_client_for_fake_panel(
-    client: Elke27Client, loop: asyncio.AbstractEventLoop
-) -> None:
+def _connect_client_for_fake_panel(client: Elke27Client, loop: asyncio.AbstractEventLoop) -> None:
     cast(Any, client)._connected = True
     client._event_loop = loop
 
