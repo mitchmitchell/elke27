@@ -268,7 +268,7 @@ PRIVATE_ACCESS_CEILING: dict[str, int] = {
     "test/test_session_extra.py": 51,
     "test/test_session_io_tstat_regression.py": 41,
     "test/test_set_status_ack_no_stale_event.py": 1,
-    "test/test_snapshot_after_arm_bypass.py": 97,
+    "test/test_snapshot_after_arm_bypass.py": 87,
     "test/test_timeout_start_on_send.py": 1,
     "test/test_transport_command_retry.py": 85,
     "test/test_tstat_units.py": 1,

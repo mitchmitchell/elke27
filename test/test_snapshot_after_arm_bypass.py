@@ -34,13 +34,12 @@ from elke27_lib.events import (
 )
 from elke27_lib.types import EventType, PanelInfo
 from test.helpers.fake_panel_replies import synthetic_success_reply
-from test.helpers.internal import (
-    deliver_panel_message,
-    get_kernel,
-    get_private,
-    reply_publication_slot_count,
+from test.helpers.internal import deliver_panel_message, get_kernel, reply_publication_slot_count
+from test.helpers.receive_thread_publication import (
+    inject_unconfirmed_publication_event,
+    run_arm_set_publication_completes_before_transport_reply,
+    run_zone_get_all_zones_status_bulk_without_dispatch_flush,
 )
-from test.helpers.receive_thread_publication import inject_unconfirmed_publication_event
 from test.test_panel_errors_ready_night import _FakeSession, _make_client
 
 
@@ -1449,14 +1448,7 @@ async def test_reply_publication_completing_before_reply_does_not_rewait_publica
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, session = _make_client()
-    kernel = get_kernel(client)
-    kernel.state.get_or_create_area(1).arm_state = "ARMED_AWAY"
-    client._replace_snapshot(areas=client._build_area_map())
-    loop = asyncio.get_running_loop()
-    cast(Any, client)._connected = True
-    client._event_loop = loop
-
-    publication_fut_holder: asyncio.Future[None] | None = None
+    track_publication: list[asyncio.Future[None] | None] = []
     real_wait = asyncio.wait
 
     async def guard_wait(
@@ -1465,58 +1457,18 @@ async def test_reply_publication_completing_before_reply_does_not_rewait_publica
         set[asyncio.Task[Any] | asyncio.Future[Any]],
         set[asyncio.Task[Any] | asyncio.Future[Any]],
     ]:
-        held = publication_fut_holder
+        held = track_publication[0] if track_publication else None
         if held is not None and held.done() and held in aws:
             raise AssertionError("asyncio.wait re-added a completed publication future")
         return await real_wait(aws, **kwargs)
 
     monkeypatch.setattr(asyncio, "wait", guard_wait)
 
-    task = asyncio.create_task(
-        client.async_execute(
-            "area_set_arm_state",
-            area_id=1,
-            arm_state="ARMED_AWAY",
-            pin=1234,
-        )
+    result = await run_arm_set_publication_completes_before_transport_reply(
+        client, session, track_publication=track_publication
     )
-    while not session.sent:
-        await asyncio.sleep(0)
-    reply_seq = session.sent[0]["seq"]
-    slots = get_private(client, "_reply_publication_by_seq")
-    publication_fut_holder = slots.get(reply_seq)
-    client._handle_kernel_event(
-        AreaStatusUpdated(
-            kind=AreaStatusUpdated.KIND,
-            at=UNSET_AT,
-            seq=reply_seq,
-            classification=UNSET_CLASSIFICATION,
-            route=("area", "set_arm_state"),
-            session_id=UNSET_SESSION_ID,
-            area_id=1,
-            changed_fields=("arm_state",),
-            status_confirmed=True,
-        )
-    )
-    assert publication_fut_holder is not None
-    assert publication_fut_holder.done()
-
-    reply = {
-        "seq": reply_seq,
-        "area": {
-            "set_arm_state": {
-                "area_id": 1,
-                "error_code": E27ErrorCode.ELKERR_NONE,
-                "arm_state": "ARMED_AWAY",
-            }
-        },
-    }
-
-    def receive_thread() -> None:
-        deliver_panel_message(kernel, reply)
-
-    threading.Thread(target=receive_thread, daemon=True).start()
-    result = await task
+    assert track_publication[0] is not None
+    assert track_publication[0].done()
     assert isinstance(result, Result)
     assert result.ok is True
 
@@ -1524,50 +1476,14 @@ async def test_reply_publication_completing_before_reply_does_not_rewait_publica
 @pytest.mark.asyncio
 async def test_zone_get_all_zones_status_bulk_event_completes_without_dispatch_flush() -> None:
     client, session = _make_client()
-    kernel = get_kernel(client)
-    _sync_zones_ready_snapshot(client, kernel, (1,))
-    loop = asyncio.get_running_loop()
-    cast(Any, client)._connected = True
-    client._event_loop = loop
-    client.bind_kernel_loop_thread_for_tests(loop)
-
-    dispatch_deferred: list[tuple[Any, tuple[Any, ...]]] = []
-    real_call_soon_threadsafe = loop.call_soon_threadsafe
-
-    def intercept_call_soon_threadsafe(fn: Any, /, *args: Any) -> None:
-        fn_name = getattr(fn, "__name__", None)
-        fn_self = getattr(fn, "__self__", None)
-        if fn_self is client and fn_name == "_complete_dispatch_only_reply_publication":
-            dispatch_deferred.append((fn, args))
-            return
-        real_call_soon_threadsafe(fn, *args)
-
-    loop.call_soon_threadsafe = intercept_call_soon_threadsafe  # type: ignore[method-assign]
-
-    task = asyncio.create_task(client.async_execute("zone_get_all_zones_status"))
-    while not session.sent:
-        await asyncio.sleep(0)
-    reply = {
-        "seq": session.sent[0]["seq"],
-        "zone": {
-            "get_all_zones_status": {
-                "status": "F",
-                "error_code": E27ErrorCode.ELKERR_NONE,
-            }
-        },
-    }
-
-    def receive_thread() -> None:
-        deliver_panel_message(kernel, reply)
-
-    threading.Thread(target=receive_thread, daemon=True).start()
-    result = await task
+    (
+        result,
+        dispatch_still_deferred,
+    ) = await run_zone_get_all_zones_status_bulk_without_dispatch_flush(client, session, status="F")
     assert isinstance(result, Result)
     assert result.ok is True
     assert client.get_snapshot().zones[1].bypassed is True
-    assert dispatch_deferred
-
-    loop.call_soon_threadsafe = real_call_soon_threadsafe  # type: ignore[method-assign]
+    assert dispatch_still_deferred
 
 
 def _area_status_evt(*, confirmed: bool, reply_seq: int) -> AreaStatusUpdated:
