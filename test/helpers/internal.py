@@ -19,6 +19,15 @@ def deliver_panel_message(kernel: object, msg: dict[str, object]) -> None:
     get_private(kernel, "_on_message")(msg)
 
 
-def session_disconnect(kernel: object, err: BaseException) -> None:
-    get_private(kernel, "state").panel.connected = True
+def trigger_session_disconnect(kernel: Any, err: Exception) -> None:
+    kernel.state.panel.connected = True
     get_private(kernel, "_on_session_disconnected")(err)
+
+
+def reply_publication_seq_active(client: object, seq: int) -> bool:
+    return seq in get_private(client, "_reply_publication_by_seq")
+
+
+def reply_publication_pending(client: object, seq: int) -> bool:
+    fut = get_private(client, "_reply_publication_by_seq").get(seq)
+    return fut is not None and not fut.done()

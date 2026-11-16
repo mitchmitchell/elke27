@@ -990,12 +990,13 @@ class Elke27Client:
                     nonlocal publication_handled
                     if publication_fut is None or publication_handled or not publication_fut.done():
                         return
-                    with contextlib.suppress(BaseException):
-                        publication_fut.result()
+                    if publication_fut.cancelled():
+                        publication_handled = True
+                        return
+                    publication_fut.exception()
                     publication_handled = True
 
-                if not future.done():
-                    _consume_done_publication_future()
+                _consume_done_publication_future()
                 while not future.done():
                     wait_on: set[asyncio.Future[Any]] = {cast(asyncio.Future[Any], future)}
                     if publication_fut is not None and not publication_handled:
@@ -3239,6 +3240,7 @@ class Elke27Client:
         timeout_s: float | None = None,
         **params: Any,
     ) -> Result[Mapping[str, Any]]:
+        self._ensure_kernel_subscription()
         if command_key == "control_authenticate":
             try:
                 permission_level = permission_for_generator(command_key)
