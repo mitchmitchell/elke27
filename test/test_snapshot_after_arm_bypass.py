@@ -54,8 +54,6 @@ async def _drive_until_done(
     *,
     first_reply: dict[str, Any] | None = None,
     max_replies: int | None = None,
-    inject_before_first_reply: Callable[[dict[str, Any], Callable[[dict[str, Any]], None]], None]
-    | None = None,
 ) -> Any:
     task = asyncio.ensure_future(call)
     on_message = get_private(get_kernel(client), "_on_message")
@@ -68,8 +66,6 @@ async def _drive_until_done(
             continue
         while seen < len(session.sent):
             sent = session.sent[seen]
-            if seen == 0 and inject_before_first_reply is not None:
-                inject_before_first_reply(sent, on_message)
             if seen == 0 and first_reply is not None:
                 reply = dict(first_reply)
                 reply["seq"] = sent["seq"]
@@ -583,51 +579,6 @@ async def test_unrelated_zone_status_does_not_release_arm_publication_wait() -> 
     assert client.snapshot.areas[1].arm_mode == ArmMode.ARMED_AWAY
 
 
-@pytest.mark.asyncio
-async def test_unrelated_bulk_zone_status_does_not_release_zone_write_wait() -> None:
-    client, session = _make_client()
-    _sync_zones_ready_snapshot(client, get_kernel(client), (1,))
-
-    def inject_bulk(sent: dict[str, Any], deliver: Callable[[dict[str, Any]], None]) -> None:
-        deliver(
-            {
-                "seq": sent["seq"] + 100,
-                "zone": {
-                    "get_all_zones_status": {
-                        "status": "1",
-                        "error_code": E27ErrorCode.ELKERR_NONE,
-                    }
-                },
-            }
-        )
-
-    result = await _drive_until_done(
-        client,
-        session,
-        client.async_execute(
-            "zone_set_status",
-            zone_id=1,
-            bypassed=True,
-            pin=1234,
-            timeout_s=2.0,
-        ),
-        first_reply={
-            "seq": 0,
-            "zone": {
-                "set_status": {
-                    "zone_id": 1,
-                    "error_code": E27ErrorCode.ELKERR_NONE,
-                    "BYPASSED": True,
-                }
-            },
-        },
-        inject_before_first_reply=inject_bulk,
-        max_replies=1,
-    )
-    assert result.ok is True
-    assert client.get_snapshot().zones[1].bypassed is True
-
-
 def test_snapshot_failure_does_not_publish_reply_seq() -> None:
     client = Elke27Client()
     reply_seq = 42
@@ -660,6 +611,7 @@ class _ReceiveThreadPublicationCase:
     check: Callable[[Elke27Client, Result[Mapping[str, Any]], int], None]
     prepare: Callable[[Elke27Client, Any], None]
     disconnect_before_flush: bool = False
+    same_zone_unrelated_bulk_before_write: bool = False
 
 
 def _receive_thread_publication_cases() -> tuple[_ReceiveThreadPublicationCase, ...]:
@@ -717,6 +669,29 @@ def _receive_thread_publication_cases() -> tuple[_ReceiveThreadPublicationCase, 
             prepare=lambda client, kernel: _sync_zones_ready_snapshot(client, kernel, (1,)),
         ),
         _ReceiveThreadPublicationCase(
+            id="same_zone_unrelated_bulk_zone_write",
+            call=lambda client: client.async_execute(
+                "zone_set_status",
+                zone_id=1,
+                bypassed=True,
+                pin=1234,
+                timeout_s=2.0,
+            ),
+            reply_for_sent=lambda sent: {
+                "seq": sent["seq"],
+                "zone": {
+                    "set_status": {
+                        "zone_id": 1,
+                        "error_code": E27ErrorCode.ELKERR_NONE,
+                        "BYPASSED": True,
+                    }
+                },
+            },
+            check=_check_zone_write_publication_same_zone,
+            prepare=lambda client, kernel: _sync_zones_ready_snapshot(client, kernel, (1,)),
+            same_zone_unrelated_bulk_before_write=True,
+        ),
+        _ReceiveThreadPublicationCase(
             id="disconnect_during_deferred_publication",
             call=lambda client: client.async_execute("area_get_status", area_id=1, timeout_s=5.0),
             reply_for_sent=lambda sent: {
@@ -755,6 +730,13 @@ def _check_zone_bulk_status_publication(
     client: Elke27Client, result: Result[Mapping[str, Any]], _version_before: int
 ) -> None:
     assert result.status_refresh_ok is None
+    assert client.get_snapshot().zones[1].bypassed is True
+
+
+def _check_zone_write_publication_same_zone(
+    client: Elke27Client, result: Result[Mapping[str, Any]], _version_before: int
+) -> None:
+    assert result.ok is True
     assert client.get_snapshot().zones[1].bypassed is True
 
 
@@ -808,7 +790,8 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
             fn(*args)
 
     flush_task: asyncio.Task[None] | None = None
-    if not case.disconnect_before_flush:
+    skip_auto_flush = case.disconnect_before_flush or case.same_zone_unrelated_bulk_before_write
+    if not skip_auto_flush:
         flush_task = asyncio.create_task(flush_deferred_snapshot_handles())
     task = asyncio.create_task(case.call(client))
 
@@ -827,9 +810,59 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         except BaseException as exc:  # noqa: BLE001
             delivery_error.append(exc)
 
-    threading.Thread(target=receive_thread, name=f"fake-receive-{case.id}", daemon=True).start()
+    if case.same_zone_unrelated_bulk_before_write:
+        bulk_reply = {
+            "seq": sent["seq"] + 100,
+            "zone": {
+                "get_all_zones_status": {
+                    "status": "1",
+                    "error_code": E27ErrorCode.ELKERR_NONE,
+                }
+            },
+        }
 
-    if case.disconnect_before_flush:
+        def receive_bulk() -> None:
+            on_message(bulk_reply)
+
+        threading.Thread(
+            target=receive_bulk,
+            name=f"fake-receive-bulk-{case.id}",
+            daemon=True,
+        ).start()
+        while not deferred_handles:
+            await asyncio.sleep(0)
+        await asyncio.sleep(0.02)
+        while deferred_handles:
+            fn, args = deferred_handles.pop(0)
+            fn(*args)
+
+        write_delivered = asyncio.Event()
+
+        def receive_write() -> None:
+            on_message(reply)
+            loop.call_soon_threadsafe(write_delivered.set)
+
+        threading.Thread(
+            target=receive_write,
+            name=f"fake-receive-{case.id}",
+            daemon=True,
+        ).start()
+        await write_delivered.wait()
+        for _ in range(200):
+            await asyncio.sleep(0)
+        assert delivery_error == []
+        assert not task.done()
+        assert client.get_snapshot().zones[1].bypassed is False
+        while deferred_handles:
+            fn, args = deferred_handles.pop(0)
+            fn(*args)
+        result = await task
+        assert delivery_error == []
+        assert isinstance(result, Result)
+        assert result.ok is True
+        case.check(client, result, snapshot_version_before)
+    elif case.disconnect_before_flush:
+        threading.Thread(target=receive_thread, name=f"fake-receive-{case.id}", daemon=True).start()
         await asyncio.sleep(0.05)
         client._handle_kernel_event(
             ConnectionStateChanged(
@@ -847,6 +880,10 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         with pytest.raises(Elke27DisconnectedError):
             await task
     else:
+        if not case.same_zone_unrelated_bulk_before_write:
+            threading.Thread(
+                target=receive_thread, name=f"fake-receive-{case.id}", daemon=True
+            ).start()
         result = await task
         assert delivery_error == []
         assert isinstance(result, Result)
