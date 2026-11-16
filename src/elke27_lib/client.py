@@ -1793,7 +1793,6 @@ class Elke27Client:
         fut = self._reply_publication_by_seq.pop(reply_seq, None)
         if fut is not None and not fut.done():
             fut.cancel()
-        self._kernel.drop_dispatch_correlation(reply_seq)
 
     def _complete_reply_publication(self, reply_seq: int) -> None:
         fut = self._reply_publication_by_seq.get(reply_seq)
@@ -1806,12 +1805,9 @@ class Elke27Client:
             fut.set_exception(exc)
 
     def _fail_all_reply_publication_waiters(self, exc: BaseException) -> None:
-        reply_seqs = list(self._reply_publication_by_seq)
         for fut in self._reply_publication_by_seq.values():
             if not fut.done():
                 fut.set_exception(exc)
-        for reply_seq in reply_seqs:
-            self._kernel.drop_dispatch_correlation(reply_seq)
 
     def _command_needs_reply_publication_wait(
         self, command_key: str, response_payload: Mapping[str, Any] | None

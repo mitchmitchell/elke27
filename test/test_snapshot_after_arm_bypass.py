@@ -1222,17 +1222,7 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
     snapshot_version_before = client.snapshot.version
 
     deferred_handles: list[tuple[Any, tuple[Any, ...]]] = []
-    drop_dispatch_seqs: list[int] = []
     real_call_soon_threadsafe = loop.call_soon_threadsafe
-
-    if case.assert_dispatch_clear_on_success or case.disconnect_before_reply:
-        real_drop_dispatch = kernel.drop_dispatch_correlation
-
-        def _track_drop_dispatch(seq: int) -> None:
-            drop_dispatch_seqs.append(seq)
-            real_drop_dispatch(seq)
-
-        monkeypatch.setattr(kernel, "drop_dispatch_correlation", _track_drop_dispatch)
 
     def intercept_call_soon_threadsafe(fn: Any, /, *args: Any) -> None:
         fn_name = getattr(fn, "__name__", None)
@@ -1549,7 +1539,6 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
             await _wait_publication_slot()
         assert reply_publication_pending(client, reply_seq)
         _emit_panel_connection_lost(client)
-        assert drop_dispatch_seqs == [reply_seq]
         result = await task
         gc.collect()
         assert not any(
@@ -1652,7 +1641,6 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
             reply_seq = session.sent[0]["seq"]
             assert kernel.dispatcher.match_pending(reply_seq, pop=False) is None
             assert kernel.dispatcher.pending_count() == 0
-            assert drop_dispatch_seqs == [reply_seq]
         if case.short_publication_budget:
             assert not any(_PUBLICATION_TIMEOUT_LOG in rec.message for rec in caplog.records)
         assert flush_task is not None

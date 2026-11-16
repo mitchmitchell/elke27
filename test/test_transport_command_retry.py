@@ -27,6 +27,7 @@ from test.helpers.internal import (
     set_private,
     trigger_session_disconnect,
 )
+from test.helpers.panel_command_driver import connect_panel
 
 
 class _FakeSession:
@@ -874,20 +875,14 @@ async def test_async_execute_timeout_cancels_kernel_transport_retry(
     assert not cast(Any, kernel)._request_queue_normal
 
 
-def _make_client(
-    session: _FakeSession, *, max_retries: int = 2, wire_client_loop: bool = False
-) -> Elke27Client:
+def _make_client(session: _FakeSession, *, max_retries: int = 2) -> Elke27Client:
     client = Elke27Client()
     kernel = get_kernel(client)
     cast(Any, kernel)._session = session
     kernel.state.panel.session_id = 1
     cast(Any, kernel)._request_max_retries = max_retries
     cast(Any, kernel)._request_max_backoff_s = 0.0
-    loop = asyncio.get_running_loop()
-    cast(Any, kernel)._loop = loop
-    if wire_client_loop:
-        set_private(client, "_connected", True)
-        set_private(client, "_event_loop", loop)
+    cast(Any, kernel)._loop = asyncio.get_running_loop()
     return client
 
 
@@ -1062,11 +1057,9 @@ async def test_reply_snapshot_publication_release_paths(
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session = _FakeSession()
-    client = _make_client(session, wire_client_loop=True)
+    client, session = await connect_panel(monkeypatch)
     kernel = get_kernel(client)
     loop = asyncio.get_running_loop()
-    kernel.state.panel.connected = True
     client.bind_kernel_loop_thread_for_tests(loop)
     kernel.state.get_or_create_area(1).arm_state = "DISARMED"
     caplog.set_level(logging.WARNING, logger="elke27_lib.client")
@@ -1076,11 +1069,12 @@ async def test_reply_snapshot_publication_release_paths(
         await asyncio.sleep(0.12)
 
     monkeypatch.setattr(client, "_status_refresh_after_successful_write", _slow_refresh)
+    sent_before = len(session.sent)
     task = asyncio.create_task(client.async_execute("area_get_status", area_id=1, timeout_s=5.0))
     async with asyncio.timeout(2.0):
-        while not session.sent:
+        while len(session.sent) == sent_before:
             await asyncio.sleep(0.01)
-    seq = session.sent[0]["seq"]
+    seq = session.sent[-1]["seq"]
     deliver_panel_message(
         kernel,
         {
@@ -1107,17 +1101,17 @@ async def test_reply_snapshot_publication_release_paths(
     assert result.ok is True
     assert any(publication_timeout in rec.message for rec in caplog.records)
     assert not reply_publication_seq_active(client, seq)
-    assert kernel.dispatcher.pending_count() == 0
+    assert kernel.dispatcher.match_pending(seq, pop=False) is None
 
-    session.sent.clear()
     caplog.clear()
+    sent_before_fast = len(session.sent)
     fast_task = asyncio.create_task(
         client.async_execute("area_get_status", area_id=1, timeout_s=5.0)
     )
     async with asyncio.timeout(2.0):
-        while not session.sent:
+        while len(session.sent) == sent_before_fast:
             await asyncio.sleep(0.01)
-    fast_seq = session.sent[0]["seq"]
+    fast_seq = session.sent[-1]["seq"]
     deliver_panel_message(
         kernel,
         {
@@ -1136,7 +1130,7 @@ async def test_reply_snapshot_publication_release_paths(
         fast_result = await fast_task
     assert fast_result.ok is True
     assert not reply_publication_seq_active(client, fast_seq)
-    assert kernel.dispatcher.pending_count() == 0
+    assert kernel.dispatcher.match_pending(fast_seq, pop=False) is None
 
 
 @pytest.mark.asyncio
