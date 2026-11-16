@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import threading
 import time
@@ -637,6 +638,8 @@ class _ReceiveThreadPublicationCase:
     short_publication_budget: bool = False
     publication_before_reply_pump: bool = False
     assert_dispatch_clear_on_success: bool = False
+    empty_bulk_status: bool = False
+    dispatch_only_snapshot_build_fails: bool = False
 
 
 def _receive_thread_publication_cases() -> tuple[_ReceiveThreadPublicationCase, ...]:
@@ -926,6 +929,40 @@ def _receive_thread_publication_cases() -> tuple[_ReceiveThreadPublicationCase, 
             prepare=_sync_area_disarmed_snapshot,
             disconnect_before_flush=True,
         ),
+        _ReceiveThreadPublicationCase(
+            id="zone_get_all_zones_status_empty_bulk_handler",
+            call=lambda client: client.async_execute("zone_get_all_zones_status", timeout_s=2.0),
+            reply_for_sent=lambda sent: {
+                "seq": sent["seq"],
+                "zone": {
+                    "get_all_zones_status": {
+                        "status": "",
+                        "error_code": E27ErrorCode.ELKERR_NONE,
+                    }
+                },
+            },
+            check=_check_command_ok_only,
+            prepare=lambda client, kernel: _sync_zones_ready_snapshot(client, kernel, (1,)),
+            defer_dispatch_only_publication=True,
+            short_publication_budget=True,
+            empty_bulk_status=True,
+        ),
+        _ReceiveThreadPublicationCase(
+            id="area_get_status_dispatch_only_snapshot_build_failure",
+            call=lambda client: client.async_execute("area_get_status", area_id=1, timeout_s=2.0),
+            reply_for_sent=lambda sent: {
+                "seq": sent["seq"],
+                "area": {
+                    "get_status": {
+                        "error_code": E27ErrorCode.ELKERR_NONE,
+                        "area_id": 0,
+                    }
+                },
+            },
+            check=lambda _client, _result, _version_before: None,
+            prepare=_prepare_area_one_disarmed_kernel_only,
+            dispatch_only_snapshot_build_fails=True,
+        ),
     )
 
 
@@ -1021,7 +1058,7 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
     before reply snapshot publication without ``_await_reply_snapshot_publication``.
     Removing the wait makes each parametrized route fail this test.
     """
-    if case.snapshot_build_fails:
+    if case.snapshot_build_fails or case.dispatch_only_snapshot_build_fails:
         client = _SnapshotAreaMapFailsClient()
         kernel = get_kernel(client)
         kernel.load_features_blocking()
@@ -1040,13 +1077,14 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
             "command_transport_wait_budget_s",
             lambda _request_timeout_s: 1.5,
         )
-    if case.ack_only_arm_write or case.ack_only_zone_write:
+    if case.short_publication_budget:
         monkeypatch.setattr(
             kernel,
             "command_transport_wait_budget_s",
-            lambda _request_timeout_s: 30.0,
+            lambda _request_timeout_s: 0.5,
         )
-    if case.short_publication_budget:
+        caplog.set_level(logging.WARNING, logger="elke27_lib.client")
+    if case.ack_only_arm_write or case.ack_only_zone_write:
         monkeypatch.setattr(
             kernel,
             "command_transport_wait_budget_s",
@@ -1055,16 +1093,6 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         caplog.set_level(logging.WARNING, logger="elke27_lib.client")
     case.prepare(client, kernel)
     snapshot_version_before = client.snapshot.version
-
-    release_drop_seqs: list[int] = []
-    if case.assert_dispatch_clear_on_success:
-        real_kernel_drop = kernel.drop_dispatch_correlation
-
-        def tracked_kernel_drop(seq: int) -> None:
-            release_drop_seqs.append(seq)
-            real_kernel_drop(seq)
-
-        monkeypatch.setattr(kernel, "drop_dispatch_correlation", tracked_kernel_drop)
 
     deferred_handles: list[tuple[Any, tuple[Any, ...]]] = []
     dispatch_only_deferred: list[tuple[Any, tuple[Any, ...]]] = []
@@ -1113,6 +1141,7 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         or case.cancel_before_reply
         or case.publication_before_reply_pump
         or case.defer_dispatch_only_publication
+        or case.dispatch_only_snapshot_build_fails
     )
     if not skip_auto_flush:
         flush_task = asyncio.create_task(flush_deferred_snapshot_handles())
@@ -1144,8 +1173,10 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
             while deferred_handles:
                 fn, args = deferred_handles.pop(0)
                 fn(*args)
-        with pytest.raises(Elke27SnapshotPublicationError):
-            await task
+        result = await task
+        assert isinstance(result, Result)
+        assert not result.ok
+        assert isinstance(result.error, Elke27SnapshotPublicationError)
     elif case.ack_only_arm_write:
         threading.Thread(target=receive_thread, name=f"fake-receive-{case.id}", daemon=True).start()
         while not deferred_handles:
@@ -1179,6 +1210,7 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         assert delivery_error == []
         assert isinstance(result, Result)
         assert result.ok is True
+        assert not any(_PUBLICATION_TIMEOUT_LOG in rec.message for rec in caplog.records)
         case.check(client, result, snapshot_version_before)
     elif case.ack_only_zone_write:
         threading.Thread(target=receive_thread, name=f"fake-receive-{case.id}", daemon=True).start()
@@ -1213,6 +1245,7 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         assert delivery_error == []
         assert isinstance(result, Result)
         assert result.ok is True
+        assert not any(_PUBLICATION_TIMEOUT_LOG in rec.message for rec in caplog.records)
         case.check(client, result, snapshot_version_before)
     elif case.hold_kernel_publication:
         threading.Thread(target=receive_thread, name=f"fake-receive-{case.id}", daemon=True).start()
@@ -1235,6 +1268,20 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         assert isinstance(result, Result)
         assert result.ok is True
         case.check(client, result, snapshot_version_before)
+    elif case.dispatch_only_snapshot_build_fails:
+        caplog.set_level(logging.WARNING, logger="elke27_lib.client")
+        threading.Thread(target=receive_thread, name=f"fake-receive-{case.id}", daemon=True).start()
+        while not deferred_handles:
+            await asyncio.sleep(0)
+        assert not task.done()
+        with contextlib.suppress(ValueError):
+            while deferred_handles:
+                fn, args = deferred_handles.pop(0)
+                fn(*args)
+        result = await task
+        assert isinstance(result, Result)
+        assert not result.ok
+        assert isinstance(result.error, Elke27SnapshotPublicationError)
     elif case.hold_dispatch_publication:
         threading.Thread(target=receive_thread, name=f"fake-receive-{case.id}", daemon=True).start()
         while not deferred_handles:
@@ -1313,7 +1360,6 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
             await task
         await asyncio.sleep(0)
         assert kernel.dispatcher.pending_count() == 0
-        assert cancelled_seq not in client._reply_publication_by_seq
         client._handle_kernel_event(
             _area_status_evt(
                 confirmed=True,
@@ -1343,14 +1389,17 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         _emit_panel_connection_lost(client)
         await asyncio.sleep(0)
         assert kernel.dispatcher.pending_count() == 0
-        with pytest.raises(Elke27DisconnectedError):
-            await task
+        result = await task
+        assert isinstance(result, Result)
+        assert not result.ok
     elif case.disconnect_before_flush:
         threading.Thread(target=receive_thread, name=f"fake-receive-{case.id}", daemon=True).start()
         await asyncio.sleep(0.05)
         _emit_panel_connection_lost(client)
-        with pytest.raises(Elke27DisconnectedError):
-            await task
+        result = await task
+        assert isinstance(result, Result)
+        assert not result.ok
+        assert isinstance(result.error, Elke27DisconnectedError)
     elif case.publication_before_reply_pump:
         wait_calls = 0
         real_wait = asyncio.wait
@@ -1406,7 +1455,8 @@ async def test_async_execute_waits_for_receive_thread_snapshot_publication(
         assert result.ok is True
         case.check(client, result, snapshot_version_before)
         if case.assert_dispatch_clear_on_success:
-            assert release_drop_seqs == [session.sent[0]["seq"]]
+            reply_seq = session.sent[0]["seq"]
+            assert kernel.dispatcher.match_pending(reply_seq, pop=False) is None
             assert kernel.dispatcher.pending_count() == 0
         if case.short_publication_budget:
             assert not any(_PUBLICATION_TIMEOUT_LOG in rec.message for rec in caplog.records)

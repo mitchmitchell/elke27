@@ -1326,6 +1326,12 @@ class E27Kernel:
 
         # Dispatcher handles routing + correlation + dispatch-error envelopes.
         result = self.dispatcher.dispatch(msg)
+        _dispatch_listener_callback_failures = (
+            AttributeError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        )
         if (
             isinstance(seq_val, int)
             and seq_val > 0
@@ -1335,8 +1341,12 @@ class E27Kernel:
             for listener in list(self._dispatch_listeners):
                 try:
                     listener(seq_val, result.route, result.handled)
-                except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
-                    self._log.warning("Dispatch listener failed: %s", exc, exc_info=True)
+                except _dispatch_listener_callback_failures as dispatch_listener_failed:
+                    self._log.warning(
+                        "Dispatch listener failed: %s",
+                        dispatch_listener_failed,
+                        exc_info=True,
+                    )
         if self._log.isEnabledFor(logging.DEBUG):
             self._log.debug(
                 "Inbound routed: route=%s.%s seq=%s dispatched=%s",

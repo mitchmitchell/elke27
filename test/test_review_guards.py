@@ -268,7 +268,8 @@ PRIVATE_ACCESS_CEILING: dict[str, int] = {
     "test/test_session_extra.py": 51,
     "test/test_session_io_tstat_regression.py": 41,
     "test/test_set_status_ack_no_stale_event.py": 1,
-    "test/test_snapshot_after_arm_bypass.py": 83,
+    "test/test_reply_publication_contract.py": 18,
+    "test/test_snapshot_after_arm_bypass.py": 82,
     "test/test_timeout_start_on_send.py": 1,
     "test/test_transport_command_retry.py": 85,
     "test/test_tstat_units.py": 1,
@@ -325,6 +326,8 @@ LEGACY_TEST_MODULE_IMPORTS = {
     ("test/test_command_outcome_unknown.py", "test.test_transport_command_retry"),
     ("test/test_raw_passthrough.py", "test.test_transport_command_retry"),
     ("test/test_raw_passthrough.py", "test.test_session_extra"),
+    ("test/test_reply_publication_contract.py", "test.test_panel_errors_ready_night"),
+    ("test/test_reply_publication_contract.py", "test.test_snapshot_after_arm_bypass"),
     ("test/test_snapshot_after_arm_bypass.py", "test.test_panel_errors_ready_night"),
 }
 _TEST_PACKAGES = {"", "test", "tests"}

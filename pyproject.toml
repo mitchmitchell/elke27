@@ -222,6 +222,7 @@ ignore = [
 "test/test_session_extra.py" = ["SLF001"]
 "test/test_session_io_tstat_regression.py" = ["SLF001"]
 "test/test_set_status_ack_no_stale_event.py" = ["SLF001"]
+"test/test_reply_publication_contract.py" = ["SLF001"]
 "test/test_snapshot_after_arm_bypass.py" = ["SLF001"]
 "test/test_timeout_start_on_send.py" = ["SLF001"]
 "test/test_transport_command_retry.py" = ["SLF001"]

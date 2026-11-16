@@ -622,9 +622,18 @@ class Elke27Client:
         """Test-only: record the kernel asyncio loop as bound to the current thread."""
         self._kernel.bind_loop_thread_for_tests(loop)
 
-    def _ensure_kernel_subscription(self) -> None:
+    def _detach_kernel_subscription(self) -> None:
+        if self._dispatch_listener_remove is not None:
+            self._dispatch_listener_remove()
+            self._dispatch_listener_remove = None
         if self._kernel_event_token is not None:
+            self._kernel.unsubscribe(self._kernel_event_token)
+            self._kernel_event_token = None
+
+    def _ensure_kernel_subscription(self) -> None:
+        if self._kernel_event_token is not None and self._dispatch_listener_remove is not None:
             return
+        self._detach_kernel_subscription()
         self._kernel_event_token = self._kernel.subscribe(self._on_kernel_event)
         self._dispatch_listener_remove = self._kernel.add_dispatch_listener(
             self._on_kernel_dispatch_response
@@ -976,9 +985,17 @@ class Elke27Client:
                 await sent_event.wait()
                 publication_fut = self._reply_publication_by_seq.get(seq)
                 publication_handled = publication_fut is None
-                if publication_fut is not None and publication_fut.done():
-                    publication_fut.result()
+
+                def _consume_done_publication_future() -> None:
+                    nonlocal publication_handled
+                    if publication_fut is None or publication_handled or not publication_fut.done():
+                        return
+                    with contextlib.suppress(BaseException):
+                        publication_fut.result()
                     publication_handled = True
+
+                if not future.done():
+                    _consume_done_publication_future()
                 while not future.done():
                     wait_on: set[asyncio.Future[Any]] = {cast(asyncio.Future[Any], future)}
                     if publication_fut is not None and not publication_handled:
@@ -986,11 +1003,11 @@ class Elke27Client:
                     done, _pending = await asyncio.wait(
                         wait_on, return_when=asyncio.FIRST_COMPLETED
                     )
-                    if publication_fut is not None and publication_fut in done:
-                        publication_fut.result()
-                        publication_handled = True
                     if future in done:
                         break
+                    if publication_fut is not None and publication_fut in done:
+                        _consume_done_publication_future()
+                _consume_done_publication_future()
                 msg = future.result()
         except TimeoutError:
             if self._asyncio_cancellation_pending():
@@ -1689,6 +1706,8 @@ class Elke27Client:
         if COMMANDS[key].command.startswith("get_")
     )
 
+    _LOOP_CLOSED_DURING_CROSS_THREAD_SCHEDULE: tuple[type[BaseException], ...] = (RuntimeError,)
+
     @staticmethod
     def _reply_publication_qualifies(evt: Event) -> bool:
         if isinstance(evt, AreaStatusUpdated):
@@ -1706,7 +1725,7 @@ class Elke27Client:
             return
         if self._event_loop is None:
             return
-        with contextlib.suppress(RuntimeError):
+        with contextlib.suppress(*self._LOOP_CLOSED_DURING_CROSS_THREAD_SCHEDULE):
             self._event_loop.call_soon_threadsafe(
                 self._complete_dispatch_only_reply_publication, reply_seq
             )
@@ -2999,9 +3018,7 @@ class Elke27Client:
         self._cancel_reauth()
         self._forget_auth_pin()
         self._authenticated = False
-        if self._dispatch_listener_remove is not None:
-            self._dispatch_listener_remove()
-            self._dispatch_listener_remove = None
+        self._detach_kernel_subscription()
         try:
             await self._kernel.close()
             return _ok(None)
@@ -3469,27 +3486,27 @@ class Elke27Client:
                 sent_event = asyncio.Event()
                 self._kernel.register_sent_event(seq, sent_event)
 
-                try:
-                    self._kernel.send_request_with_seq(
-                        seq,
-                        spec.domain,
-                        spec.command,
-                        payload,
-                        pending=False,
-                        opaque=None,
-                        expected_route=expected_route,
-                        timeout_s=timeout_value,
-                    )
-                except _CLIENT_EXCEPTIONS as exc:
-                    self._kernel.pending_responses.drop(seq)
-                    detail = f"command_key={command_key} seq={seq}"
-                    return _err(self._normalize_error(exc, phase="execute", detail=detail))
-
                 publication_owner: int | None = None
                 try:
                     if command_key in self._REPLY_PUBLICATION_COMMANDS:
                         self._begin_reply_publication_command(seq, expected_route, loop)
                         publication_owner = seq
+
+                    try:
+                        self._kernel.send_request_with_seq(
+                            seq,
+                            spec.domain,
+                            spec.command,
+                            payload,
+                            pending=False,
+                            opaque=None,
+                            expected_route=expected_route,
+                            timeout_s=timeout_value,
+                        )
+                    except _CLIENT_EXCEPTIONS as exc:
+                        self._kernel.pending_responses.drop(seq)
+                        detail = f"command_key={command_key} seq={seq}"
+                        return _err(self._normalize_error(exc, phase="execute", detail=detail))
 
                     wait_result = await self._await_kernel_command_response(
                         seq=seq,
@@ -3549,7 +3566,15 @@ class Elke27Client:
                         timeout_s=command_deadline - loop.time(),
                     )
                     if self._command_needs_reply_publication_wait(command_key, response_payload):
-                        await self._await_reply_snapshot_publication(seq, deadline=command_deadline)
+                        try:
+                            await self._await_reply_snapshot_publication(
+                                seq, deadline=command_deadline
+                            )
+                        except (
+                            Elke27DisconnectedError,
+                            Elke27SnapshotPublicationError,
+                        ) as publication_failed:
+                            return _err(publication_failed)
                         publication_owner = None
                     return _ok(response_payload, status_refresh_ok=status_refresh_ok)
                 finally:
