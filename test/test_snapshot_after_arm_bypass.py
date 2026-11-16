@@ -644,7 +644,6 @@ class _ReceiveThreadPublicationCase:
     dispatch_only_snapshot_build_fails: bool = False
     close_before_execute: bool = False
     session_reset_after_send: bool = False
-    expect_connection_lost: bool = False
 
 
 def _receive_thread_publication_cases() -> tuple[_ReceiveThreadPublicationCase, ...]:
@@ -984,10 +983,7 @@ def _receive_thread_publication_cases() -> tuple[_ReceiveThreadPublicationCase, 
             check=_check_command_ok_only,
             prepare=_sync_area_disarmed_snapshot,
             close_before_execute=True,
-<<<<<<< HEAD
             defer_dispatch_only_publication=True,
-=======
->>>>>>> f7346c54cd28e35d1fbc4d99af896a03085ad76f
             short_publication_budget=True,
         ),
         _ReceiveThreadPublicationCase(
@@ -1006,7 +1002,6 @@ def _receive_thread_publication_cases() -> tuple[_ReceiveThreadPublicationCase, 
             check=lambda _client, _result, _version_before: None,
             prepare=_sync_area_disarmed_snapshot,
             session_reset_after_send=True,
-            expect_connection_lost=True,
         ),
         _ReceiveThreadPublicationCase(
             id="session_loss_zone_get_status",
@@ -1024,7 +1019,6 @@ def _receive_thread_publication_cases() -> tuple[_ReceiveThreadPublicationCase, 
             check=lambda _client, _result, _version_before: None,
             prepare=lambda client, kernel: _sync_zones_ready_snapshot(client, kernel, (1,)),
             session_reset_after_send=True,
-            expect_connection_lost=True,
         ),
     )
 
