@@ -2642,11 +2642,16 @@ class Elke27Client:
 
     def _raise_if_night_arm_ignored(self, area_id: int) -> None:
         after = self.snapshot.areas.get(area_id)
-        if after is not None and after.arm_mode is ArmMode.ARMED_NIGHT:
+        if after is None:
+            raise Elke27CommandOutcomeUnknownError(
+                ("area", "set_arm_state"),
+                "The panel acknowledged area.set_arm_state but the area is missing from "
+                "the snapshot after refresh; the resulting arm state is unknown.",
+            )
+        if after.arm_mode is ArmMode.ARMED_NIGHT:
             return
         if (
-            after is not None
-            and after.arm_mode is ArmMode.DISARMED
+            after.arm_mode is ArmMode.DISARMED
             and after.arming
             and after.arm_cmd_mode is ArmMode.ARMED_NIGHT
         ):
@@ -2731,7 +2736,9 @@ class Elke27Client:
                 )
             if not version_tuple_at_least(app_tuple, NIGHT_ARM_MIN_FIRMWARE):
                 raise Elke27NightArmFirmwareTooOldError(
-                    "Arm night requires panel application firmware 0.5.37 or newer."
+                    "Arm night requires panel application firmware 0.0.5.37 or later.",
+                    required=NIGHT_ARM_MIN_FIRMWARE,
+                    actual=app_tuple,
                 )
         pin_value = _normalize_area_pin(pin, action="arm")
         arm_state = _panel_arm_state_for_mode(mode)
@@ -2749,7 +2756,11 @@ class Elke27Client:
             raise Elke27ProtocolErrorV2("Failed to arm area.")
         if mode is ArmMode.ARMED_NIGHT:
             if result.status_refresh_ok is False:
-                raise Elke27CommandOutcomeUnknownError(("area", "set_arm_state"))
+                raise Elke27CommandOutcomeUnknownError(
+                    ("area", "set_arm_state"),
+                    "The panel acknowledged area.set_arm_state but the follow-up status "
+                    "refresh failed; the resulting arm state is unknown.",
+                )
             self._raise_if_night_arm_ignored(area_id)
         if return_result:
             return CommandResult(

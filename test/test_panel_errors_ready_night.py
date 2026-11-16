@@ -84,7 +84,9 @@ async def _reply(
 @pytest.mark.asyncio
 async def test_arm_night_rejected_with_clear_error_before_send() -> None:
     client, session = _make_client()
-    with pytest.raises(Elke27InvalidArgument, match="unknown"):
+    from elke27_lib import Elke27PanelApplicationFirmwareUnknownError
+
+    with pytest.raises(Elke27PanelApplicationFirmwareUnknownError, match="unknown"):
         await client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234")
     assert session.sent == []
 
