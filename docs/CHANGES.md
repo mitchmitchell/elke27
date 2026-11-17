@@ -39,8 +39,10 @@
     ``Result(ok=False, error=...)`` with ``Elke27DisconnectedError`` (subclass of
     ``Elke27TransientError``) or ``Elke27SnapshotPublicationError`` (subclass of
     ``Elke27ProtocolError``) when publication fails; it does not raise those
-    types. Command helpers that call ``_raise_v2_command_error`` raise the error
-    from ``Result.error`` instead.
+    types. Public typed helpers such as ``async_arm_area``, ``async_disarm_area``,
+    ``async_set_zone_bypass``, ``async_set_output``, ``async_set_barrier``, and
+    ``async_refresh_barrier`` raise when ``async_execute`` returns a failed
+    ``Result``.
 
   Discovery Blocking Import (0.5.1, 2026-11-12)
 
@@ -548,7 +550,7 @@
   - `async_execute` now returns `Elke27PanelError` (with `panel_error_code`,
     `reason`, and a warning log) when the panel answers with a non-zero
     `error_code`, including single and paged responses. Helpers that already
-    mapped panel errors via `_raise_v2_command_error` are unchanged.
+    mapped panel errors; public typed command helpers are unchanged.
   - String PIN validation for `async_execute` and wire coercion now requires
     ASCII digits only (`0`–`9`). Unicode numerals and other non-digit strings
     raise `Elke27InvalidArgument` before anything is sent instead of escaping

@@ -259,8 +259,9 @@ If you are working on a Home Assistant integration:
   reflected in `get_snapshot()`. `async_execute` returns
   `Result(ok=False, error=Elke27DisconnectedError)` or
   `Result(ok=False, error=Elke27SnapshotPublicationError)` when that wait fails;
-  it does not raise those types. Helpers that call `_raise_v2_command_error` raise
-  from `Result.error` instead.
+  it does not raise those types. Public typed helpers such as `async_arm_area`,
+  `async_disarm_area`, and `async_set_zone_bypass` raise when `async_execute`
+  returns a failed `Result`.
 
 ---
 
