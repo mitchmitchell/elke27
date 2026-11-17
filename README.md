@@ -247,11 +247,20 @@ If you are working on a Home Assistant integration:
   API `control.get_version_info` **`app`** integer packs four version bytes
   (major through patch) and renders as dotted text such as **`0.0.5.37`**
   (`app` **1317** in tests); see `PanelInfo.application_firmware` (`SSP` in
-  `PanelInfo.firmware` is not used for this gate). Panel `error_code` rejections
-  raise `Elke27PanelError`; if the panel accepts the command but status still is
-  not Stay Instant, the client raises `Elke27StayInstantRequiredError` (no
-  optimistic arm state). If the post-command status refresh fails, the client
-  raises `Elke27CommandOutcomeUnknownError`.
+  `PanelInfo.firmware` is not used for this gate). Unknown application firmware
+  raises `Elke27PanelApplicationFirmwareUnknownError`; firmware below the minimum
+  raises `Elke27NightArmFirmwareTooOldError`. Panel `error_code` rejections raise
+  `Elke27PanelError`; if the panel accepts the command but status still is not
+  Stay Instant, the client raises `Elke27StayInstantRequiredError` (no optimistic
+  arm state). If the post-command status refresh fails, the client raises
+  `Elke27CommandOutcomeUnknownError`.
+- Status reads (`area_get_status`, `zone_get_status`, `zone_get_all_zones_status`)
+  and ack-only arm or bypass follow-up status reads wait until the reply is
+  reflected in `get_snapshot()`. `async_execute` returns
+  `Result(ok=False, error=Elke27DisconnectedError)` or
+  `Result(ok=False, error=Elke27SnapshotPublicationError)` when that wait fails;
+  it does not raise those types. Helpers that call `_raise_v2_command_error` raise
+  from `Result.error` instead.
 
 ---
 

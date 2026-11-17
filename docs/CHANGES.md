@@ -29,13 +29,18 @@
     unchanged) raises ``Elke27StayInstantRequiredError`` (subclass of
     ``Elke27Error``). A failed post-command status refresh raises
     ``Elke27CommandOutcomeUnknownError`` (subclass of ``Elke27TimeoutError``).
-  - Status reads (#144): ``area_get_status`` and ``zone_get_all_zones_status``
-    (and the existing arm/bypass publication paths) wait until the command reply
-    is published into ``get_snapshot()`` or the command wait budget runs out. Link
-    loss or client close during the wait raises ``Elke27DisconnectedError``
-    (subclass of ``Elke27TransientError``). Snapshot replace failure during
-    publication raises ``Elke27SnapshotPublicationError`` (subclass of
-    ``Elke27ProtocolError``).
+  - Status reads (#144): ``area_get_status``, ``zone_get_status``, and
+    ``zone_get_all_zones_status`` wait until the command reply is published into
+    ``get_snapshot()`` or the command wait budget runs out. Ack-only
+    ``area_set_arm_state`` or ``zone_set_status`` (no confirmed status in the
+    reply) waits on the follow-up ``area_get_status`` or ``zone_get_status``;
+    when the reply already includes confirmed status, publication wait applies to
+    that arm or bypass reply instead. ``async_execute`` returns
+    ``Result(ok=False, error=...)`` with ``Elke27DisconnectedError`` (subclass of
+    ``Elke27TransientError``) or ``Elke27SnapshotPublicationError`` (subclass of
+    ``Elke27ProtocolError``) when publication fails; it does not raise those
+    types. Command helpers that call ``_raise_v2_command_error`` raise the error
+    from ``Result.error`` instead.
 
   Discovery Blocking Import (0.5.1, 2026-11-12)
 
