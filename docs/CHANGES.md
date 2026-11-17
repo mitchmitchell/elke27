@@ -1,30 +1,41 @@
-  Unreleased
+  Area Delay, Arm Night Stay Instant, Status Read Publication (0.6.0, 2026-11-17)
 
-  - Arm night (`ArmMode.ARMED_NIGHT`) sends `area.set_arm_state` with
-    `arm_state` `ARMED_STAY_INST`; `ARMED_STAY_INST` status maps to
-    `armed_night` instead of `armed_stay` (#139).
-  - Arm night requires application firmware **0.0.5.37 or later** (from
-    `control.get_version_info` ``app``, not SSP). `PanelInfo.application_firmware`
-    and per-area `AreaState.night_arm_supported` expose capability on the public
-    snapshot.
-  - Panel rejections raise `Elke27PanelError`; ignored Stay Instant (accepted
-    write, state unchanged) raises `Elke27StayInstantRequiredError`. A failed
-    post-command status refresh raises `Elke27CommandOutcomeUnknownError`.
-  - Entry/exit delay (#92): public ``AreaState`` exposes ``delay_state``
+  - Entry/exit delay (#92, #141): public ``AreaState`` exposes ``delay_state``
     (``DelayStateNone``, ``DelayStateEntry``, or ``DelayStateExit``) derived from
-    documented ``area.get_status`` fields on each public ``AreaState.delay_state``
-    (derived inside the client snapshot; not a separate public entry point).
-    ``entry_delay`` is ``True`` during entry delay; ``arming`` is ``True`` during
-    exit delay. Remaining seconds follow the panel's five-second broadcasts only
-    (no local countdown). The undocumented ``entry_delay_active`` key is no longer
-    read. Entry delay is simulator-proven only; hardware entry testing needs
-    explicit approval before it is claimed in release notes beyond that.
+    documented ``area.get_status`` fields on each snapshot refresh (not a separate
+    public entry point). ``entry_delay`` is ``True`` during entry delay; ``arming``
+    is ``True`` during exit delay. Remaining seconds follow the panel's five-second
+    broadcasts only (no local countdown). The undocumented ``entry_delay_active``
+    key is no longer read. Entry delay is simulator-proven only; hardware entry
+    testing needs explicit approval before it is claimed in release notes beyond
+    that.
   - Being armed no longer clears ``ee_timer`` / ``alarm_zone`` on unrelated
     partial payloads; fields clear only when a payload that touches them omits
     them or sends the wrong type. ``arming`` can stay true across stay→away
     command changes while ``ee_timer`` is still present; partial cmd-only
     payloads that clear ``ee_timer`` still drop ``arming``. When exit delay
-    completes, ``ee_timer`` often remains ``1`` on the final armed frame.
+    completes, ``ee_timer`` often remains ``1`` on the final armed frame (#141).
+  - Arm night (#140, #142): ``ArmMode.ARMED_NIGHT`` sends `area.set_arm_state`
+    with `arm_state` ``ARMED_STAY_INST``; panel ``ARMED_STAY_INST`` status maps
+    to ``armed_night`` instead of ``armed_stay``.
+  - Arm night requires application firmware **0.0.5.37 or later** (from
+    `control.get_version_info` ``app``, not SSP). Unknown firmware raises
+    ``Elke27PanelApplicationFirmwareUnknownError``; firmware below the minimum
+    raises ``Elke27NightArmFirmwareTooOldError``. ``PanelInfo.application_firmware``
+    and per-area ``AreaState.night_arm_supported`` expose capability on the public
+    snapshot.
+  - Panel rejections on arm night raise ``Elke27PanelError`` (subclass of
+    ``Elke27ProtocolError``). Ignored Stay Instant (accepted write, state
+    unchanged) raises ``Elke27StayInstantRequiredError`` (subclass of
+    ``Elke27Error``). A failed post-command status refresh raises
+    ``Elke27CommandOutcomeUnknownError`` (subclass of ``Elke27TimeoutError``).
+  - Status reads (#144): ``area_get_status`` and ``zone_get_all_zones_status``
+    (and the existing arm/bypass publication paths) wait until the command reply
+    is published into ``get_snapshot()`` or the command wait budget runs out. Link
+    loss or client close during the wait raises ``Elke27DisconnectedError``
+    (subclass of ``Elke27TransientError``). Snapshot replace failure during
+    publication raises ``Elke27SnapshotPublicationError`` (subclass of
+    ``Elke27ProtocolError``).
 
   Discovery Blocking Import (0.5.1, 2026-11-12)
 
