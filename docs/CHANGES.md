@@ -1,30 +1,55 @@
-  Unreleased
+  Area Delay, Arm Night Stay Instant, Status Read Publication (0.6.0, 2026-11-17)
 
-  - Arm night (`ArmMode.ARMED_NIGHT`) sends `area.set_arm_state` with
-    `arm_state` `ARMED_STAY_INST`; `ARMED_STAY_INST` status maps to
-    `armed_night` instead of `armed_stay` (#139).
-  - Arm night requires application firmware **0.0.5.37 or later** (from
-    `control.get_version_info` ``app``, not SSP). `PanelInfo.application_firmware`
-    and per-area `AreaState.night_arm_supported` expose capability on the public
-    snapshot.
-  - Panel rejections raise `Elke27PanelError`; ignored Stay Instant (accepted
-    write, state unchanged) raises `Elke27StayInstantRequiredError`. A failed
-    post-command status refresh raises `Elke27CommandOutcomeUnknownError`.
-  - Entry/exit delay (#92): public ``AreaState`` exposes ``delay_state``
+  - Entry/exit delay (#92, #141): public ``AreaState`` exposes ``delay_state``
     (``DelayStateNone``, ``DelayStateEntry``, or ``DelayStateExit``) derived from
-    documented ``area.get_status`` fields on each public ``AreaState.delay_state``
-    (derived inside the client snapshot; not a separate public entry point).
-    ``entry_delay`` is ``True`` during entry delay; ``arming`` is ``True`` during
-    exit delay. Remaining seconds follow the panel's five-second broadcasts only
-    (no local countdown). The undocumented ``entry_delay_active`` key is no longer
-    read. Entry delay is simulator-proven only; hardware entry testing needs
-    explicit approval before it is claimed in release notes beyond that.
+    documented ``area.get_status`` fields on each snapshot refresh (not a separate
+    public entry point). ``entry_delay`` is ``True`` during entry delay; ``arming``
+    is ``True`` during exit delay. Remaining seconds follow the panel's five-second
+    broadcasts only (no local countdown). The undocumented ``entry_delay_active``
+    key is no longer read. Entry delay is simulator-proven only; hardware entry
+    testing needs explicit approval before it is claimed in release notes beyond
+    that.
   - Being armed no longer clears ``ee_timer`` / ``alarm_zone`` on unrelated
     partial payloads; fields clear only when a payload that touches them omits
     them or sends the wrong type. ``arming`` can stay true across stay→away
     command changes while ``ee_timer`` is still present; partial cmd-only
     payloads that clear ``ee_timer`` still drop ``arming``. When exit delay
-    completes, ``ee_timer`` often remains ``1`` on the final armed frame.
+    completes, ``ee_timer`` often remains ``1`` on the final armed frame (#141).
+  - Arm night (#140, #142): ``ArmMode.ARMED_NIGHT`` sends `area.set_arm_state`
+    with `arm_state` ``ARMED_STAY_INST``; panel ``ARMED_STAY_INST`` status maps
+    to ``armed_night`` instead of ``armed_stay``.
+  - Arm night requires application firmware **0.0.5.37 or later** (from
+    `control.get_version_info` ``app``, not SSP). Unknown firmware raises
+    ``Elke27PanelApplicationFirmwareUnknownError``; firmware below the minimum
+    raises ``Elke27NightArmFirmwareTooOldError``. ``PanelInfo.application_firmware``
+    and per-area ``AreaState.night_arm_supported`` expose capability on the public
+    snapshot.
+  - Panel rejections on arm night raise ``Elke27PanelError`` (subclass of
+    ``Elke27ProtocolError``). Ignored Stay Instant (accepted write, state
+    unchanged) raises ``Elke27StayInstantRequiredError`` (subclass of
+    ``Elke27Error``). ``async_arm_area`` with ``ArmMode.ARMED_NIGHT`` raises
+    ``Elke27CommandOutcomeUnknownError`` when the write succeeded but
+    ``status_refresh_ok`` is ``False`` after the follow-up read, or when the area
+    is missing from the snapshot after refresh (#142).
+  - Status reads (#144), two cases. (a) ``area_get_status``, ``zone_get_status``,
+    ``zone_get_all_zones_status``, and arm or bypass writes whose reply already
+    includes confirmed status wait until the reply is published into
+    ``get_snapshot()`` or the command wait budget runs out. When that publication
+    wait fails, ``async_execute`` returns ``Result(ok=False, error=...)`` with
+    ``Elke27DisconnectedError`` or ``Elke27SnapshotPublicationError``; it does not
+    raise those types. (b) Ack-only ``area_set_arm_state`` or ``zone_set_status``
+    runs a follow-up ``area_get_status`` or ``zone_get_status``. Any failure of that
+    nested read (including its publication wait) is a failed refresh on the write:
+    ``Result(ok=True, status_refresh_ok=False)``, a WARNING, and the area or zone
+    marked stale. On that refresh-failed path, only ``async_arm_area`` with
+    ``ArmMode.ARMED_NIGHT`` raises ``Elke27CommandOutcomeUnknownError`` (failed
+    follow-up or area missing after refresh); ``async_arm_area`` with Away or Stay,
+    ``async_disarm_area``, and ``async_set_zone_bypass`` return without raising.
+    When the outer ``async_execute`` returns ``ok=False`` (including
+    ``Elke27CommandOutcomeUnknownError`` after a confirmed send with no reply),
+    public typed helpers such as ``async_arm_area``, ``async_disarm_area``,
+    ``async_set_zone_bypass``, ``async_set_output``, ``async_set_barrier``, and
+    ``async_refresh_barrier`` raise via their normal ``result.ok`` check.
 
   Discovery Blocking Import (0.5.1, 2026-11-12)
 
@@ -532,7 +557,7 @@
   - `async_execute` now returns `Elke27PanelError` (with `panel_error_code`,
     `reason`, and a warning log) when the panel answers with a non-zero
     `error_code`, including single and paged responses. Helpers that already
-    mapped panel errors via `_raise_v2_command_error` are unchanged.
+    mapped panel errors; public typed command helpers are unchanged.
   - String PIN validation for `async_execute` and wire coercion now requires
     ASCII digits only (`0`–`9`). Unicode numerals and other non-digit strings
     raise `Elke27InvalidArgument` before anything is sent instead of escaping
