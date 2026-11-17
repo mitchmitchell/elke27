@@ -258,10 +258,14 @@ If you are working on a Home Assistant integration:
   and ack-only arm or bypass follow-up status reads wait until the reply is
   reflected in `get_snapshot()`. `async_execute` returns
   `Result(ok=False, error=Elke27DisconnectedError)` or
-  `Result(ok=False, error=Elke27SnapshotPublicationError)` when that wait fails;
-  it does not raise those types. Public typed helpers such as `async_arm_area`,
-  `async_disarm_area`, and `async_set_zone_bypass` raise when `async_execute`
-  returns a failed `Result`.
+  `Result(ok=False, error=Elke27SnapshotPublicationError)` only when that
+  publication wait fails (not when the write succeeded but the follow-up read
+  failed). An ack-only arm or bypass that the panel accepted but whose follow-up
+  read failed returns `Result(ok=True, status_refresh_ok=False)`, logs a WARNING,
+  and marks the area or zone stale; `async_disarm_area` and `async_set_zone_bypass`
+  return without raising, and `async_arm_area` with `ArmMode.ARMED_NIGHT` raises
+  `Elke27CommandOutcomeUnknownError`. Other helpers raise when `async_execute`
+  returns `ok=False`.
 
 ---
 

@@ -27,22 +27,26 @@
   - Panel rejections on arm night raise ``Elke27PanelError`` (subclass of
     ``Elke27ProtocolError``). Ignored Stay Instant (accepted write, state
     unchanged) raises ``Elke27StayInstantRequiredError`` (subclass of
-    ``Elke27Error``). A failed post-command status refresh raises
-    ``Elke27CommandOutcomeUnknownError`` (subclass of ``Elke27TimeoutError``).
+    ``Elke27Error``). ``async_arm_area`` with ``ArmMode.ARMED_NIGHT`` raises
+    ``Elke27CommandOutcomeUnknownError`` when the write succeeded but
+    ``status_refresh_ok`` is ``False`` after the follow-up read.
   - Status reads (#144): ``area_get_status``, ``zone_get_status``, and
     ``zone_get_all_zones_status`` wait until the command reply is published into
     ``get_snapshot()`` or the command wait budget runs out. Ack-only
     ``area_set_arm_state`` or ``zone_set_status`` (no confirmed status in the
     reply) waits on the follow-up ``area_get_status`` or ``zone_get_status``;
     when the reply already includes confirmed status, publication wait applies to
-    that arm or bypass reply instead. ``async_execute`` returns
-    ``Result(ok=False, error=...)`` with ``Elke27DisconnectedError`` (subclass of
-    ``Elke27TransientError``) or ``Elke27SnapshotPublicationError`` (subclass of
-    ``Elke27ProtocolError``) when publication fails; it does not raise those
-    types. Public typed helpers such as ``async_arm_area``, ``async_disarm_area``,
-    ``async_set_zone_bypass``, ``async_set_output``, ``async_set_barrier``, and
-    ``async_refresh_barrier`` raise when ``async_execute`` returns a failed
-    ``Result``.
+    that arm or bypass reply instead. If the panel accepts an ack-only write but
+    the follow-up status read fails, ``async_execute`` still returns
+    ``Result(ok=True, status_refresh_ok=False)``, logs a WARNING, and marks the
+    area or zone stale; ``async_disarm_area`` and ``async_set_zone_bypass`` return
+    without raising (``CommandResult.status_refresh_ok`` when ``return_result=True``).
+    ``async_execute`` returns ``Result(ok=False, error=...)`` with
+    ``Elke27DisconnectedError`` or ``Elke27SnapshotPublicationError`` only when
+    publication wait fails; it does not raise those types. Public typed helpers
+    such as ``async_arm_area``, ``async_disarm_area``, ``async_set_zone_bypass``,
+    ``async_set_output``, ``async_set_barrier``, and ``async_refresh_barrier``
+    raise when ``async_execute`` returns ``ok=False``.
 
   Discovery Blocking Import (0.5.1, 2026-11-12)
 
