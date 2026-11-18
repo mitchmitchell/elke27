@@ -20,6 +20,10 @@
     the session, for example ``Keepalive timed out``. The client's
     ``Panel connection lost`` WARNING now ends with ``err_msg=...`` instead of
     leaving only ``reason=None error_type=...``.
+  - Keepalive probe deadline (#151): a probe's reply deadline now starts when
+    the probe is sent, not when it is queued. A probe waiting behind an
+    unanswered command no longer expires unsent and counts as a miss; misses
+    are counted only for probes the panel was sent.
 
   Area Delay, Arm Night Stay Instant, Status Read Publication (0.6.0, 2026-11-17)
 

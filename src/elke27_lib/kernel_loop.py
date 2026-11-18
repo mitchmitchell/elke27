@@ -2251,7 +2251,7 @@ class E27Kernel:
         ):
             effective_priority = OutboundPriority.HIGH
         if domain == "system" and name == "r_u_alive":
-            deadline_at = self.now() + timeout_value
+            deadline_at = 0.0
         else:
             budget_s = self.command_transport_wait_budget_s(timeout_value)
             deadline_at = self.now() + budget_s
