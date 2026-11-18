@@ -33,15 +33,15 @@ class _FakeSession:
 
 @pytest.mark.asyncio
 async def test_single_missed_keepalive_disconnects() -> None:
-    kernel = E27Kernel()
+    clock = [1000.0]
+    kernel = E27Kernel(now_monotonic=lambda: clock[0])
     kernel._keepalive_enabled = True
     kernel._keepalive_interval_s = 30.0
     kernel._keepalive_max_missed = 1
     fake = _FakeSession()
     cast(Any, kernel)._session = fake
-    now = kernel.now()
-    kernel._last_rx_at = now - 31.0  # panel silent past the interval
-    kernel._last_exchange_at = now  # we just sent something; must not postpone probe
+    clock[0] += 31.0
+    kernel._last_exchange_at = kernel.now()
 
     calls: list[bool] = []
 
@@ -50,7 +50,8 @@ async def test_single_missed_keepalive_disconnects() -> None:
         return False
 
     cast(Any, kernel)._send_keepalive_request = _probe
-    await kernel._keepalive_loop()
+    async with asyncio.timeout(2.0):
+        await kernel._keepalive_loop()
     assert calls == [False]
     assert len(fake.disconnects) == 1
     assert isinstance(fake.disconnects[0], SessionProtocolError)
@@ -103,7 +104,8 @@ async def test_forced_probe_skips_wait_and_busy_queue() -> None:
         return False
 
     cast(Any, kernel)._send_keepalive_request = _probe
-    await kernel._keepalive_loop()
+    async with asyncio.timeout(2.0):
+        await kernel._keepalive_loop()
     assert calls == [True, True]
     assert len(fake.disconnects) == 1
 
