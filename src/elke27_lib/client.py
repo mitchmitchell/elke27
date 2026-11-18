@@ -1976,9 +1976,10 @@ class Elke27Client:
                     )
                 else:
                     self._log.warning(
-                        "Panel connection lost (reason=%s error_type=%s)",
+                        "Panel connection lost (reason=%s error_type=%s err_msg=%s)",
                         evt.reason,
                         evt.error_type,
+                        evt.err_msg,
                     )
                     self._connection_lost_logged = True
                 self._last_disconnect_at = self._now_monotonic()

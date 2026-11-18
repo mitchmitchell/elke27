@@ -106,8 +106,8 @@ def test_stats_start_at_zero() -> None:
     assert E27Kernel().keepalive_stats == KeepaliveStats()
 
 
-def test_default_miss_budget_is_one() -> None:
-    assert session_mod.SessionConfig(host="198.51.100.1", port=1).keepalive_max_missed == 1
+def test_default_miss_budget_is_two() -> None:
+    assert session_mod.SessionConfig(host="198.51.100.1", port=1).keepalive_max_missed == 2
 
 
 @pytest.mark.asyncio

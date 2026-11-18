@@ -19,7 +19,7 @@ from elke27_lib.session_thread import Session, SessionConfig, SessionProtocolErr
 def test_session_config_defaults_detect_quickly() -> None:
     cfg = SessionConfig(host="192.0.2.1")
     assert cfg.keepalive_timeout_s <= 5.0
-    assert cfg.keepalive_max_missed == 1
+    assert cfg.keepalive_max_missed == 2
 
 
 class _FakeSession:
@@ -104,7 +104,7 @@ async def test_forced_probe_skips_wait_and_busy_queue() -> None:
 
     cast(Any, kernel)._send_keepalive_request = _probe
     await kernel._keepalive_loop()
-    assert calls == [True]
+    assert calls == [True, True]
     assert len(fake.disconnects) == 1
 
 

@@ -1,3 +1,26 @@
+  Unreleased
+
+  - Keepalive miss budget (#149, HACS-Elk-E27 #172): after a missed
+    ``system.r_u_alive`` probe the kernel sends a second probe immediately and
+    disconnects only after 2 consecutive misses. ``SessionConfig``
+    ``keepalive_max_missed`` default is now 2 (was 1). Worst-case detection of a
+    silent link is about 40 s (30 s idle, then two 5 s timeouts). Why: a
+    production capture showed a single late or lost reply on a quiet, healthy link
+    dropping the session (``err_msg=Keepalive timed out``, ``rx_age`` 35.08 s,
+    ``tx_age`` 5.05 s, one idle interval plus one on-time timeout); each drop
+    briefly made entities unavailable. This supersedes the 2026-10-31 decision to
+    keep 1 miss; ADR-0013 implementation notes have the full rationale.
+  - Keepalive liveness (#149): probe scheduling and rescue by any inbound
+    traffic now use a timestamp taken on the receive thread before the message is
+    handed to the bound event loop, so a busy or blocked loop cannot turn a reply
+    that already arrived into a miss. New optional ``Session.on_rx`` hook (called
+    on the receiving thread for each decoded inbound message) carries it.
+  - Disconnect reason (#149): ``ConnectionStateChanged`` has a new public field
+    ``err_msg`` (default ``None``) with the message of the exception that ended
+    the session, for example ``Keepalive timed out``. The client's
+    ``Panel connection lost`` WARNING now ends with ``err_msg=...`` instead of
+    leaving only ``reason=None error_type=...``.
+
   Area Delay, Arm Night Stay Instant, Status Read Publication (0.6.0, 2026-11-17)
 
   - Entry/exit delay (#92, #141): public ``AreaState`` exposes ``delay_state``
