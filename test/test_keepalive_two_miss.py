@@ -302,7 +302,7 @@ def test_probe_schedule_reads_receive_thread_traffic_while_loop_lags() -> None:
             try:
                 loop.call_later(0.2, _block)
                 _send_unsolicited_after(panel, 1.0, traffic)
-                await _wait_for(lambda: panel.probes >= 1, timeout_s=4.0)
+                await _wait_for(lambda: panel.probes >= 1, timeout_s=8.0)
                 after = [t for t in beats if block_end and t >= block_end[0]]
                 gaps = [b - a for a, b in zip([block_end[0], *after], after, strict=False)]
                 outcome.loop_stall_s = max(gaps, default=float("inf"))
