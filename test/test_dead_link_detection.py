@@ -234,7 +234,7 @@ async def test_probe_timeout_with_other_traffic_counts_as_alive() -> None:
     kernel._keepalive_interval_s = 0.0
 
     def _send(seq: int, *_a: Any, **_k: Any) -> int:
-        kernel._signal_sent_event(seq)
+        kernel._mark_request_sent(seq)
         kernel._last_rx_at = kernel.now() + 1000.0  # other panel traffic arrived
         kernel._pending_responses.fail(seq, E27Timeout("t"))
         return seq
@@ -251,7 +251,7 @@ async def test_probe_timeout_without_traffic_is_a_miss() -> None:
     kernel._keepalive_interval_s = 0.0
 
     def _send(seq: int, *_a: Any, **_k: Any) -> int:
-        kernel._signal_sent_event(seq)
+        kernel._mark_request_sent(seq)
         kernel._pending_responses.fail(seq, E27Timeout("t"))
         return seq
 
@@ -278,7 +278,7 @@ async def test_forced_probe_is_high_priority_while_command_queued() -> None:
 
     def _send(seq: int, *_a: Any, **kw: Any) -> int:
         seen["priority"] = kw.get("priority")
-        kernel._signal_sent_event(seq)
+        kernel._mark_request_sent(seq)
         kernel._pending_responses.resolve(seq, {"seq": seq, "system": {"r_u_alive": {}}})
         return seq
 

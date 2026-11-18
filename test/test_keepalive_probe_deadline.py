@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import pytest
 
@@ -223,6 +223,76 @@ async def test_probe_abandoned_after_rescue_never_reaches_panel() -> None:
             assert panel.probes == 0
             assert kernel.keepalive_stats.probes_sent == panel.probes
             await _assert_next_probe_goes_out_alone(kernel, panel)
+            assert kernel.keepalive_stats.probes_sent == panel.probes
+        finally:
+            await kernel.close()
+
+
+@pytest.mark.asyncio
+async def test_probe_holding_slot_with_stalled_write_disconnects_and_leaves_nothing_queued() -> (
+    None
+):
+    """A probe that owns the in-flight slot but is never written is cancelled, not sent later.
+
+    ``outbound_min_interval_s=1.0`` stalls every write after the first for a
+    second, so the probe that takes the free slot is not written within its 0.5 s
+    send wait. With ``keepalive_max_missed=3`` the link drops about 1.5 s after the
+    probe was queued, after the stalled write would have gone out at 1.0 s. The
+    next write slot after that is at 2.0 s, so no probe may reach the panel. A
+    reconnect then sends exactly one fresh probe.
+    """
+    with PanelSimulator() as panel:
+        kernel = E27Kernel(
+            skip_connect_bootstrap=True,
+            outbound_min_interval_s=1.0,
+            keepalive_test_hooks=KeepaliveTestHooks(send_wait_s=0.5),
+        )
+        drops: list[str | None] = []
+
+        def _on_event(evt: Event) -> None:
+            if isinstance(evt, ConnectionStateChanged) and not evt.connected:
+                drops.append(evt.err_msg)
+
+        kernel.subscribe(_on_event, kinds=[ConnectionStateChanged.KIND])
+        session_config = replace(
+            panel.session_config(interval_s=30.0, timeout_s=PROBE_TIMEOUT_S),
+            keepalive_max_missed=3,
+        )
+        await kernel.connect(LINK_KEYS, client_identity=IDENTITY, session_config=session_config)
+        try:
+            kernel.request_link_check()
+            await _wait_for(lambda: kernel.keepalive_stats.replies == 1, timeout_s=5.0)
+            await asyncio.sleep(0.05)
+            assert panel.probes == 1
+
+            kernel.request_link_check()
+            await _wait_for(lambda: bool(drops), timeout_s=5.0)
+            await asyncio.sleep(0.3)
+            assert drops[0]
+            assert kernel.keepalive_stats.misses == 3
+            assert panel.probes == 1
+            assert kernel.keepalive_stats.probes_sent == panel.probes
+
+            await kernel.connect(LINK_KEYS, client_identity=IDENTITY, session_config=session_config)
+            await _assert_next_probe_goes_out_alone(kernel, panel)
+            assert panel.probes == 2
+            assert kernel.keepalive_stats.probes_sent == panel.probes
+        finally:
+            await kernel.close()
+
+
+@pytest.mark.asyncio
+async def test_queued_probe_failed_by_disconnect_is_not_counted_as_sent() -> None:
+    """A probe still queued when the link drops wakes as not sent."""
+    with PanelSimulator() as panel:
+        kernel, drops = await _connect_wedged(panel, send_wait_s=30.0)
+        try:
+            kernel.request_link_check()
+            await asyncio.sleep(0.3)
+            panel.drop_connection()
+            await _wait_for(lambda: bool(drops), timeout_s=5.0)
+            await asyncio.sleep(0.3)
+            assert panel.probes == 0
             assert kernel.keepalive_stats.probes_sent == panel.probes
         finally:
             await kernel.close()

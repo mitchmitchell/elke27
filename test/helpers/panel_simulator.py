@@ -9,6 +9,7 @@ other requests with an empty success body. Dummy keys only.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import socket
@@ -103,6 +104,14 @@ class PanelSimulator:
     def send_unsolicited(self) -> None:
         """Push one unsolicited (``seq=0``) system message, as the panel does."""
         self._send({"seq": 0, "session_id": SESSION_ID, "system": {"r_u_alive": {}}})
+
+    def drop_connection(self) -> None:
+        """Hang up on the client, as a panel reboot or network drop would."""
+        conn = self._conn
+        if conn is None:
+            return
+        with contextlib.suppress(OSError):
+            conn.shutdown(socket.SHUT_RDWR)
 
     def _send(self, obj: dict[str, Any]) -> None:
         conn = self._conn

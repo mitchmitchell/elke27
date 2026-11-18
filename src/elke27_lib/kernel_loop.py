@@ -1077,9 +1077,11 @@ class E27Kernel:
                     seq,
                 )
                 return self._liveness_at() > queued_at
-            except asyncio.CancelledError:
+            if not self.was_request_sent(seq):
                 self._abandon_unsent_probe(seq)
-                raise
+                self._log.debug("E27 keepalive probe failed before it was sent: seq=%s", seq)
+                return False
+            self.forget_request_sent(seq)
             if probe_sent_at is None:
                 probe_sent_at = self._probe_sent_at(seq)
             sent_at = probe_sent_at if probe_sent_at is not None else self.now()
