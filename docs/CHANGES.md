@@ -1,27 +1,33 @@
   Unreleased
 
-  - Publication-wait timeout (#147): when the reply to ``area_get_status``,
-    ``zone_get_status``, or ``zone_get_all_zones_status`` is not published into
-    ``get_snapshot()`` before the command deadline, ``async_execute`` now returns
-    ``Result(ok=False, error=Elke27SnapshotPublicationError)`` with the message "Timed
-    out waiting for snapshot publication." and still logs the WARNING. 0.6.0 returned
-    ``ok=True`` there, so ``get_snapshot()`` could be stale. A reply already published
-    when the deadline passes still returns ``ok=True``. For an arm or bypass write whose
-    reply includes confirmed status, the panel accepted the write, so the same timeout
-    is a failed refresh instead: ``Result(ok=True, status_refresh_ok=False)``, a
-    WARNING, and the area or zone marked stale (0.6.0 reported
-    ``status_refresh_ok=True``). On an ack-only ``area_set_arm_state`` or
-    ``zone_set_status``, a timed-out follow-up read is the same failed refresh. On
-    either write path, ``async_arm_area`` with ``ArmMode.ARMED_NIGHT`` then raises
-    ``Elke27CommandOutcomeUnknownError`` instead of checking Stay Instant against a
-    stale snapshot; ``async_arm_area`` with Away or Stay, ``async_disarm_area``, and
-    ``async_set_zone_bypass`` return without raising. A disconnect or failed
-    publication on a confirmed write still returns ``ok=False`` as in 0.6.0. The publication wait is bounded by the command deadline: the
-    per-attempt request timeout (``ClientConfig.request_timeout_s``, 5 s by default, or
-    the call's ``timeout_s``) times the number of transport attempts (3 by default),
-    plus the backoff between attempts (0.5 s + 1 s by default), counted from just before
-    the command is sent, which is 16.5 s with the defaults. A follow-up status read and
-    the publication wait only get what is left of it.
+  - Publication-wait timeout (#147): the reply-publication wait is bounded by the
+    command deadline: the per-attempt request timeout (``ClientConfig.request_timeout_s``,
+    5 s by default, or the call's ``timeout_s``) times the number of transport attempts
+    (3 by default), plus the backoff between attempts (0.5 s + 1 s by default), counted
+    from just before the command is sent, which is 16.5 s with the defaults. A follow-up
+    status read and the publication wait only get what is left of it. When that
+    deadline passes before the reply is published into ``get_snapshot()``:
+
+    - A direct read (``area_get_status``, ``zone_get_status``, or
+      ``zone_get_all_zones_status``) returns ``Result(ok=False,
+      error=Elke27SnapshotPublicationError)`` with the message "Timed out waiting for
+      snapshot publication." and logs a WARNING. 0.6.0 returned ``ok=True`` there, so
+      ``get_snapshot()`` could be stale.
+    - A reply that is already published when the deadline passes still returns
+      ``ok=True``.
+    - An ``area_set_arm_state`` or ``zone_set_status`` write whose reply includes
+      confirmed status was accepted by the panel, so the timeout is a failed refresh:
+      ``Result(ok=True, status_refresh_ok=False)``, a WARNING, and the area or zone
+      marked stale. 0.6.0 reported ``status_refresh_ok=True``. A timed-out follow-up
+      read after an ack-only write is the same failed refresh.
+    - On that failed refresh, ``async_arm_area`` with Away or Stay,
+      ``async_disarm_area``, and ``async_set_zone_bypass`` return without raising;
+      ``async_arm_area`` with ``ArmMode.ARMED_NIGHT`` raises
+      ``Elke27CommandOutcomeUnknownError`` instead of checking Stay Instant against a
+      stale snapshot.
+    - A disconnect (``Elke27DisconnectedError``) or failed publication
+      (``Elke27SnapshotPublicationError``) during the wait on a confirmed write still
+      returns ``ok=False``, as in 0.6.0, and the typed helpers raise.
 
   Area Delay, Arm Night Stay Instant, Status Read Publication (0.6.0, 2026-11-17)
 
@@ -43,7 +49,7 @@
   - Arm night (#140, #142): ``ArmMode.ARMED_NIGHT`` sends `area.set_arm_state`
     with `arm_state` ``ARMED_STAY_INST``; panel ``ARMED_STAY_INST`` status maps
     to ``armed_night`` instead of ``armed_stay``.
-  - Arm night requires application firmware **0.0.5.37 or later** (from
+  - Arm night requires panel application firmware **0.0.5.37 or later** (from
     `control.get_version_info` ``app``, not SSP). Unknown firmware raises
     ``Elke27PanelApplicationFirmwareUnknownError``; firmware below the minimum
     raises ``Elke27NightArmFirmwareTooOldError`` with the message
@@ -66,13 +72,14 @@
     times the number of transport attempts (3 by default), plus the backoff between
     attempts (0.5 s + 1 s by default), counted from just before the command is sent,
     which is 16.5 s with the defaults. A follow-up status read and the publication wait
-    only get what is left of it. When that publication wait fails, ``async_execute``
-    returns ``Result(ok=False, error=...)`` with ``Elke27DisconnectedError`` or
-    ``Elke27SnapshotPublicationError``; it does not raise those types. In 0.6.0, if the
-    deadline passes before publication, ``async_execute`` still returns
-    ``Result(ok=True)`` and logs a WARNING, so ``get_snapshot()`` may be stale (changed
-    after 0.6.0, #147). (b) Ack-only ``area_set_arm_state`` or ``zone_set_status``
-    runs a follow-up ``area_get_status`` or ``zone_get_status``. Any failure of that
+    only get what is left of it. When that publication wait fails because the link
+    drops or publication fails, ``async_execute`` returns ``Result(ok=False, error=...)``
+    with ``Elke27DisconnectedError`` or ``Elke27SnapshotPublicationError``; it does not
+    raise those types. If the deadline passes before publication, ``async_execute``
+    still returns ``Result(ok=True)`` and logs a WARNING, so ``get_snapshot()`` may be
+    stale. Timeout handling changed in Unreleased (#147). (b) Ack-only
+    ``area_set_arm_state`` or ``zone_set_status`` runs a follow-up ``area_get_status``
+    or ``zone_get_status``. Any failure of that
     nested read (including its publication wait) is a failed refresh on the write:
     ``Result(ok=True, status_refresh_ok=False)``, a WARNING, and the area or zone
     marked stale. On that refresh-failed path, only ``async_arm_area`` with
