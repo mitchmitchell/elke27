@@ -96,13 +96,18 @@ async def test_probe_queued_behind_unanswered_command_is_not_a_miss_until_sent()
             await kernel.close()
 
 
-async def _connect_wedged(panel: PanelSimulator) -> tuple[E27Kernel, list[tuple[float, int]]]:
+async def _connect_wedged(
+    panel: PanelSimulator,
+    *,
+    send_wait_s: float = SEND_WAIT_S,
+    command_timeout_s: float = WEDGED_COMMAND_TIMEOUT_S,
+) -> tuple[E27Kernel, list[tuple[float, int]]]:
     """Connect with a short send wait, then hold the queue with an unanswered command."""
     kernel = E27Kernel(
         skip_connect_bootstrap=True,
-        request_timeout_s=WEDGED_COMMAND_TIMEOUT_S,
+        request_timeout_s=command_timeout_s,
         request_max_retries=0,
-        keepalive_test_hooks=KeepaliveTestHooks(send_wait_s=SEND_WAIT_S),
+        keepalive_test_hooks=KeepaliveTestHooks(send_wait_s=send_wait_s),
     )
     drops: list[tuple[float, int]] = []
 
@@ -157,5 +162,67 @@ async def test_inbound_after_probe_queued_rescues_send_wait_miss() -> None:
             assert drops == []
             assert panel.probes == 0
             assert kernel.keepalive_stats.misses == 0
+        finally:
+            await kernel.close()
+
+
+async def _assert_next_probe_goes_out_alone(kernel: E27Kernel, panel: PanelSimulator) -> None:
+    """A fresh link check sends exactly one probe, so no stale probe is left queued."""
+    probes_before = panel.probes
+    sent_before = kernel.keepalive_stats.probes_sent
+    replies_before = kernel.keepalive_stats.replies
+    kernel.request_link_check()
+    await _wait_for(lambda: kernel.keepalive_stats.replies > replies_before, timeout_s=5.0)
+    await asyncio.sleep(0.2)
+    assert panel.probes == probes_before + 1
+    assert kernel.keepalive_stats.probes_sent == sent_before + 1
+
+
+@pytest.mark.asyncio
+async def test_probe_abandoned_after_send_wait_miss_never_reaches_panel() -> None:
+    """After a send-wait miss, releasing the wedge sends only the follow-up probe.
+
+    Send wait 1.0 s; the panel answers the blocking command 1.5 s after receiving
+    it. The first probe misses at about 1.0 s, the follow-up is queued, and the
+    command reply frees the queue about 0.5 s before the follow-up's own send wait
+    would end.
+    """
+    with PanelSimulator() as panel:
+        panel.answer_commands_after_s = 1.5
+        kernel, drops = await _connect_wedged(panel, send_wait_s=1.0)
+        try:
+            kernel.request_link_check()
+            await _wait_for(lambda: kernel.keepalive_stats.replies >= 1, timeout_s=5.0)
+            await asyncio.sleep(0.5)
+            assert drops == []
+            assert kernel.keepalive_stats.misses == 1
+            assert panel.probes == 1
+            assert kernel.keepalive_stats.probes_sent == panel.probes
+            await _assert_next_probe_goes_out_alone(kernel, panel)
+            assert kernel.keepalive_stats.probes_sent == panel.probes
+        finally:
+            await kernel.close()
+
+
+@pytest.mark.asyncio
+async def test_probe_abandoned_after_rescue_never_reaches_panel() -> None:
+    """After a rescued send wait, the blocking command timing out sends no stale probe.
+
+    Send wait 0.4 s, rescue traffic at 0.2 s, and the blocking command times out
+    about 1.0 s after it was sent, which frees the queue.
+    """
+    with PanelSimulator() as panel:
+        kernel, drops = await _connect_wedged(panel, command_timeout_s=1.0)
+        try:
+            kernel.request_link_check()
+            await asyncio.sleep(SEND_WAIT_S / 2)
+            panel.send_unsolicited()
+            await asyncio.sleep(2.0)
+            assert drops == []
+            assert kernel.keepalive_stats.misses == 0
+            assert panel.probes == 0
+            assert kernel.keepalive_stats.probes_sent == panel.probes
+            await _assert_next_probe_goes_out_alone(kernel, panel)
+            assert kernel.keepalive_stats.probes_sent == panel.probes
         finally:
             await kernel.close()

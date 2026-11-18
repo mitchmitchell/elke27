@@ -161,6 +161,7 @@ class _QueuedRequest:
     timeout_s: float
     attempt: int = 0
     deadline_at: float = 0.0
+    """Monotonic time after which the queued request is failed unsent; 0.0 means no deadline."""
 
 
 @dataclass(slots=True)
@@ -495,8 +496,6 @@ class E27Kernel:
         self._keepalive_interval_s = 30.0
         self._keepalive_timeout_s = 5.0
         self._keepalive_max_missed = 2
-        # Max wait for a probe to leave the outbound queue (covers one in-flight
-        # command's reply timeout).
         hook_send_wait_s = keepalive_test_hooks.send_wait_s if keepalive_test_hooks else None
         self._keepalive_send_wait_s = 30.0 if hook_send_wait_s is None else hook_send_wait_s
         self._keepalive_stats = KeepaliveStats()
@@ -981,6 +980,26 @@ class E27Kernel:
                 return
             self._keepalive_probe_requested = True
 
+    def _abandon_unsent_probe(self, seq: int) -> None:
+        """Forget a probe nobody will wait for, so it can never reach the panel later.
+
+        Drops its pending reply and removes it from the request queue. If it already
+        holds the in-flight slot but was not written yet, its transport is cancelled
+        so the slot frees and the stale probe is never sent.
+        """
+        self._pending_responses.drop(seq)
+        self._remove_queued_seq(seq)
+        self._sent_events.pop(seq, None)
+        if (
+            self._request_state is _RequestState.IN_FLIGHT
+            and self._active_seq == seq
+            and not self._active_released
+            and self._active_sent_at is None
+        ):
+            self.cancel_command_transport(
+                seq, E27Timeout(f"Keepalive probe abandoned: seq={seq}"), drop_pending_response=True
+            )
+
     def _probe_sent_at(self, seq: int) -> float | None:
         if self._active_seq != seq:
             return None
@@ -1041,7 +1060,7 @@ class E27Kernel:
                     timeout_s=self._keepalive_timeout_s,
                 )
             except Exception:  # noqa: BLE001 -- preserve broad except handling intentionally
-                self._pending_responses.drop(seq)
+                self._abandon_unsent_probe(seq)
                 return False
             probe_sent_at = self._probe_sent_at(seq)
             queued_at = self.now()
@@ -1051,13 +1070,16 @@ class E27Kernel:
                 # outbound queue.
                 await asyncio.wait_for(sent_event.wait(), timeout=self._keepalive_send_wait_s)
             except TimeoutError:
-                self._pending_responses.drop(seq)
+                self._abandon_unsent_probe(seq)
                 self._log.info(
                     "E27 keepalive probe could not be sent within %.1fs: seq=%s",
                     self._keepalive_send_wait_s,
                     seq,
                 )
                 return self._liveness_at() > queued_at
+            except asyncio.CancelledError:
+                self._abandon_unsent_probe(seq)
+                raise
             if probe_sent_at is None:
                 probe_sent_at = self._probe_sent_at(seq)
             sent_at = probe_sent_at if probe_sent_at is not None else self.now()
