@@ -29,6 +29,9 @@
       (``Elke27SnapshotPublicationError``) during the wait on a confirmed write still
       returns ``ok=False``, as in 0.6.0, and the typed helpers raise.
 
+    The authoritative ``status_refresh_ok`` definition is in
+    ``docs/CLIENT_CONTRACT.md``.
+
   Area Delay, Arm Night Stay Instant, Status Read Publication (0.6.0, 2026-11-17)
 
   - Entry/exit delay (#92, #141): public ``AreaState`` exposes ``delay_state``

@@ -167,8 +167,10 @@ After the panel accepts arm/disarm (`area_set_arm_state`) or zone bypass
 (`zone_set_status`), the library performs a follow-up status read when the
 command reply did not already include confirmed arm/bypass fields, so
 `get_snapshot()` is up to date when the helper returns. If that read fails,
-the command still succeeds; `async_execute` sets `Result.status_refresh_ok` to
-`False` and marks the affected area or zone id stale in the snapshot metadata.
+or if a reply that already carried confirmed state was not published into
+`get_snapshot()` before the command deadline (#147), the command still
+succeeds; `async_execute` sets `Result.status_refresh_ok` to `False` and
+marks the affected area or zone id stale in the snapshot metadata.
 
 ## Commands
 
@@ -177,9 +179,11 @@ the command still succeeds; `async_execute` sets `Result.status_refresh_ok` to
 - Commands return `Result[T]`:
   - `Result(ok: bool, data: T | None, error: E27Error | None, status_refresh_ok: bool | None = None)`
   - `status_refresh_ok` is set for `area_set_arm_state` and `zone_set_status`:
-    `True` when a follow-up status read succeeded or was skipped because the reply
-    already carried confirmed state; `False` when the write succeeded but the
-    read failed; `None` for other commands.
+    `True` when a follow-up status read succeeded, or when the reply already
+    carried confirmed state and was published into `get_snapshot()` before the
+    command deadline; `False` when the write succeeded but the follow-up read
+    failed or the confirmed reply was not published before the deadline (#147),
+    with the area or zone marked stale; `None` for other commands.
 - Commands raise typed errors when `Result.unwrap()` is used.
 
 ## Errors (typed)

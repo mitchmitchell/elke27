@@ -265,12 +265,12 @@ If you are working on a Home Assistant integration:
   command deadline passes before publication (#147), a direct read returns
   `Result(ok=False, error=Elke27SnapshotPublicationError)` with a WARNING, a reply
   already published by then still returns `ok=True`, and a confirmed-status write
-  (the panel accepted it) is a failed refresh as in (b): `Result(ok=True,
-  status_refresh_ok=False)`, a WARNING, and the area or zone marked stale. (b) Ack-only `area_set_arm_state` or `zone_set_status` issues a follow-up
+  (the panel accepted it) is a failed refresh as in (b). (b) Ack-only
+  `area_set_arm_state` or `zone_set_status` issues a follow-up
   `area_get_status` or `zone_get_status` on the write path. Any failure of that
-  nested read (including its publication wait) is a failed refresh on the write:
-  `Result(ok=True, status_refresh_ok=False)`, a WARNING, and the area or zone
-  marked stale—not `ok=False` on the outer write. On that refresh-failed path,
+  nested read (including its publication wait) is a failed refresh on the write,
+  as defined for `status_refresh_ok` in `docs/CLIENT_CONTRACT.md`—not `ok=False`
+  on the outer write. On that refresh-failed path,
   only `async_arm_area` with `ArmMode.ARMED_NIGHT` raises
   `Elke27CommandOutcomeUnknownError` (failed follow-up or area missing after
   refresh); `async_arm_area` with Away or Stay, `async_disarm_area`, and

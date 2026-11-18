@@ -1826,7 +1826,8 @@ async def test_reply_publication_timeout_drops_registered_slot(
         deliver_panel_message(kernel, reply)
 
     threading.Thread(target=receive_thread, daemon=True).start()
-    result = await task
+    async with asyncio.timeout(2.0):
+        result = await task
     assert isinstance(result, Result)
     assert result.ok is False
     assert isinstance(result.error, Elke27SnapshotPublicationError)

@@ -63,7 +63,8 @@ Runtime domain command pattern:
 Commands:
 - Inventory-driven calls via `request(route, **kwargs)` (may have helper methods).
 - Returns `Result[T]` with `Result.ok / Result.data / Result.error` and optional
-  `Result.status_refresh_ok` after `area_set_arm_state` / `zone_set_status`.
+  `Result.status_refresh_ok` after `area_set_arm_state` / `zone_set_status`
+  (defined in CLIENT_CONTRACT.md).
 - Use `Result.unwrap()` to raise typed errors.
 
 Typed errors:
