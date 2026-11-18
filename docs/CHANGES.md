@@ -23,7 +23,12 @@
   - Keepalive probe deadline (#151): a probe's reply deadline now starts when
     the probe is sent, not when it is queued. A probe waiting behind an
     unanswered command no longer expires unsent and counts as a miss; misses
-    are counted only for probes the panel was sent.
+    are counted only for probes the panel was sent. One documented exception:
+    a probe that is not written to the socket within 30 s of being queued
+    means the transport is wedged, and that check counts as a miss unless
+    inbound traffic arrived after the probe was queued. With the default miss
+    budget of 2, a wedged transport is disconnected about 60 s after the first
+    probe is queued.
 
   Area Delay, Arm Night Stay Instant, Status Read Publication (0.6.0, 2026-11-17)
 

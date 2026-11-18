@@ -982,6 +982,18 @@ class E27Kernel:
         return self._active_sent_at
 
     async def _send_keepalive_request(self, *, force: bool = False) -> bool:
+        """Send one ``system.r_u_alive`` probe and report whether the link is alive.
+
+        The reply deadline (``keepalive_timeout_s``) starts when the probe is
+        written to the socket, so a probe still waiting in the outbound queue is
+        not a miss (#151). One documented exception: if the probe has not been
+        written to the socket within ``_keepalive_send_wait_s`` (30 s, timed on the
+        bound loop from when it was queued), the transport is treated as wedged
+        and the check fails, unless inbound traffic arrived after the probe was
+        queued. With the default ``keepalive_max_missed`` of 2 and the immediate
+        follow-up probe, a wedged transport is disconnected about 60 s after the
+        first probe is queued (two 30 s send waits back to back).
+        """
         self._set_loop_if_needed()
         if self._loop is None:
             return False
