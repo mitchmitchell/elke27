@@ -64,7 +64,7 @@ class SessionConfig:
     # How long to wait for the probe reply before declaring the link dead.
     keepalive_timeout_s: float = 5.0
     # Missed probes (with no other inbound traffic) before disconnecting.
-    keepalive_max_missed: int = 1
+    keepalive_max_missed: int = 2
     auto_receive: bool = True  # start background receive loop when on_message is set
     auto_receive_thread_fallback: bool = False  # allow dedicated thread when no event loop exists
     io_write_timeout_s: float = 5.0  # monotonic send deadline (longer than read cadence)
@@ -115,6 +115,12 @@ class Session:
         s.connect()          # performs HELLO and becomes ready
         s.send_json({...})   # application sends requests (including authenticate if desired)
         obj = s.recv_json()  # or call s.pump_once() to dispatch via callback
+
+    ``on_rx`` (optional) is called on the receiving thread for every decoded
+    inbound JSON object, before the message is handed to the bound event loop
+    with ``call_soon_threadsafe``. The kernel uses it as its keepalive liveness
+    source so event-loop latency cannot hide traffic that already arrived (#149).
+    It must be cheap and must not raise.
     """
 
     cfg: SessionConfig
@@ -183,6 +189,7 @@ class Session:
         self.on_message: Callable[[dict[str, Any]], None] | None = None
         self.on_disconnected: Callable[[Exception | None], None] | None = None
         self.on_idle: Callable[[], None] | None = None
+        self.on_rx: Callable[[], None] | None = None
         self._recv_join_thread: threading.Thread | None = None
 
     def _running_loop_is_bound(self) -> bool:
@@ -781,6 +788,9 @@ class Session:
                 self._rx_count += 1
                 self._last_rx_at = time.monotonic()
                 self._last_exchange_at = self._last_rx_at
+                rx_hook = self.on_rx
+                if rx_hook is not None:
+                    rx_hook()
                 return obj
 
     def pump_once(self, *, timeout_s: float = 0.5) -> dict[str, Any] | None:
