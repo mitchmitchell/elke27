@@ -2897,8 +2897,8 @@ class Elke27Client:
             if result.status_refresh_ok is False:
                 raise Elke27CommandOutcomeUnknownError(
                     ("area", "set_arm_state"),
-                    "The panel acknowledged area.set_arm_state but the follow-up status "
-                    "refresh failed; the resulting arm state is unknown.",
+                    "The panel acknowledged area.set_arm_state but the status "
+                    "could not be confirmed; the resulting arm state is unknown.",
                 )
             self._raise_if_night_arm_ignored(area_id)
         if return_result:

@@ -272,11 +272,12 @@ If you are working on a Home Assistant integration:
   as defined for `status_refresh_ok` in `docs/CLIENT_CONTRACT.md`—not `ok=False`
   on the outer write. On that refresh-failed path,
   only `async_arm_area` with `ArmMode.ARMED_NIGHT` raises
-  `Elke27CommandOutcomeUnknownError` (failed follow-up or area missing after
-  refresh); `async_arm_area` with Away or Stay, `async_disarm_area`, and
-  `async_set_zone_bypass` return without raising. When `async_execute` returns
-  `ok=False` (including `Elke27CommandOutcomeUnknownError` after a confirmed send
-  with no reply), typed write helpers raise via their normal `result.ok` check.
+  `Elke27CommandOutcomeUnknownError` (status could not be confirmed, or the
+  area is missing after refresh); `async_arm_area` with Away or Stay,
+  `async_disarm_area`, and `async_set_zone_bypass` return without raising. When
+  `async_execute` returns `ok=False` (including `Elke27CommandOutcomeUnknownError`
+  after a confirmed send with no reply), typed write helpers raise via their
+  normal `result.ok` check.
 
 ---
 

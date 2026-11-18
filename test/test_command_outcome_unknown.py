@@ -68,7 +68,7 @@ async def test_arm_night_acknowledged_write_refresh_failure_is_outcome_unknown(
     msg = str(exc_info.value)
     assert exc_info.value.route == ("area", "set_arm_state")
     assert "acknowledged" in msg
-    assert "status refresh" in msg
+    assert "status could not be confirmed" in msg
     assert "after it was sent" not in msg
 
 

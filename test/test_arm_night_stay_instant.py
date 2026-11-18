@@ -211,7 +211,7 @@ async def test_arm_night_refresh_failure_raises_command_outcome_unknown(
         await client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234")
     msg = str(exc_info.value)
     assert "acknowledged" in msg
-    assert "status refresh" in msg
+    assert "status could not be confirmed" in msg
     assert "after it was sent" not in msg
 
 

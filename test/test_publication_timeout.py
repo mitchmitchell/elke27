@@ -268,9 +268,12 @@ async def test_confirmed_night_arm_publication_timeout_raises_outcome_unknown(
         client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin=1234),
         lambda seq: _set_arm_reply(seq, "ARMED_STAY_INST"),
     )
-    with pytest.raises(Elke27CommandOutcomeUnknownError):
+    with pytest.raises(Elke27CommandOutcomeUnknownError) as exc_info:
         async with asyncio.timeout(COMMAND_TIMEOUT_S + 2.0):
             await task
+    msg = str(exc_info.value)
+    assert "status could not be confirmed" in msg
+    assert "follow-up" not in msg
     assert 1 in client.get_snapshot().stale_area_ids
 
 
