@@ -45,6 +45,7 @@ from typing import (
     Any,
     Generic,
     Literal,
+    NoReturn,
     TypeAlias,
     TypeVar,
     cast,
@@ -1820,27 +1821,31 @@ class Elke27Client:
         return True
 
     async def _await_reply_snapshot_publication(self, reply_seq: int, *, deadline: float) -> None:
-        loop = asyncio.get_running_loop()
-        remaining = deadline - loop.time()
-        if remaining <= 0:
-            self._log.warning(
-                "Timed out waiting for reply seq=%s snapshot publication",
-                reply_seq,
-            )
-            return
+        """Wait until the reply for ``reply_seq`` is published into ``get_snapshot()``.
+
+        Raises ``Elke27SnapshotPublicationError`` if the command deadline passes
+        first (#147), so a stale snapshot is never reported as a successful read.
+        """
         fut = self._reply_publication_by_seq.get(reply_seq)
         if fut is None:
             return
         if fut.done():
             fut.result()
             return
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            self._raise_publication_timeout(reply_seq)
         try:
             await asyncio.wait_for(fut, timeout=remaining)
         except TimeoutError:
-            self._log.warning(
-                "Timed out waiting for reply seq=%s snapshot publication",
-                reply_seq,
-            )
+            self._raise_publication_timeout(reply_seq)
+
+    def _raise_publication_timeout(self, reply_seq: int) -> NoReturn:
+        self._log.warning(
+            "Timed out waiting for reply seq=%s snapshot publication",
+            reply_seq,
+        )
+        raise Elke27SnapshotPublicationError("Timed out waiting for snapshot publication.")
 
     def _record_local_zone_bypass(self, zone_id: int) -> None:
         zone = self._kernel.state.zones.get(zone_id)

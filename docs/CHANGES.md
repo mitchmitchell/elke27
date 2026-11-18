@@ -1,3 +1,24 @@
+  Unreleased
+
+  - Publication-wait timeout (#147): when the reply to ``area_get_status``,
+    ``zone_get_status``, ``zone_get_all_zones_status``, or an arm or bypass write whose
+    reply includes confirmed status is not published into ``get_snapshot()`` before the
+    command deadline, ``async_execute`` now returns ``Result(ok=False,
+    error=Elke27SnapshotPublicationError)`` with the message "Timed out waiting for
+    snapshot publication." and still logs the WARNING. 0.6.0 returned ``ok=True`` there,
+    so ``get_snapshot()`` could be stale. A reply already published when the deadline
+    passes still returns ``ok=True``. On an ack-only ``area_set_arm_state`` or
+    ``zone_set_status``, a timed-out follow-up read is a failed refresh:
+    ``Result(ok=True, status_refresh_ok=False)``, a WARNING, and the area or zone marked
+    stale; ``async_arm_area`` with ``ArmMode.ARMED_NIGHT`` then raises
+    ``Elke27CommandOutcomeUnknownError`` instead of checking Stay Instant against a
+    stale snapshot. The publication wait is bounded by the command deadline: the
+    per-attempt request timeout (``ClientConfig.request_timeout_s``, 5 s by default, or
+    the call's ``timeout_s``) times the number of transport attempts (3 by default),
+    plus the backoff between attempts (0.5 s + 1 s by default), counted from just before
+    the command is sent, which is 16.5 s with the defaults. A follow-up status read and
+    the publication wait only get what is left of it.
+
   Area Delay, Arm Night Stay Instant, Status Read Publication (0.6.0, 2026-11-17)
 
   - Entry/exit delay (#92, #141): public ``AreaState`` exposes ``delay_state``
@@ -21,7 +42,9 @@
   - Arm night requires application firmware **0.0.5.37 or later** (from
     `control.get_version_info` ``app``, not SSP). Unknown firmware raises
     ``Elke27PanelApplicationFirmwareUnknownError``; firmware below the minimum
-    raises ``Elke27NightArmFirmwareTooOldError``. ``PanelInfo.application_firmware``
+    raises ``Elke27NightArmFirmwareTooOldError`` with the message
+    "Arm night requires panel application firmware 0.0.5.37 or later."
+    ``PanelInfo.application_firmware``
     and per-area ``AreaState.night_arm_supported`` expose capability on the public
     snapshot.
   - Panel rejections on arm night raise ``Elke27PanelError`` (subclass of
@@ -33,11 +56,18 @@
     is missing from the snapshot after refresh (#142).
   - Status reads (#144), two cases. (a) ``area_get_status``, ``zone_get_status``,
     ``zone_get_all_zones_status``, and arm or bypass writes whose reply already
-    includes confirmed status wait until the reply is published into
-    ``get_snapshot()`` or the command wait budget runs out. When that publication
-    wait fails, ``async_execute`` returns ``Result(ok=False, error=...)`` with
-    ``Elke27DisconnectedError`` or ``Elke27SnapshotPublicationError``; it does not
-    raise those types. (b) Ack-only ``area_set_arm_state`` or ``zone_set_status``
+    includes confirmed status wait until the reply is published into ``get_snapshot()``.
+    The wait is bounded by the command deadline: the per-attempt request timeout
+    (``ClientConfig.request_timeout_s``, 5 s by default, or the call's ``timeout_s``)
+    times the number of transport attempts (3 by default), plus the backoff between
+    attempts (0.5 s + 1 s by default), counted from just before the command is sent,
+    which is 16.5 s with the defaults. A follow-up status read and the publication wait
+    only get what is left of it. When that publication wait fails, ``async_execute``
+    returns ``Result(ok=False, error=...)`` with ``Elke27DisconnectedError`` or
+    ``Elke27SnapshotPublicationError``; it does not raise those types. In 0.6.0, if the
+    deadline passes before publication, ``async_execute`` still returns
+    ``Result(ok=True)`` and logs a WARNING, so ``get_snapshot()`` may be stale (changed
+    after 0.6.0, #147). (b) Ack-only ``area_set_arm_state`` or ``zone_set_status``
     runs a follow-up ``area_get_status`` or ``zone_get_status``. Any failure of that
     nested read (including its publication wait) is a failed refresh on the write:
     ``Result(ok=True, status_refresh_ok=False)``, a WARNING, and the area or zone

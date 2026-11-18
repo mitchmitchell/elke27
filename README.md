@@ -259,6 +259,7 @@ If you are working on a Home Assistant integration:
   (`area_get_status`, `zone_get_status`, `zone_get_all_zones_status`) and arm or
   bypass writes whose reply already includes confirmed status wait until the
   reply is reflected in `get_snapshot()`. When that publication wait fails,
+  including when the command deadline passes before publication (#147),
   `async_execute` returns `Result(ok=False, error=Elke27DisconnectedError)` or
   `Result(ok=False, error=Elke27SnapshotPublicationError)`; it does not raise those
   types. (b) Ack-only `area_set_arm_state` or `zone_set_status` issues a follow-up
