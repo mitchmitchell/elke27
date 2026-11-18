@@ -34,7 +34,9 @@
     queue and never sent later. ``probes_sent`` now counts only probes whose write
     the transport confirmed, including one confirmed in the same loop pass as its
     send-wait timeout; it no longer counts probes that were queued but never
-    written, so it matches what the panel was sent.
+    written, so it matches what the panel was sent. A probe failed by a
+    disconnect or send error before it is written now consumes its waiter, so
+    asyncio does not log "Future exception was never retrieved".
 
   Area Delay, Arm Night Stay Instant, Status Read Publication (0.6.0, 2026-11-17)
 

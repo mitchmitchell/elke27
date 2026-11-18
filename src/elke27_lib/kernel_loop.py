@@ -315,6 +315,19 @@ def _panel_display_name(panel: discovery.E27System | Mapping[str, Any] | None) -
     return name or None
 
 
+def _consume_future_outcome(future: asyncio.Future[Any]) -> None:
+    """Retrieve a future's result so asyncio does not log it as unretrieved."""
+
+    def _retrieve(done: asyncio.Future[Any]) -> None:
+        if not done.cancelled():
+            done.exception()
+
+    if future.done():
+        _retrieve(future)
+        return
+    future.add_done_callback(_retrieve)
+
+
 class E27Kernel:
     """
     High-level facade + kernel for E27.
@@ -1022,7 +1035,9 @@ class E27Kernel:
         fails, unless inbound traffic arrived after the probe was queued. With
         the default ``keepalive_max_missed`` of 2 and the immediate follow-up
         probe, a wedged transport is disconnected about 60 s after the first
-        probe is queued (two 30 s send waits back to back).
+        probe is queued (two 30 s send waits back to back). The probe waiter is
+        consumed on every exit, including a disconnect or send failure that
+        fails it before send, so asyncio does not log an unretrieved exception.
         """
         self._set_loop_if_needed()
         if self._loop is None:
@@ -1040,6 +1055,7 @@ class E27Kernel:
         ):
             return True
         self._keepalive_inflight = True
+        future: asyncio.Future[Mapping[str, Any]] | None = None
         try:
             builder = self.requests.require(("system", "r_u_alive"))
             payload = builder()
@@ -1141,6 +1157,8 @@ class E27Kernel:
             return True
         finally:
             self._keepalive_inflight = False
+            if future is not None:
+                _consume_future_outcome(future)
 
     # -------------------------
     # Feature loading

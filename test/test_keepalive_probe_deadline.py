@@ -10,9 +10,11 @@ exercised with a short ``KeepaliveTestHooks.send_wait_s``.
 from __future__ import annotations
 
 import asyncio
+import gc
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 import pytest
 
@@ -166,11 +168,50 @@ async def test_inbound_after_probe_queued_rescues_send_wait_miss() -> None:
             await kernel.close()
 
 
+@pytest.mark.asyncio
+async def test_production_send_wait_does_not_miss_a_probe_still_queued_after_five_seconds() -> None:
+    """The production send wait is 30 s, so a 5 s queue wait is not a miss.
+
+    This uses the real default (no ``KeepaliveTestHooks.send_wait_s``). A change
+    of that default from 30 s to 5 s fails here after a short wait past 5 s,
+    well under 30 s.
+    """
+    with PanelSimulator() as panel:
+        kernel = E27Kernel(
+            skip_connect_bootstrap=True,
+            request_timeout_s=WEDGED_COMMAND_TIMEOUT_S,
+            request_max_retries=0,
+        )
+        drops: list[tuple[float, int]] = []
+
+        def _on_event(evt: Event) -> None:
+            if isinstance(evt, ConnectionStateChanged) and not evt.connected:
+                drops.append((time.monotonic(), panel.probes))
+
+        kernel.subscribe(_on_event, kinds=[ConnectionStateChanged.KIND])
+        await kernel.connect(
+            LINK_KEYS,
+            client_identity=IDENTITY,
+            session_config=panel.session_config(interval_s=30.0, timeout_s=PROBE_TIMEOUT_S),
+        )
+        try:
+            kernel.request(("area", "get_status"), area_id=1)
+            async with asyncio.timeout(15.0):
+                kernel.request_link_check()
+                await asyncio.sleep(8.0)
+            assert drops == []
+            assert panel.probes == 0
+            assert kernel.keepalive_stats.misses == 0
+            assert kernel.keepalive_stats.probes_sent == 0
+        finally:
+            await kernel.close()
+
+
 def _assert_no_probe_left_marked_sent(kernel: E27Kernel, panel: PanelSimulator) -> None:
     """Every probe the panel received has been answered and forgotten as sent."""
     assert panel.probe_seqs
     for seq in panel.probe_seqs:
-        assert isinstance(seq, int)
+        assert seq is not None
         assert not kernel.was_request_sent(seq)
 
 
@@ -287,6 +328,43 @@ async def test_probe_holding_slot_with_stalled_write_disconnects_and_leaves_noth
             assert panel.probes == 2
             assert kernel.keepalive_stats.probes_sent == panel.probes
         finally:
+            await kernel.close()
+
+
+@pytest.mark.asyncio
+async def test_queued_probe_failed_by_disconnect_does_not_leak_future_exception() -> None:
+    """A probe failed by link loss before send must not log an unretrieved future."""
+    with PanelSimulator() as panel:
+        kernel, drops = await _connect_wedged(panel, send_wait_s=30.0)
+        loop = asyncio.get_running_loop()
+        leaked: list[str] = []
+        previous_handler = loop.get_exception_handler()
+
+        def _capture(running: asyncio.AbstractEventLoop, context: dict[str, Any]) -> None:
+            message = str(context.get("message", ""))
+            if "Future exception was never retrieved" in message:
+                leaked.append(message)
+            if previous_handler is not None:
+                previous_handler(running, context)
+            else:
+                running.default_exception_handler(context)
+
+        loop.set_exception_handler(_capture)
+        try:
+            async with asyncio.timeout(5.0):
+                kernel.request_link_check()
+                await asyncio.sleep(0.3)
+                panel.drop_connection()
+                await _wait_for(lambda: bool(drops), timeout_s=5.0)
+                await asyncio.sleep(0.3)
+                gc.collect()
+                await asyncio.sleep(0)
+                gc.collect()
+            assert panel.probes == 0
+            assert kernel.keepalive_stats.probes_sent == panel.probes
+            assert leaked == []
+        finally:
+            loop.set_exception_handler(previous_handler)
             await kernel.close()
 
 

@@ -59,7 +59,7 @@ class PanelSimulator:
         self.answer_commands_after_s: float | None = None
         self.on_probe: Callable[[], None] | None = None
         self.probe_times: list[float] = []
-        self.probe_seqs: list[object] = []
+        self.probe_seqs: list[int | None] = []
         self._session_key = os.urandom(16)
         self._hmac_key = os.urandom(32)
         self._listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
