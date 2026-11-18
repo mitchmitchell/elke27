@@ -10,14 +10,18 @@
     ``tx_age`` 5.05 s, one idle interval plus one on-time timeout); each drop
     briefly made entities unavailable. This supersedes the 2026-10-31 decision to
     keep 1 miss; ADR-0013 implementation notes have the full rationale.
-  - Keepalive liveness (#149): probe scheduling and rescue by any inbound
-    traffic now use a timestamp taken on the receive thread before the message is
-    handed to the bound event loop, so a busy or blocked loop cannot turn a reply
-    that already arrived into a miss. New optional ``Session.on_rx`` hook (called
-    on the receiving thread for each decoded inbound message) carries it.
+  - Keepalive liveness (#149): the kernel's only liveness source is now a
+    timestamp taken on the receive thread before the message is handed to the
+    bound event loop, so a busy or blocked loop cannot turn a reply that already
+    arrived into a miss. Probe scheduling, the rescue of a probe that could not be
+    sent in time, timed out or failed, and the silent-command check after a
+    command reply timeout all read it; the kernel no longer keeps a second,
+    loop-side inbound timestamp. New optional ``Session.on_rx`` hook (called on
+    the receiving thread for each decoded inbound message) carries it.
   - Disconnect reason (#149): ``ConnectionStateChanged`` has a new public field
     ``err_msg`` (default ``None``) with the message of the exception that ended
-    the session, for example ``Keepalive timed out``. The client's
+    the session, for example ``Keepalive timed out``; ``None`` when that message
+    is empty. A refused HELLO carries it too. The client's
     ``Panel connection lost`` WARNING now ends with ``err_msg=...`` instead of
     leaving only ``reason=None error_type=...``.
 

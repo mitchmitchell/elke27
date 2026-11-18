@@ -4,8 +4,8 @@ Speaks the real wire protocol to ``Session``: cleartext HELLO with link-key
 encrypted session keys, then framed, schema-0 encrypted JSON. It answers
 ``system.r_u_alive`` probes and can drop or delay those replies, call a hook when
 a probe or another request arrives, push unsolicited ``seq=0`` traffic, refuse
-HELLO with an error code, drop the connection, and optionally acknowledge other
-requests with an empty success body. Dummy keys only.
+HELLO with an error code, and optionally acknowledge other requests with an
+empty success body. Dummy keys only.
 """
 
 from __future__ import annotations
@@ -106,16 +106,6 @@ class PanelSimulator:
     def send_unsolicited(self) -> None:
         """Push one unsolicited (``seq=0``) system message, as the panel does."""
         self._send({"seq": 0, "session_id": SESSION_ID, "system": {"r_u_alive": {}}})
-
-    def drop_connection(self) -> None:
-        """Shut the client connection down, as a panel reboot or cable pull would."""
-        conn = self._conn
-        if conn is None:
-            return
-        try:
-            conn.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            return
 
     def _send(self, obj: dict[str, Any]) -> None:
         conn = self._conn

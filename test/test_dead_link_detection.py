@@ -93,7 +93,7 @@ async def test_forced_probe_skips_wait_and_busy_queue() -> None:
     kernel._keepalive_enabled = True
     fake = _FakeSession()
     cast(Any, kernel)._session = fake
-    kernel._rx_thread_at = kernel.now()  # interval not yet reached
+    kernel._rx_thread_at = kernel.now()
     kernel._request_state = kernel_mod._RequestState.IN_FLIGHT  # busy with a command
     kernel.request_link_check()
 
@@ -265,7 +265,7 @@ async def test_forced_probe_queued_no_rescue_from_prior_command_reply() -> None:
 async def test_forced_probe_is_high_priority_while_command_queued() -> None:
     kernel = _probing_kernel()
     kernel._loop = asyncio.get_running_loop()
-    kernel._rx_thread_at = kernel.now()  # interval not reached
+    kernel._rx_thread_at = kernel.now()
     kernel._request_state = kernel_mod._RequestState.IN_FLIGHT
     cast(Any, kernel)._request_queue_normal.append(object())
     seen: dict[str, Any] = {}

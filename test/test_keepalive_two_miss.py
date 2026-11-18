@@ -24,7 +24,7 @@ import pytest
 from elke27_lib import session_thread
 from elke27_lib.client import Elke27Client
 from elke27_lib.events import ConnectionStateChanged, Event
-from elke27_lib.kernel_loop import E27Kernel, KeepaliveStats
+from elke27_lib.kernel_loop import E27Kernel, KeepaliveStats, KernelError
 from elke27_lib.session_thread import SessionIOError
 from test.helpers.panel_simulator import IDENTITY, LINK_KEYS, PanelSimulator
 from test.helpers.timers_first_loop import TimersFirstEventLoop
@@ -87,34 +87,7 @@ class _DelayOutcome:
     probes: int = 0
     probe_times: list[float] = field(default_factory=list)
     traffic_at: float | None = None
-    watchdog_fired: bool = False
-
-
-class _Watchdog:
-    """Drops the panel connection if the bound loop has not finished in time.
-
-    A keepalive loop that spins without awaiting starves the event loop, so the
-    test's own timeouts can never fire. Dropping the link from this thread moves
-    the session out of ACTIVE, which makes the keepalive loop await again; the
-    test then fails on ``fired`` instead of hanging.
-    """
-
-    def __init__(self, panel: PanelSimulator, after_s: float) -> None:
-        self.fired = False
-        self._panel = panel
-        self._timer = threading.Timer(after_s, self._fire)
-        self._timer.daemon = True
-
-    def _fire(self) -> None:
-        self.fired = True
-        self._panel.drop_connection()
-
-    def __enter__(self) -> _Watchdog:
-        self._timer.start()
-        return self
-
-    def __exit__(self, *_exc: object) -> None:
-        self._timer.cancel()
+    loop_stall_s: float = 0.0
 
 
 @pytest.mark.asyncio
@@ -295,38 +268,55 @@ def test_probe_schedule_reads_receive_thread_traffic_while_loop_lags() -> None:
     """Traffic the receive thread saw during a loop stall postpones the next probe.
 
     The loop is blocked across the probe's due time and the panel pushes one
-    unsolicited message during the block. On the timers-first loop the keepalive
-    timer runs before that message is handed to the loop, so the schedule must
-    come from the receive-thread stamp: the probe goes out one interval after the
-    traffic, the loop keeps turning, and nothing drops.
+    unsolicited message near the end of the block. On the timers-first loop the
+    keepalive timer runs before that message is handed to the loop, so the
+    schedule must come from the receive-thread stamp: the keepalive loop sleeps
+    until one interval after the traffic and the event loop keeps turning. A
+    schedule read from a loop-side stamp would decide a probe is due, find the
+    link busy, and retry without awaiting until the interval runs out.
     """
-    interval_s = 0.6
+    interval_s = 1.0
+    block_s = 1.0
     outcome = _DelayOutcome()
 
     async def _scenario() -> None:
         loop = asyncio.get_running_loop()
         traffic: list[float] = []
+        block_end: list[float] = []
+        beats: list[float] = []
+
+        def _block() -> None:
+            time.sleep(block_s)
+            block_end.append(time.monotonic())
+
+        async def _heartbeat() -> None:
+            while True:
+                beats.append(time.monotonic())
+                await asyncio.sleep(0.01)
+
         with PanelSimulator() as panel:
             kernel, events = await _connected_kernel(
                 panel, interval_s=interval_s, timeout_s=FAST_TIMEOUT_S
             )
+            beat_task = asyncio.create_task(_heartbeat())
             try:
-                with _Watchdog(panel, after_s=3.0) as watchdog:
-                    loop.call_later(0.2, time.sleep, 0.7)
-                    _send_unsolicited_after(panel, 0.45, traffic)
-                    await asyncio.sleep(0.05)
-                    await _wait_for(lambda: panel.probes >= 1, timeout_s=2.5)
-                outcome.watchdog_fired = watchdog.fired
+                loop.call_later(0.2, _block)
+                _send_unsolicited_after(panel, 1.0, traffic)
+                await _wait_for(lambda: panel.probes >= 1, timeout_s=4.0)
+                after = [t for t in beats if block_end and t >= block_end[0]]
+                gaps = [b - a for a, b in zip([block_end[0], *after], after, strict=False)]
+                outcome.loop_stall_s = max(gaps, default=float("inf"))
                 outcome.drops = _drops(events)
                 outcome.probe_times = list(panel.probe_times)
                 outcome.traffic_at = traffic[0] if traffic else None
             finally:
+                beat_task.cancel()
                 await kernel.close()
 
     _run(TimersFirstEventLoop, _scenario)
-    assert outcome.watchdog_fired is False
-    assert outcome.drops == []
     assert outcome.traffic_at is not None
+    assert outcome.loop_stall_s < 0.3
+    assert outcome.drops == []
     assert outcome.probe_times[0] - outcome.traffic_at >= interval_s - 0.1
 
 
@@ -382,7 +372,7 @@ async def test_hello_refusal_event_carries_err_msg() -> None:
         kernel = E27Kernel(skip_connect_bootstrap=True)
         events = _record_connection_events(kernel)
         try:
-            with pytest.raises(Exception, match="error_code=1"):
+            with pytest.raises(KernelError, match="error_code=1"):
                 await kernel.connect(
                     LINK_KEYS,
                     client_identity=IDENTITY,
