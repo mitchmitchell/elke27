@@ -3,8 +3,9 @@
 Speaks the real wire protocol to ``Session``: cleartext HELLO with link-key
 encrypted session keys, then framed, schema-0 encrypted JSON. It answers
 ``system.r_u_alive`` probes and can drop or delay those replies, call a hook when
-a probe arrives, push unsolicited ``seq=0`` traffic, and optionally acknowledge
-other requests with an empty success body. Dummy keys only.
+a probe or another request arrives, push unsolicited ``seq=0`` traffic, refuse
+HELLO with an error code, and optionally acknowledge other requests with an
+empty success body. Dummy keys only.
 """
 
 from __future__ import annotations
@@ -58,6 +59,8 @@ class PanelSimulator:
         self.unsolicited_after_probe_s: float | None = None
         self.answer_commands_after_s: float | None = None
         self.on_probe: Callable[[], None] | None = None
+        self.on_command: Callable[[], None] | None = None
+        self.hello_error_code: int | None = None
         self.probe_times: list[float] = []
         self.probe_seqs: list[int | None] = []
         self._session_key = os.urandom(16)
@@ -163,6 +166,10 @@ class PanelSimulator:
                 decoder.raw_decode(buf.decode("utf-8"))
             except ValueError:
                 continue
+            refusal = self.hello_error_code
+            if refusal is not None:
+                conn.sendall(json.dumps({"hello": {"error_code": refusal}}).encode("utf-8"))
+                return False
             reply = {
                 "hello": {
                     "session_id": SESSION_ID,
@@ -200,6 +207,9 @@ class PanelSimulator:
     def _handle(self, msg: dict[str, Any]) -> None:
         system = msg.get("system")
         if not isinstance(system, dict) or "r_u_alive" not in system:
+            command_hook = self.on_command
+            if command_hook is not None:
+                command_hook()
             self._maybe_answer_command(msg)
             return
         self.probe_times.append(time.monotonic())

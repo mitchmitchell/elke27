@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
@@ -20,9 +21,11 @@ from typing import Any
 
 import pytest
 
+from elke27_lib import session_thread
 from elke27_lib.client import Elke27Client
 from elke27_lib.events import ConnectionStateChanged, Event
-from elke27_lib.kernel_loop import E27Kernel, KeepaliveStats
+from elke27_lib.kernel_loop import E27Kernel, KeepaliveStats, KernelError
+from elke27_lib.session_thread import SessionIOError
 from test.helpers.panel_simulator import IDENTITY, LINK_KEYS, PanelSimulator
 from test.helpers.timers_first_loop import TimersFirstEventLoop
 
@@ -82,6 +85,9 @@ class _DelayOutcome:
     stats: KeepaliveStats = field(default_factory=KeepaliveStats)
     drops: list[ConnectionStateChanged] = field(default_factory=list)
     probes: int = 0
+    probe_times: list[float] = field(default_factory=list)
+    traffic_at: float | None = None
+    loop_stall_s: float = 0.0
 
 
 @pytest.mark.asyncio
@@ -246,3 +252,162 @@ async def test_keepalive_disconnect_carries_err_msg_on_event_and_warning(
         lost = [r for r in caplog.records if "Panel connection lost" in r.getMessage()]
         assert len(lost) == 1
         assert "err_msg=Keepalive timed out" in lost[0].getMessage()
+
+
+def _send_unsolicited_after(panel: PanelSimulator, delay_s: float, sent_at: list[float]) -> None:
+    def _send() -> None:
+        sent_at.append(time.monotonic())
+        panel.send_unsolicited()
+
+    timer = threading.Timer(delay_s, _send)
+    timer.daemon = True
+    timer.start()
+
+
+def test_probe_schedule_reads_receive_thread_traffic_while_loop_lags() -> None:
+    """Traffic the receive thread saw during a loop stall postpones the next probe.
+
+    The loop is blocked across the probe's due time and the panel pushes one
+    unsolicited message near the end of the block. On the timers-first loop the
+    keepalive timer runs before that message is handed to the loop, so the
+    schedule must come from the receive-thread stamp: the keepalive loop sleeps
+    until one interval after the traffic and the event loop keeps turning. A
+    schedule read from a loop-side stamp would decide a probe is due, find the
+    link busy, and retry without awaiting until the interval runs out.
+    """
+    interval_s = 1.0
+    block_s = 1.0
+    outcome = _DelayOutcome()
+
+    async def _scenario() -> None:
+        loop = asyncio.get_running_loop()
+        traffic: list[float] = []
+        block_end: list[float] = []
+        beats: list[float] = []
+
+        def _block() -> None:
+            time.sleep(block_s)
+            block_end.append(time.monotonic())
+
+        async def _heartbeat() -> None:
+            while True:
+                beats.append(time.monotonic())
+                await asyncio.sleep(0.01)
+
+        with PanelSimulator() as panel:
+            kernel, events = await _connected_kernel(
+                panel, interval_s=interval_s, timeout_s=FAST_TIMEOUT_S
+            )
+            beat_task = asyncio.create_task(_heartbeat())
+            try:
+                loop.call_later(0.2, _block)
+                _send_unsolicited_after(panel, 1.0, traffic)
+                await _wait_for(lambda: panel.probes >= 1, timeout_s=8.0)
+                after = [t for t in beats if block_end and t >= block_end[0]]
+                gaps = [b - a for a, b in zip([block_end[0], *after], after, strict=False)]
+                outcome.loop_stall_s = max(gaps, default=float("inf"))
+                outcome.drops = _drops(events)
+                outcome.probe_times = list(panel.probe_times)
+                outcome.traffic_at = traffic[0] if traffic else None
+            finally:
+                beat_task.cancel()
+                await kernel.close()
+
+    _run(TimersFirstEventLoop, _scenario)
+    assert outcome.traffic_at is not None
+    assert outcome.loop_stall_s < 0.3
+    assert outcome.drops == []
+    assert outcome.probe_times[0] - outcome.traffic_at >= interval_s - 0.1
+
+
+def test_command_timeout_after_receive_thread_traffic_is_not_silent() -> None:
+    """A command reply timeout is not a silent link when the receive thread saw traffic.
+
+    The panel never answers the command but pushes unsolicited traffic after it
+    was sent. The loop is blocked across the reply timeout, so on the
+    timers-first loop the timeout fires before that traffic reaches the loop. The
+    link was talking, so no link-check probe may go out.
+    """
+    outcome = _DelayOutcome()
+
+    async def _scenario() -> None:
+        loop = asyncio.get_running_loop()
+        traffic: list[float] = []
+        with PanelSimulator() as panel:
+            kernel = E27Kernel(skip_connect_bootstrap=True, request_timeout_s=0.4)
+            events = _record_connection_events(kernel)
+            await kernel.connect(
+                LINK_KEYS,
+                client_identity=IDENTITY,
+                session_config=panel.session_config(interval_s=30.0, timeout_s=FAST_TIMEOUT_S),
+            )
+
+            def _stall_loop_then_talk() -> None:
+                if panel.on_command is None:
+                    return
+                panel.on_command = None
+                loop.call_soon_threadsafe(loop.call_later, 0.1, time.sleep, 0.8)
+                _send_unsolicited_after(panel, 0.25, traffic)
+
+            panel.on_command = _stall_loop_then_talk
+            try:
+                kernel.request(("area", "get_status"), area_id=1)
+                await asyncio.sleep(1.6)
+                outcome.drops = _drops(events)
+                outcome.probes = panel.probes
+                outcome.traffic_at = traffic[0] if traffic else None
+            finally:
+                await kernel.close()
+
+    _run(TimersFirstEventLoop, _scenario)
+    assert outcome.traffic_at is not None
+    assert outcome.drops == []
+    assert outcome.probes == 0
+
+
+@pytest.mark.asyncio
+async def test_hello_refusal_event_carries_err_msg() -> None:
+    with PanelSimulator() as panel:
+        panel.hello_error_code = 1
+        kernel = E27Kernel(skip_connect_bootstrap=True)
+        events = _record_connection_events(kernel)
+        try:
+            with pytest.raises(KernelError, match="error_code=1"):
+                await kernel.connect(
+                    LINK_KEYS,
+                    client_identity=IDENTITY,
+                    session_config=panel.session_config(
+                        interval_s=FAST_INTERVAL_S, timeout_s=FAST_TIMEOUT_S
+                    ),
+                )
+            await _wait_for(lambda: bool(_drops(events)), timeout_s=2.0)
+        finally:
+            await kernel.close()
+    refused = _drops(events)[0]
+    assert refused.hello_refused is True
+    assert refused.err_msg == "Panel rejected HELLO: error_code=1 (no message)."
+
+
+@pytest.mark.asyncio
+async def test_drop_with_empty_error_message_reports_err_msg_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fail_reads = threading.Event()
+
+    class _EmptyErrorSession(session_thread.Session):
+        def recv_json(self, *, timeout_s: float = 5.0) -> dict[str, Any]:
+            if fail_reads.is_set():
+                raise SessionIOError("")
+            return super().recv_json(timeout_s=timeout_s)
+
+    monkeypatch.setattr(session_thread, "Session", _EmptyErrorSession)
+    with PanelSimulator() as panel:
+        kernel, events = await _connected_kernel(panel, interval_s=30.0, timeout_s=FAST_TIMEOUT_S)
+        try:
+            fail_reads.set()
+            await _wait_for(lambda: bool(_drops(events)), timeout_s=5.0)
+        finally:
+            await kernel.close()
+    drop = _drops(events)[0]
+    assert drop.error_type == "SessionIOError"
+    assert drop.err_msg is None

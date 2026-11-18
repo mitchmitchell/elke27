@@ -34,6 +34,7 @@ class _FakeSession:
         self.on_message: Any = None
         self.on_disconnected: Any = None
         self.on_idle: Any = None
+        self.on_rx: Any = None
         self.disconnects: list[Exception | None] = []
 
     def connect(self) -> session_mod.SessionInfo:
@@ -54,10 +55,15 @@ class _FakeSession:
         if on_sent is not None:
             on_sent(time.monotonic())
         if self.answer and self.on_message is not None:
-            self.on_message(dict(msg))
+            self._receive(dict(msg))
         elif self.rescue and self.on_message is not None:
-            handler = self.on_message
-            asyncio.get_running_loop().call_later(0.01, handler, {"seq": 0})
+            asyncio.get_running_loop().call_later(0.01, self._receive, {"seq": 0})
+
+    def _receive(self, msg: dict[str, Any]) -> None:
+        """Deliver one inbound message the way ``Session`` does: ``on_rx`` first."""
+        if self.on_rx is not None:
+            self.on_rx()
+        self.on_message(msg)
 
     def handle_disconnect(self, err: Exception | None) -> None:
         self.disconnects.append(err)

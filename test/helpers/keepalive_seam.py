@@ -79,7 +79,7 @@ def _probing_kernel(seam: KeepaliveSeam) -> tuple[E27Kernel, _FakeSession]:
     set_private(kernel, "_keepalive_interval_s", 0.0)
     set_private(kernel, "_keepalive_timeout_s", 5.0)
     set_private(kernel, "_keepalive_max_missed", 1)
-    set_private(kernel, "_last_rx_at", 0.0)
+    set_private(kernel, "_rx_thread_at", 0.0)
     fake = _FakeSession()
     cast(Any, fake)._outbound = type("O", (), {"is_idle": lambda self: True})()
     set_private(kernel, "_session", fake)
@@ -120,7 +120,7 @@ def _install_probe_send(
             return seq
         seam.advance(reply_delay_s)
         if reply_delay_s < timeout_s:
-            set_private(kernel, "_last_rx_at", seam.clock.now())
+            set_private(kernel, "_rx_thread_at", seam.clock.now())
             cast(Any, kernel)._pending_responses.resolve(
                 seq, {"seq": seq, "system": {"r_u_alive": {}}}
             )
@@ -141,6 +141,7 @@ def _install_o14_late_rx_rescue_send(seam: KeepaliveSeam, kernel: E27Kernel) -> 
             await asyncio.sleep(0)
             seam.clock.advance(timeout_s + 0.01)
             seam.clock.advance(0.001)
+            cast(Any, kernel)._note_rx_on_receive_thread()
             cast(Any, kernel)._on_message(
                 {
                     "seq": seq + 10_000,

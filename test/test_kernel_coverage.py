@@ -133,12 +133,12 @@ async def test_keepalive_loop_branches(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(kernel_mod.asyncio, "sleep", _sleep_cancel)
     kernel._keepalive_enabled = True
     kernel._last_exchange_at = kernel.now()
-    kernel._last_rx_at = kernel.now()
+    kernel._rx_thread_at = kernel.now()
     await kernel._keepalive_loop()
 
     kernel._keepalive_interval_s = 0.0
     kernel._last_exchange_at = 0.0
-    kernel._last_rx_at = 0.0
+    kernel._rx_thread_at = 0.0
     cast(Any, kernel)._session = None
     await kernel._keepalive_loop()
 
@@ -177,13 +177,13 @@ async def test_keepalive_loop_sleep_cancellations(monkeypatch: pytest.MonkeyPatc
     kernel = E27Kernel()
     kernel._keepalive_enabled = True
     kernel._last_exchange_at = kernel.now()
-    kernel._last_rx_at = kernel.now()
+    kernel._rx_thread_at = kernel.now()
     kernel._keepalive_interval_s = 100.0
     await kernel._keepalive_loop()
 
     kernel._keepalive_interval_s = 0.0
     kernel._last_exchange_at = 0.0
-    kernel._last_rx_at = 0.0
+    kernel._rx_thread_at = 0.0
     cast(Any, kernel)._session = None
     await kernel._keepalive_loop()
 
@@ -211,7 +211,7 @@ async def test_keepalive_loop_wait_cancel_line_659(monkeypatch: pytest.MonkeyPat
     kernel = E27Kernel()
     kernel._keepalive_enabled = True
     kernel._last_exchange_at = kernel.now()
-    kernel._last_rx_at = kernel.now()
+    kernel._rx_thread_at = kernel.now()
     kernel._keepalive_interval_s = 100.0
     await kernel._keepalive_loop()
 
@@ -226,7 +226,7 @@ async def test_keepalive_loop_session_cancel_line_666(monkeypatch: pytest.Monkey
     kernel._keepalive_enabled = True
     kernel._keepalive_interval_s = 0.0
     kernel._last_exchange_at = 0.0
-    kernel._last_rx_at = 0.0
+    kernel._rx_thread_at = 0.0
     cast(Any, kernel)._session = None
     await kernel._keepalive_loop()
 
@@ -241,7 +241,7 @@ async def test_keepalive_loop_request_cancel_line_676(monkeypatch: pytest.Monkey
     kernel._keepalive_enabled = True
     kernel._keepalive_interval_s = 0.0
     kernel._last_exchange_at = 0.0
-    kernel._last_rx_at = 0.0
+    kernel._rx_thread_at = 0.0
     cast(Any, kernel)._session = SimpleNamespace(state=SessionState.ACTIVE)
     kernel._request_state = kernel_mod._RequestState.IN_FLIGHT
     await kernel._keepalive_loop()
@@ -257,7 +257,7 @@ async def test_keepalive_loop_outbound_cancel_line_683(monkeypatch: pytest.Monke
     kernel._keepalive_enabled = True
     kernel._keepalive_interval_s = 0.0
     kernel._last_exchange_at = 0.0
-    kernel._last_rx_at = 0.0
+    kernel._rx_thread_at = 0.0
     cast(Any, kernel)._session = SimpleNamespace(
         state=SessionState.ACTIVE, _outbound=SimpleNamespace(is_idle=lambda: False)
     )
@@ -274,7 +274,7 @@ async def test_keepalive_loop_inflight_cancel_line_689(monkeypatch: pytest.Monke
     kernel._keepalive_enabled = True
     kernel._keepalive_interval_s = 0.0
     kernel._last_exchange_at = 0.0
-    kernel._last_rx_at = 0.0
+    kernel._rx_thread_at = 0.0
     cast(Any, kernel)._session = SimpleNamespace(state=SessionState.ACTIVE)
     kernel._keepalive_inflight = True
     await kernel._keepalive_loop()
@@ -292,14 +292,14 @@ async def test_keepalive_loop_continue_paths(monkeypatch: pytest.MonkeyPatch) ->
 
     kernel._closing = False
     kernel._last_exchange_at = kernel.now()
-    kernel._last_rx_at = kernel.now()
+    kernel._rx_thread_at = kernel.now()
     kernel._keepalive_interval_s = 100.0
     await kernel._keepalive_loop()
 
     kernel._closing = False
     kernel._keepalive_interval_s = 0.0
     kernel._last_exchange_at = 0.0
-    kernel._last_rx_at = 0.0
+    kernel._rx_thread_at = 0.0
     cast(Any, kernel)._session = None
     await kernel._keepalive_loop()
 
@@ -330,13 +330,13 @@ async def test_send_keepalive_request_branches(monkeypatch: pytest.MonkeyPatch) 
     cast(Any, kernel)._loop = asyncio.get_running_loop()
     cast(Any, kernel)._session = SimpleNamespace(state=SessionState.ACTIVE)
     kernel._last_exchange_at = kernel.now()
-    kernel._last_rx_at = kernel.now()
+    kernel._rx_thread_at = kernel.now()
     kernel._keepalive_interval_s = 10.0
     assert await kernel._send_keepalive_request() is True
 
     kernel._keepalive_inflight = True
     kernel._last_exchange_at = 0.0
-    kernel._last_rx_at = 0.0
+    kernel._rx_thread_at = 0.0
     kernel._keepalive_interval_s = 0.0
     assert await kernel._send_keepalive_request() is True
     kernel._keepalive_inflight = False
@@ -348,7 +348,7 @@ async def test_send_keepalive_request_branches(monkeypatch: pytest.MonkeyPatch) 
 
     monkeypatch.setattr(kernel, "_send_request_with_seq", _send_raise)
     kernel._last_exchange_at = 0.0
-    kernel._last_rx_at = 0.0
+    kernel._rx_thread_at = 0.0
     kernel._keepalive_interval_s = 0.0
     assert await kernel._send_keepalive_request() is False
 
