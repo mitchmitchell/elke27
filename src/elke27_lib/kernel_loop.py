@@ -371,7 +371,7 @@ class E27Kernel:
     _keepalive_missed: int
     _keepalive_stats: KeepaliveStats
     _last_exchange_at: float
-    _last_rx_at: float
+    _rx_thread_at: float
     _keepalive_inflight: bool
     _keepalive_probe_requested: bool
     _keepalive_wake: asyncio.Event | None
@@ -489,7 +489,7 @@ class E27Kernel:
         self._keepalive_enabled = False
         self._keepalive_interval_s = 30.0
         self._keepalive_timeout_s = 5.0
-        self._keepalive_max_missed = 1
+        self._keepalive_max_missed = 2
         # Max wait for a probe to leave the outbound queue (covers one in-flight
         # command's reply timeout).
         self._keepalive_send_wait_s = 30.0
@@ -497,7 +497,7 @@ class E27Kernel:
         self._keepalive_missed = 0
         now = self.now()
         self._last_exchange_at = now
-        self._last_rx_at = now
+        self._rx_thread_at = now
         self._keepalive_inflight = False
         self._keepalive_probe_requested = False
         self._keepalive_wake = None
@@ -675,6 +675,7 @@ class E27Kernel:
         s.on_message = self._on_message
         s.on_disconnected = self._on_session_disconnected
         s.on_idle = self._on_idle
+        s.on_rx = self._note_rx_on_receive_thread
 
         def _do_connect_sync() -> session_mod.SessionInfo:
             return s.connect()
@@ -748,7 +749,7 @@ class E27Kernel:
         self._keepalive_missed = 0
         now = self.now()
         self._last_exchange_at = now
-        self._last_rx_at = now
+        self._rx_thread_at = now
         if self._keepalive_enabled:
             self._start_keepalive()
 
@@ -880,6 +881,17 @@ class E27Kernel:
         if sleeper in done:
             sleeper.result()
 
+    def _note_rx_on_receive_thread(self) -> None:
+        """Stamp inbound liveness on the receive thread (#149).
+
+        This stamp is the kernel's only liveness source: probe scheduling, the
+        send-wait and reply rescues, and the silent-command check all read it.
+        It runs before the message is marshalled onto the bound loop, so a busy
+        or blocked loop cannot make traffic that already arrived look like
+        silence.
+        """
+        self._rx_thread_at = self.now()
+
     @property
     def keepalive_stats(self) -> KeepaliveStats:
         """A copy of the keepalive counters; see ``KeepaliveStats``.
@@ -900,7 +912,7 @@ class E27Kernel:
             # Schedule probes from the last *inbound* traffic. Outbound sends
             # (including unanswered commands and the probe itself) must not
             # postpone detection of a dead link.
-            idle_for = self.now() - self._last_rx_at
+            idle_for = self.now() - self._rx_thread_at
             wait_for = self._keepalive_interval_s - idle_for
             if wait_for > 0 and not self._keepalive_probe_requested:
                 try:
@@ -958,6 +970,7 @@ class E27Kernel:
             if self._keepalive_missed >= self._keepalive_max_missed:
                 session.handle_disconnect(session_mod.SessionProtocolError("Keepalive timed out"))
                 return
+            self._keepalive_probe_requested = True
 
     def _probe_sent_at(self, seq: int) -> float | None:
         if self._active_seq != seq:
@@ -970,7 +983,7 @@ class E27Kernel:
             return False
         if self._session is None or self._session.state is not session_mod.SessionState.ACTIVE:
             return False
-        if not force and self.now() - self._last_rx_at < self._keepalive_interval_s:
+        if not force and self.now() - self._rx_thread_at < self._keepalive_interval_s:
             return True
         if self._keepalive_inflight:
             return True
@@ -1022,7 +1035,7 @@ class E27Kernel:
                     self._keepalive_send_wait_s,
                     seq,
                 )
-                return self._last_rx_at > queued_at
+                return self._rx_thread_at > queued_at
             if probe_sent_at is None:
                 probe_sent_at = self._probe_sent_at(seq)
             sent_at = probe_sent_at if probe_sent_at is not None else self.now()
@@ -1040,7 +1053,7 @@ class E27Kernel:
                         seq,
                         self.state.panel.session_id,
                     )
-                rescued = self._last_rx_at > sent_at
+                rescued = self._rx_thread_at > sent_at
                 if rescued:
                     stats.rescued += 1
                     self._log.debug("E27 keepalive reply missing; later traffic kept the link")
@@ -1053,7 +1066,7 @@ class E27Kernel:
                     exc,
                     exc_info=True,
                 )
-                return self._last_rx_at > sent_at
+                return self._rx_thread_at > sent_at
             rtt = max(0.0, self.now() - sent_at)
             stats.replies += 1
             stats.last_round_trip_s = rtt
@@ -1316,7 +1329,6 @@ class E27Kernel:
             self.state.panel.session_id = sid
 
         self.state.panel.last_message_at = self.now()
-        self._last_rx_at = self.state.panel.last_message_at
         self._last_exchange_at = self.state.panel.last_message_at
 
         if seq_val not in self._raw_passthrough_seqs and self._log.isEnabledFor(logging.DEBUG):
@@ -1390,6 +1402,7 @@ class E27Kernel:
         )
         was_connected = self.state.panel.connected
         self.state.panel.connected = False
+        err_msg = (str(err) or None) if err is not None else None
         if not was_connected:
             # Session setup failed before connect() completed (#80 / O7b). Only a
             # panel HELLO refusal is surfaced as connected=False; other setup
@@ -1400,6 +1413,7 @@ class E27Kernel:
                     reason=None,
                     error_type=type(err).__name__ if err is not None else None,
                     hello_refused=True,
+                    err_msg=err_msg,
                 )
             return
         self.dispatcher.abort_paged_transfers()
@@ -1409,6 +1423,7 @@ class E27Kernel:
             reason=None,
             error_type=type(err).__name__ if err is not None else None,
             hello_refused=isinstance(err, _HELLO_REFUSAL_ERRORS),
+            err_msg=err_msg,
         )
 
     def _is_valid_attrib_id(self, domain: str, entity_id: int) -> bool:
@@ -1929,7 +1944,7 @@ class E27Kernel:
         if self._active_request is not None:
             route = self._active_request.expected_route
         sent_at = self._active_sent_at
-        silent = sent_at is not None and self._last_rx_at <= sent_at
+        silent = sent_at is not None and self._rx_thread_at <= sent_at
         timeout_exc = E27Timeout(f"Response timed out for seq={seq}")
         active_item = self._active_request
         if active_item is not None and isinstance(active_item, _QueuedRequest):
@@ -2356,6 +2371,7 @@ class E27Kernel:
         reason: str | None = None,
         error_type: str | None = None,
         hello_refused: bool = False,
+        err_msg: str | None = None,
     ) -> None:
         ctx = DispatchContext(
             kind=MessageKind.UNKNOWN,
@@ -2377,6 +2393,7 @@ class E27Kernel:
             reason=reason,
             error_type=error_type,
             hello_refused=hello_refused,
+            err_msg=err_msg,
         )
         self.emit(evt, ctx=ctx)
 

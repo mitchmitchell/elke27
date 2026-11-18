@@ -62,6 +62,14 @@ UNSET_SESSION_ID: int | None = None
 
 @dataclass(frozen=True, slots=True)
 class ConnectionStateChanged(Event):
+    """The panel link came up or went down.
+
+    ``error_type`` is the exception class name behind a drop. ``err_msg`` is that
+    exception's message (for example ``Keepalive timed out``), so callers can say
+    why the link dropped instead of only ``reason=None`` (#149). It is ``None`` on
+    connect, on a deliberate close, and when the session reported no exception.
+    """
+
     KIND: ClassVar[str] = "connection_state_changed"
 
     connected: bool
@@ -70,6 +78,7 @@ class ConnectionStateChanged(Event):
     # True when session setup failed because the panel refused HELLO (#61):
     # there was never an established session to lose.
     hello_refused: bool = False
+    err_msg: str | None = None
 
 
 # -------------------------

@@ -57,6 +57,10 @@ a breaking change.
     avoid a false alarm on failed setup (#80).
   - After a session was connected, loss or clean close still emits
     `connected=False` (`hello_refused` stays false).
+  - `err_msg` (optional string) is the message of the exception that ended the
+    session, for example `Keepalive timed out` (#149), including a refused
+    HELLO. It is `None` on connect, on a deliberate close, when no exception was
+    reported, and when the exception's message is empty.
 
 ## State Snapshots (read-only views)
 
