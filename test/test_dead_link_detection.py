@@ -19,7 +19,7 @@ from elke27_lib.session_thread import Session, SessionConfig, SessionProtocolErr
 def test_session_config_defaults_detect_quickly() -> None:
     cfg = SessionConfig(host="192.0.2.1")
     assert cfg.keepalive_timeout_s <= 5.0
-    assert cfg.keepalive_max_missed == 1
+    assert cfg.keepalive_max_missed == 2
 
 
 class _FakeSession:
@@ -33,15 +33,15 @@ class _FakeSession:
 
 @pytest.mark.asyncio
 async def test_single_missed_keepalive_disconnects() -> None:
-    kernel = E27Kernel()
+    clock = [1000.0]
+    kernel = E27Kernel(now_monotonic=lambda: clock[0])
     kernel._keepalive_enabled = True
     kernel._keepalive_interval_s = 30.0
     kernel._keepalive_max_missed = 1
     fake = _FakeSession()
     cast(Any, kernel)._session = fake
-    now = kernel.now()
-    kernel._last_rx_at = now - 31.0  # panel silent past the interval
-    kernel._last_exchange_at = now  # we just sent something; must not postpone probe
+    clock[0] += 31.0
+    kernel._last_exchange_at = kernel.now()
 
     calls: list[bool] = []
 
@@ -50,7 +50,8 @@ async def test_single_missed_keepalive_disconnects() -> None:
         return False
 
     cast(Any, kernel)._send_keepalive_request = _probe
-    await kernel._keepalive_loop()
+    async with asyncio.timeout(2.0):
+        await kernel._keepalive_loop()
     assert calls == [False]
     assert len(fake.disconnects) == 1
     assert isinstance(fake.disconnects[0], SessionProtocolError)
@@ -66,7 +67,7 @@ async def test_silent_reply_timeout_requests_link_check() -> None:
     kernel._active_released = False
     kernel._active_request = cast(Any, SimpleNamespace(expected_route=("light", "set_status")))
     kernel._active_sent_at = kernel.now()
-    kernel._last_rx_at = kernel._active_sent_at - 1.0
+    kernel._rx_thread_at = kernel._active_sent_at - 1.0
     kernel._on_reply_timeout(115)
     assert kernel._keepalive_probe_requested is True
 
@@ -80,8 +81,8 @@ async def test_reply_timeout_with_inbound_traffic_does_not_probe() -> None:
     kernel._active_seq = 7
     kernel._active_released = False
     kernel._active_request = cast(Any, SimpleNamespace(expected_route=("light", "set_status")))
-    kernel._active_sent_at = kernel.now() - 2.0
-    kernel._last_rx_at = kernel.now()  # panel is talking; just this reply was lost
+    kernel._active_sent_at = kernel.now()
+    kernel._rx_thread_at = kernel._active_sent_at + 1.0
     kernel._on_reply_timeout(7)
     assert kernel._keepalive_probe_requested is False
 
@@ -92,7 +93,7 @@ async def test_forced_probe_skips_wait_and_busy_queue() -> None:
     kernel._keepalive_enabled = True
     fake = _FakeSession()
     cast(Any, kernel)._session = fake
-    kernel._last_rx_at = kernel.now()  # interval not yet reached
+    kernel._rx_thread_at = kernel.now()
     kernel._request_state = kernel_mod._RequestState.IN_FLIGHT  # busy with a command
     kernel.request_link_check()
 
@@ -103,8 +104,9 @@ async def test_forced_probe_skips_wait_and_busy_queue() -> None:
         return False
 
     cast(Any, kernel)._send_keepalive_request = _probe
-    await kernel._keepalive_loop()
-    assert calls == [True]
+    async with asyncio.timeout(2.0):
+        await kernel._keepalive_loop()
+    assert calls == [True, True]
     assert len(fake.disconnects) == 1
 
 
@@ -155,7 +157,7 @@ async def test_request_link_check_wakes_sleeping_loop() -> None:
     kernel = _probing_kernel()
     kernel._loop = asyncio.get_running_loop()
     kernel._keepalive_interval_s = 3600.0
-    kernel._last_rx_at = kernel.now()
+    kernel._rx_thread_at = kernel.now()
     calls: list[bool] = []
 
     async def _probe(*, force: bool = False) -> bool:
@@ -189,7 +191,7 @@ def test_keepalive_restarts_on_fresh_event_loop() -> None:
 
     async def _first() -> None:
         kernel._loop = asyncio.get_running_loop()
-        kernel._last_rx_at = kernel.now()
+        kernel._rx_thread_at = kernel.now()
         kernel._start_keepalive()
         await asyncio.sleep(0.05)  # loop is now waiting on the first Event
         kernel._stop_keepalive()  # close()
@@ -211,7 +213,7 @@ def test_keepalive_restarts_on_fresh_event_loop() -> None:
 
     async def _second() -> None:
         kernel._loop = asyncio.get_running_loop()
-        kernel._last_rx_at = kernel.now()
+        kernel._rx_thread_at = kernel.now()
         kernel._start_keepalive()
         task = kernel._keepalive_task
         assert task is not None
@@ -224,37 +226,31 @@ def test_keepalive_restarts_on_fresh_event_loop() -> None:
     assert calls == [True]
 
 
+@pytest.mark.parametrize("traffic", [True, False], ids=["other-traffic", "silent"])
+@pytest.mark.parametrize(
+    "failure",
+    [E27Timeout("t"), RuntimeError("probe failed")],
+    ids=["reply-timeout", "reply-exception"],
+)
 @pytest.mark.asyncio
-async def test_probe_timeout_with_other_traffic_counts_as_alive() -> None:
+async def test_failed_probe_is_rescued_only_by_traffic_after_send(
+    traffic: bool, failure: Exception
+) -> None:
+    """A probe whose reply times out or fails counts as alive only when the receive
+    thread saw other traffic after the probe was sent."""
     kernel = _probing_kernel()
     kernel._loop = asyncio.get_running_loop()
-    kernel._last_rx_at = 0.0
     kernel._keepalive_interval_s = 0.0
 
     def _send(seq: int, *_a: Any, **_k: Any) -> int:
         kernel._signal_sent_event(seq)
-        kernel._last_rx_at = kernel.now() + 1000.0  # other panel traffic arrived
-        kernel._pending_responses.fail(seq, E27Timeout("t"))
+        if traffic:
+            kernel._rx_thread_at = kernel.now() + 1000.0
+        kernel._pending_responses.fail(seq, failure)
         return seq
 
     cast(Any, kernel)._send_request_with_seq = _send
-    assert await kernel._send_keepalive_request() is True
-
-
-@pytest.mark.asyncio
-async def test_probe_timeout_without_traffic_is_a_miss() -> None:
-    kernel = _probing_kernel()
-    kernel._loop = asyncio.get_running_loop()
-    kernel._last_rx_at = 0.0
-    kernel._keepalive_interval_s = 0.0
-
-    def _send(seq: int, *_a: Any, **_k: Any) -> int:
-        kernel._signal_sent_event(seq)
-        kernel._pending_responses.fail(seq, E27Timeout("t"))
-        return seq
-
-    cast(Any, kernel)._send_request_with_seq = _send
-    assert await kernel._send_keepalive_request() is False
+    assert await kernel._send_keepalive_request() is traffic
 
 
 @pytest.mark.asyncio
@@ -269,7 +265,7 @@ async def test_forced_probe_queued_no_rescue_from_prior_command_reply() -> None:
 async def test_forced_probe_is_high_priority_while_command_queued() -> None:
     kernel = _probing_kernel()
     kernel._loop = asyncio.get_running_loop()
-    kernel._last_rx_at = kernel.now()  # interval not reached
+    kernel._rx_thread_at = kernel.now()
     kernel._request_state = kernel_mod._RequestState.IN_FLIGHT
     cast(Any, kernel)._request_queue_normal.append(object())
     seen: dict[str, Any] = {}
@@ -289,19 +285,23 @@ async def test_forced_probe_is_high_priority_while_command_queued() -> None:
     assert seen["priority"] is OutboundPriority.HIGH
 
 
+@pytest.mark.parametrize("traffic", [True, False], ids=["other-traffic", "silent"])
 @pytest.mark.asyncio
-async def test_wedged_outbound_does_not_hang_forced_probe() -> None:
+async def test_wedged_outbound_does_not_hang_forced_probe(traffic: bool) -> None:
+    """A probe that never leaves the outbound queue gives up after the send wait;
+    it counts as alive only when the receive thread saw traffic after queueing."""
     kernel = _probing_kernel()
     kernel._loop = asyncio.get_running_loop()
-    kernel._last_rx_at = 0.0
     kernel._keepalive_send_wait_s = 0.05
 
     def _send(seq: int, *_a: Any, **_k: Any) -> int:
-        return seq  # never leaves the outbound queue
+        if traffic:
+            kernel._rx_thread_at = kernel.now() + 1000.0
+        return seq
 
     cast(Any, kernel)._send_request_with_seq = _send
     result = await asyncio.wait_for(kernel._send_keepalive_request(force=True), timeout=2.0)
-    assert result is False
+    assert result is traffic
     assert kernel._keepalive_inflight is False
 
 
