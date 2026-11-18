@@ -981,11 +981,16 @@ class E27Kernel:
             self._keepalive_probe_requested = True
 
     def _abandon_unsent_probe(self, seq: int) -> None:
-        """Forget a probe nobody will wait for, so it can never reach the panel later.
+        """Forget a probe nobody will wait for, so a queued copy can never reach the panel later.
 
         Drops its pending reply and removes it from the request queue. If it already
-        holds the in-flight slot but was not written yet, its transport is cancelled
-        so the slot frees and the stale probe is never sent.
+        holds the in-flight slot and the transport has not started writing it, its
+        transport is cancelled so the slot frees and the stale probe is not sent. A
+        write the transport has already started cannot be recalled: the panel may
+        still receive that probe, but nothing waits for its reply and it is not
+        counted. Callers check ``was_request_sent`` first, so a probe confirmed
+        written in the same loop pass as the send-wait timeout is counted as sent
+        instead of abandoned.
         """
         self._pending_responses.drop(seq)
         self._remove_queued_seq(seq)
@@ -1070,13 +1075,14 @@ class E27Kernel:
                 # outbound queue.
                 await asyncio.wait_for(sent_event.wait(), timeout=self._keepalive_send_wait_s)
             except TimeoutError:
-                self._abandon_unsent_probe(seq)
-                self._log.info(
-                    "E27 keepalive probe could not be sent within %.1fs: seq=%s",
-                    self._keepalive_send_wait_s,
-                    seq,
-                )
-                return self._liveness_at() > queued_at
+                if not self.was_request_sent(seq):
+                    self._abandon_unsent_probe(seq)
+                    self._log.info(
+                        "E27 keepalive probe could not be sent within %.1fs: seq=%s",
+                        self._keepalive_send_wait_s,
+                        seq,
+                    )
+                    return self._liveness_at() > queued_at
             if not self.was_request_sent(seq):
                 self._abandon_unsent_probe(seq)
                 self._log.debug("E27 keepalive probe failed before it was sent: seq=%s", seq)

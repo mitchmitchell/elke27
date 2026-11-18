@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 import pytest
 
@@ -236,10 +236,13 @@ async def test_probe_holding_slot_with_stalled_write_disconnects_and_leaves_noth
 
     ``outbound_min_interval_s=1.0`` stalls every write after the first for a
     second, so the probe that takes the free slot is not written within its 0.5 s
-    send wait. With ``keepalive_max_missed=3`` the link drops about 1.5 s after the
-    probe was queued, after the stalled write would have gone out at 1.0 s. The
-    next write slot after that is at 2.0 s, so no probe may reach the panel. A
-    reconnect then sends exactly one fresh probe.
+    send wait. With the default miss budget of 2 the link drops after the second
+    0.5 s send wait. The cancelled probe gives up its write and the follow-up
+    probe's write slot is at 2.0 s, so no probe may reach the panel. Without the
+    cancel, the stale probe's stalled write goes out at 1.0 s after the first probe
+    was written, just before the second send wait ends, and the panel's reply to it
+    rescues the link, so no disconnect happens. A reconnect then sends exactly one
+    fresh probe.
     """
     with PanelSimulator() as panel:
         kernel = E27Kernel(
@@ -254,10 +257,7 @@ async def test_probe_holding_slot_with_stalled_write_disconnects_and_leaves_noth
                 drops.append(evt.err_msg)
 
         kernel.subscribe(_on_event, kinds=[ConnectionStateChanged.KIND])
-        session_config = replace(
-            panel.session_config(interval_s=30.0, timeout_s=PROBE_TIMEOUT_S),
-            keepalive_max_missed=3,
-        )
+        session_config = panel.session_config(interval_s=30.0, timeout_s=PROBE_TIMEOUT_S)
         await kernel.connect(LINK_KEYS, client_identity=IDENTITY, session_config=session_config)
         try:
             kernel.request_link_check()
@@ -269,7 +269,7 @@ async def test_probe_holding_slot_with_stalled_write_disconnects_and_leaves_noth
             await _wait_for(lambda: bool(drops), timeout_s=5.0)
             await asyncio.sleep(0.3)
             assert drops[0]
-            assert kernel.keepalive_stats.misses == 3
+            assert kernel.keepalive_stats.misses == 2
             assert panel.probes == 1
             assert kernel.keepalive_stats.probes_sent == panel.probes
 
@@ -293,6 +293,64 @@ async def test_queued_probe_failed_by_disconnect_is_not_counted_as_sent() -> Non
             await _wait_for(lambda: bool(drops), timeout_s=5.0)
             await asyncio.sleep(0.3)
             assert panel.probes == 0
+            assert kernel.keepalive_stats.probes_sent == panel.probes
+        finally:
+            await kernel.close()
+
+
+async def _write_on_loop(func: Callable[..., object], /, *args: object) -> object:
+    """Stand-in for ``asyncio.to_thread`` that writes in the caller's loop pass."""
+    return func(*args)
+
+
+@pytest.mark.asyncio
+async def test_probe_written_in_same_pass_as_send_wait_timeout_counts_as_sent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A probe the transport writes in the loop pass where its send wait expires is sent.
+
+    ``outbound_min_interval_s=1.0`` holds the second probe's write until about
+    1.0 s after the first probe was written; its 1.2 s send wait ends just after.
+    Blocking the loop for 1.5 s makes both timers due in one pass, and the
+    throttle timer, due first, runs first. With writes done on the loop
+    (``asyncio.to_thread`` replaced), the transport confirms the write before the
+    send-wait timeout reaches the probe, while the probe's sent event is only set
+    on a later pass. That probe must be counted as sent and its reply accepted:
+    no miss, ``probes_sent`` equal to what the panel received, and both replies.
+    """
+    with PanelSimulator() as panel:
+        kernel = E27Kernel(
+            skip_connect_bootstrap=True,
+            outbound_min_interval_s=1.0,
+            keepalive_test_hooks=KeepaliveTestHooks(send_wait_s=1.2),
+        )
+        drops: list[str | None] = []
+
+        def _on_event(evt: Event) -> None:
+            if isinstance(evt, ConnectionStateChanged) and not evt.connected:
+                drops.append(evt.err_msg)
+
+        kernel.subscribe(_on_event, kinds=[ConnectionStateChanged.KIND])
+        await kernel.connect(
+            LINK_KEYS,
+            client_identity=IDENTITY,
+            session_config=panel.session_config(interval_s=30.0, timeout_s=COMMAND_TIMEOUT_S),
+        )
+        try:
+            kernel.request_link_check()
+            await _wait_for(lambda: kernel.keepalive_stats.replies == 1, timeout_s=5.0)
+            with monkeypatch.context() as patch:
+                patch.setattr(asyncio, "to_thread", _write_on_loop)
+                kernel.request_link_check()
+                await asyncio.sleep(0.05)
+                assert panel.probes == 1
+                time.sleep(1.5)
+                await _wait_for(lambda: kernel.keepalive_stats.replies == 2, timeout_s=5.0)
+            await asyncio.sleep(0.3)
+            assert drops == []
+            assert panel.probes == 2
+            assert kernel.keepalive_stats.misses == 0
+            assert kernel.keepalive_stats.replies == 2
             assert kernel.keepalive_stats.probes_sent == panel.probes
         finally:
             await kernel.close()
