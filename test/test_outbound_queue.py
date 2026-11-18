@@ -1,59 +1,46 @@
 import asyncio
+import threading
 import time
 from collections.abc import Callable
+from typing import ParamSpec, TypeVar
 
 import pytest
 
 from elke27_lib.outbound_loop import OutboundItem, OutboundPriority, OutboundQueue
 
+P = ParamSpec("P")
+R = TypeVar("R")
 
-class _RecordingOutboundQueue(OutboundQueue):
-    _release_times: list[float]
-    _throttle_done: asyncio.Event
 
-    def __init__(
-        self,
-        *,
-        release_times: list[float],
-        throttle_done: asyncio.Event,
-        loop: asyncio.AbstractEventLoop,
-        send_fn: Callable[[bytes], None],
-        min_interval_s: float,
-        max_burst: int,
-    ) -> None:
-        super().__init__(
-            loop=loop,
-            send_fn=send_fn,
-            min_interval_s=min_interval_s,
-            max_burst=max_burst,
-        )
-        self._release_times = release_times
-        self._throttle_done = throttle_done
-
-    async def _throttle(self) -> None:
-        await super()._throttle()
-        self._release_times.append(self._loop.time())
-        if len(self._release_times) >= 5:
-            self._throttle_done.set()
+async def _to_thread_inline(fn: Callable[P, R], /, *args: P.args, **kwargs: P.kwargs) -> R:
+    """Run ``fn`` on the event-loop thread so the throttle test sees no worker-pool jitter."""
+    return fn(*args, **kwargs)
 
 
 @pytest.mark.asyncio
-async def test_outbound_queue_throttle() -> None:
+async def test_outbound_queue_throttle(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Consecutive sends are released at least ``min_interval_s`` apart on the loop clock.
+
+    ``asyncio.to_thread`` runs inline here, so ``send_fn`` starts on the loop thread in the
+    same step that the throttle releases the frame. Its ``loop.time()`` stamps are therefore
+    the release times, observed through the public ``send_fn`` seam without thread-pool start
+    or completion jitter (#106).
+    """
+    monkeypatch.setattr(asyncio, "to_thread", _to_thread_inline)
     loop = asyncio.get_running_loop()
-    release_times: list[float] = []
+    loop_thread = threading.get_ident()
+    send_times: list[float] = []
+    send_threads: list[int] = []
     done = asyncio.Event()
 
     def _send(payload: bytes) -> None:
         del payload
+        send_times.append(loop.time())
+        send_threads.append(threading.get_ident())
+        if len(send_times) >= 5:
+            done.set()
 
-    queue = _RecordingOutboundQueue(
-        release_times=release_times,
-        throttle_done=done,
-        loop=loop,
-        send_fn=_send,
-        min_interval_s=0.05,
-        max_burst=1,
-    )
+    queue = OutboundQueue(loop=loop, send_fn=_send, min_interval_s=0.05, max_burst=1)
     queue.start()
 
     for i in range(5):
@@ -67,9 +54,13 @@ async def test_outbound_queue_throttle() -> None:
             )
         )
 
-    await asyncio.wait_for(done.wait(), timeout=2.0)
-    deltas = [b - a for a, b in zip(release_times, release_times[1:], strict=False)]
-    assert all(delta >= 0.04 for delta in deltas)
+    try:
+        await asyncio.wait_for(done.wait(), timeout=2.0)
+    finally:
+        queue.stop()
+    assert send_threads == [loop_thread] * len(send_times)
+    deltas = [b - a for a, b in zip(send_times, send_times[1:], strict=False)]
+    assert all(delta >= 0.04 for delta in deltas), deltas
 
 
 @pytest.mark.asyncio
