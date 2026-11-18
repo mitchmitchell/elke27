@@ -213,7 +213,7 @@ PRIVATE_ACCESS_CEILING: dict[str, int] = {
     "test/test_client_more.py": 116,
     "test/test_command_outcome_unknown.py": 11,
     "test/test_command_result.py": 1,
-    "test/test_dead_link_detection.py": 100,
+    "test/test_dead_link_detection.py": 93,
     "test/test_discovery.py": 22,
     "test/test_dispatcher_extra.py": 50,
     "test/test_e27_area_set_arm_state_async_execute.py": 12,

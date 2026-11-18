@@ -371,7 +371,6 @@ class E27Kernel:
     _keepalive_missed: int
     _keepalive_stats: KeepaliveStats
     _last_exchange_at: float
-    _last_rx_at: float
     _rx_thread_at: float
     _keepalive_inflight: bool
     _keepalive_probe_requested: bool
@@ -498,7 +497,6 @@ class E27Kernel:
         self._keepalive_missed = 0
         now = self.now()
         self._last_exchange_at = now
-        self._last_rx_at = now
         self._rx_thread_at = now
         self._keepalive_inflight = False
         self._keepalive_probe_requested = False
@@ -751,7 +749,6 @@ class E27Kernel:
         self._keepalive_missed = 0
         now = self.now()
         self._last_exchange_at = now
-        self._last_rx_at = now
         self._rx_thread_at = now
         if self._keepalive_enabled:
             self._start_keepalive()
@@ -887,14 +884,13 @@ class E27Kernel:
     def _note_rx_on_receive_thread(self) -> None:
         """Stamp inbound liveness on the receive thread (#149).
 
-        Runs before the message is marshalled onto the bound loop, so a busy or
-        blocked loop cannot make traffic that already arrived look like silence.
+        This stamp is the kernel's only liveness source: probe scheduling, the
+        send-wait and reply rescues, and the silent-command check all read it.
+        It runs before the message is marshalled onto the bound loop, so a busy
+        or blocked loop cannot make traffic that already arrived look like
+        silence.
         """
         self._rx_thread_at = self.now()
-
-    def _liveness_at(self) -> float:
-        """Last time any inbound traffic was seen, by the receive thread or the loop."""
-        return max(self._last_rx_at, self._rx_thread_at)
 
     @property
     def keepalive_stats(self) -> KeepaliveStats:
@@ -916,7 +912,7 @@ class E27Kernel:
             # Schedule probes from the last *inbound* traffic. Outbound sends
             # (including unanswered commands and the probe itself) must not
             # postpone detection of a dead link.
-            idle_for = self.now() - self._liveness_at()
+            idle_for = self.now() - self._rx_thread_at
             wait_for = self._keepalive_interval_s - idle_for
             if wait_for > 0 and not self._keepalive_probe_requested:
                 try:
@@ -987,7 +983,7 @@ class E27Kernel:
             return False
         if self._session is None or self._session.state is not session_mod.SessionState.ACTIVE:
             return False
-        if not force and self.now() - self._liveness_at() < self._keepalive_interval_s:
+        if not force and self.now() - self._rx_thread_at < self._keepalive_interval_s:
             return True
         if self._keepalive_inflight:
             return True
@@ -1039,7 +1035,7 @@ class E27Kernel:
                     self._keepalive_send_wait_s,
                     seq,
                 )
-                return self._liveness_at() > queued_at
+                return self._rx_thread_at > queued_at
             if probe_sent_at is None:
                 probe_sent_at = self._probe_sent_at(seq)
             sent_at = probe_sent_at if probe_sent_at is not None else self.now()
@@ -1057,7 +1053,7 @@ class E27Kernel:
                         seq,
                         self.state.panel.session_id,
                     )
-                rescued = self._liveness_at() > sent_at
+                rescued = self._rx_thread_at > sent_at
                 if rescued:
                     stats.rescued += 1
                     self._log.debug("E27 keepalive reply missing; later traffic kept the link")
@@ -1070,7 +1066,7 @@ class E27Kernel:
                     exc,
                     exc_info=True,
                 )
-                return self._liveness_at() > sent_at
+                return self._rx_thread_at > sent_at
             rtt = max(0.0, self.now() - sent_at)
             stats.replies += 1
             stats.last_round_trip_s = rtt
@@ -1333,7 +1329,6 @@ class E27Kernel:
             self.state.panel.session_id = sid
 
         self.state.panel.last_message_at = self.now()
-        self._last_rx_at = self.state.panel.last_message_at
         self._last_exchange_at = self.state.panel.last_message_at
 
         if seq_val not in self._raw_passthrough_seqs and self._log.isEnabledFor(logging.DEBUG):
@@ -1949,7 +1944,7 @@ class E27Kernel:
         if self._active_request is not None:
             route = self._active_request.expected_route
         sent_at = self._active_sent_at
-        silent = sent_at is not None and self._liveness_at() <= sent_at
+        silent = sent_at is not None and self._rx_thread_at <= sent_at
         timeout_exc = E27Timeout(f"Response timed out for seq={seq}")
         active_item = self._active_request
         if active_item is not None and isinstance(active_item, _QueuedRequest):
