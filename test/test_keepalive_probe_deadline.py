@@ -166,6 +166,14 @@ async def test_inbound_after_probe_queued_rescues_send_wait_miss() -> None:
             await kernel.close()
 
 
+def _assert_no_probe_left_marked_sent(kernel: E27Kernel, panel: PanelSimulator) -> None:
+    """Every probe the panel received has been answered and forgotten as sent."""
+    assert panel.probe_seqs
+    for seq in panel.probe_seqs:
+        assert isinstance(seq, int)
+        assert not kernel.was_request_sent(seq)
+
+
 async def _assert_next_probe_goes_out_alone(kernel: E27Kernel, panel: PanelSimulator) -> None:
     """A fresh link check sends exactly one probe, so no stale probe is left queued."""
     probes_before = panel.probes
@@ -176,6 +184,7 @@ async def _assert_next_probe_goes_out_alone(kernel: E27Kernel, panel: PanelSimul
     await asyncio.sleep(0.2)
     assert panel.probes == probes_before + 1
     assert kernel.keepalive_stats.probes_sent == sent_before + 1
+    _assert_no_probe_left_marked_sent(kernel, panel)
 
 
 @pytest.mark.asyncio
@@ -352,5 +361,6 @@ async def test_probe_written_in_same_pass_as_send_wait_timeout_counts_as_sent(
             assert kernel.keepalive_stats.misses == 0
             assert kernel.keepalive_stats.replies == 2
             assert kernel.keepalive_stats.probes_sent == panel.probes
+            _assert_no_probe_left_marked_sent(kernel, panel)
         finally:
             await kernel.close()

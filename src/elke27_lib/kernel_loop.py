@@ -1083,6 +1083,13 @@ class E27Kernel:
                         seq,
                     )
                     return self._liveness_at() > queued_at
+                self._log.debug(
+                    "E27 keepalive probe write confirmed as its %.1fs send wait ended: "
+                    "seq=%s waited=%.3fs",
+                    self._keepalive_send_wait_s,
+                    seq,
+                    self.now() - queued_at,
+                )
             if not self.was_request_sent(seq):
                 self._abandon_unsent_probe(seq)
                 self._log.debug("E27 keepalive probe failed before it was sent: seq=%s", seq)
