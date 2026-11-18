@@ -1819,9 +1819,7 @@ class Elke27Client:
         command deadline passes first (#147). A failed publication still raises
         ``Elke27DisconnectedError`` or ``Elke27SnapshotPublicationError``.
         """
-        fut = self._reply_publication_by_seq.get(reply_seq)
-        if fut is None:
-            return True
+        fut = self._reply_publication_by_seq[reply_seq]
         if fut.done():
             fut.result()
             return True

@@ -331,18 +331,6 @@ async def test_ack_only_refresh_fails_from_publication_deadline_before_its_time_
     assert finished_after_s < 1.2
 
 
-class _UnregisteredPublicationClient(Elke27Client):
-    """Leave the publication slot unregistered so the wait takes the no-future path."""
-
-    def _begin_reply_publication_command(
-        self,
-        reply_seq: int,
-        expected_route: tuple[str, str] | None,
-        loop: asyncio.AbstractEventLoop,
-    ) -> None:
-        del reply_seq, expected_route, loop
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("mode", "arm_state"),
@@ -427,36 +415,4 @@ async def test_reply_publication_wait_times_out_when_deadline_already_passed(
     assert result.ok is False
     assert isinstance(result.error, Elke27SnapshotPublicationError)
     assert any(_PUBLICATION_TIMEOUT_LOG in rec.message for rec in caplog.records)
-    assert finished_after_s < 0.4
-
-
-@pytest.mark.asyncio
-async def test_reply_publication_wait_succeeds_when_no_future_is_registered(
-    caplog: pytest.LogCaptureFixture,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A missing publication future is treated as already published (returns True)."""
-    kernel = E27Kernel(
-        skip_connect_bootstrap=True,
-        request_max_retries=0,
-        request_timeout_s=COMMAND_TIMEOUT_S,
-    )
-    client = _UnregisteredPublicationClient(kernel=kernel)
-    client, panel = await _connect(monkeypatch, kernel, client)
-    caplog.set_level(logging.WARNING, logger="elke27_lib.client")
-    sent_before = len(panel.sent)
-    started_at = time.monotonic()
-
-    task = asyncio.create_task(
-        client.async_execute("area_get_status", area_id=1, timeout_s=COMMAND_TIMEOUT_S)
-    )
-    sent = await _next_sent(panel, sent_before + 1)
-    await panel.deliver(_armed_away_status(sent["seq"]))
-    async with asyncio.timeout(COMMAND_TIMEOUT_S + 2.0):
-        result = await task
-    finished_after_s = time.monotonic() - started_at
-
-    assert result.ok is True
-    assert result.error is None
-    assert not any(_PUBLICATION_TIMEOUT_LOG in rec.message for rec in caplog.records)
     assert finished_after_s < 0.4
