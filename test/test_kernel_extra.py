@@ -100,14 +100,16 @@ def test_request_registry_require_and_get() -> None:
 
 
 def test_redact_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    from elke27_lib import redact
+
     data = {"pin": "1234", "nested": {"passphrase": "x"}, "ok": 1}
-    monkeypatch.setattr(kernel_mod, "REDACT_DIAGNOSTICS", True)
-    redacted = kernel_mod._redact_value(data)
+    monkeypatch.setattr(redact, "REDACT_DIAGNOSTICS", True)
+    redacted = redact.redact_for_diagnostics(data)
     assert redacted["pin"] == "***"
     assert redacted["nested"]["passphrase"] == "***"
 
-    monkeypatch.setattr(kernel_mod, "REDACT_DIAGNOSTICS", False)
-    assert kernel_mod._redact_value(data) is data
+    monkeypatch.setattr(redact, "REDACT_DIAGNOSTICS", False)
+    assert redact.redact_for_diagnostics(data) == redact._normalize_for_diagnostics(data)
 
 
 def test_panel_host_port_variants() -> None:
@@ -506,8 +508,10 @@ def test_build_request_message_and_log(
     msg = kernel._build_request_message(5, "zone", "__root__", {"x": 1})
     assert msg["zone"]["x"] == 1
 
+    from elke27_lib import redact
+
     caplog.set_level(logging.DEBUG, logger="elke27_lib.kernel_loop")
-    monkeypatch.setattr(kernel_mod, "REDACT_DIAGNOSTICS", True)
+    monkeypatch.setattr(redact, "REDACT_DIAGNOSTICS", True)
     kernel._log_outbound("zone", "get_attribs", {"seq": 1, "pin": "123"})
     assert "Outbound request" in caplog.text
 
@@ -597,3 +601,22 @@ def test_signal_sent_event_paths() -> None:
     kernel._register_sent_event(1, event)
     kernel._signal_sent_event(1)
     assert event.is_set()
+
+
+def test_kernel_dispatch_correlation_classifies_reply_as_response() -> None:
+    kernel = E27Kernel()
+    seq = 99
+    kernel.register_dispatch_correlation(seq, ("area", "get_status"))
+    result = kernel.dispatcher.dispatch(
+        {
+            "seq": seq,
+            "area": {
+                "get_status": {
+                    "area_id": 1,
+                    "arm_state": "DISARMED",
+                    "error_code": 0,
+                }
+            },
+        }
+    )
+    assert result.classification == "RESPONSE"

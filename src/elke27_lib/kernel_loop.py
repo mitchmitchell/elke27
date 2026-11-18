@@ -48,7 +48,6 @@ _CONNECT_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
 from . import discovery
 from . import linking_thread as linking
 from . import session_thread as session_mod
-from .const import REDACT_DIAGNOSTICS
 from .dispatcher_loop import (
     DispatchContext,
     Dispatcher,
@@ -82,7 +81,7 @@ from .events import (
 from .handlers.area import clear_all_area_exit_delay_pending
 from .outbound_loop import OutboundPriority
 from .pending_loop import PendingResponseManager
-from .redact import SECRET_KEYS, redact_for_diagnostics
+from .redact import redact_for_diagnostics
 from .states import PanelState
 
 RequestBuilder = Callable[..., Mapping[str, Any] | bool]  # returns payload dict or flag
@@ -91,6 +90,12 @@ RequestBuilder = Callable[..., Mapping[str, Any] | bool]  # returns payload dict
 # Session setup failures where the panel refused HELLO; hello.py logs them at
 # WARNING, so the client does not also report a lost connection (#61).
 _HELLO_REFUSAL_ERRORS = (E27HelloNoSession, E27HelloRejected, E27HelloLinkRequired)
+_DISPATCH_LISTENER_CALLBACK_FAILURES = (
+    AttributeError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+)
 
 
 class RequestRegistry:
@@ -259,24 +264,6 @@ def _as_mapping(obj: object) -> Mapping[str, Any] | None:
     return None
 
 
-def _redact_value(value: Any) -> Any:
-    if not REDACT_DIAGNOSTICS:
-        return value
-    if isinstance(value, Mapping):
-        mapping = cast(Mapping[str, Any], value)
-        return {
-            key: ("***" if str(key).lower() in SECRET_KEYS else _redact_value(val))
-            for key, val in mapping.items()
-        }
-    if isinstance(value, list):
-        items = cast(list[object], value)
-        return [_redact_value(item) for item in items]
-    if isinstance(value, tuple):
-        items = cast(tuple[object, ...], value)
-        return tuple(_redact_value(item) for item in items)
-    return value
-
-
 def _panel_host_port(panel: discovery.E27System | Mapping[str, Any]) -> tuple[str, int]:
     """
     Extract host/port from a discovery panel entry.
@@ -425,6 +412,7 @@ class E27Kernel:
         outbound_max_burst: int = 1,
         filter_attribs_to_configured: bool = True,
         keepalive_test_hooks: KeepaliveTestHooks | None = None,
+        skip_connect_bootstrap: bool = False,
     ) -> None:
         self._log = logger or logging.getLogger(__name__)
         self.now = now_monotonic
@@ -443,12 +431,14 @@ class E27Kernel:
         self._events_dropped_warned = False
         self._seq = 1
         self._subscribers = {}
+        self._dispatch_listeners: list[Callable[[int, tuple[str, str], bool], None]] = []
         self._next_subscriber_id = 1
         self._request_timeout_s = request_timeout_s
         self._request_max_retries = request_max_retries
         self._request_max_backoff_s = max(0.0, float(request_max_backoff_s))
         self._max_pending_requests = max(1, int(max_pending_requests))
         self._filter_attribs_to_configured = filter_attribs_to_configured
+        self._skip_connect_bootstrap = skip_connect_bootstrap
         self._outbound_min_interval_s = outbound_min_interval_s
         self._outbound_max_burst = outbound_max_burst
         self._last_link_keys = None
@@ -750,7 +740,8 @@ class E27Kernel:
                 {"table_elements": None, "increment_size": None},
             )
         self._emit_connection_state(connected=True)
-        self._bootstrap_requests()
+        if not self._skip_connect_bootstrap:
+            self._bootstrap_requests()
         self._last_link_keys = link_keys
         self._last_client_identity = client_identity
         self._last_session_config = cfg
@@ -1054,7 +1045,7 @@ class E27Kernel:
                     stats.rescued += 1
                     self._log.debug("E27 keepalive reply missing; later traffic kept the link")
                 return rescued
-            except Exception as exc:  # noqa: BLE001 -- preserve broad except handling intentionally
+            except Exception as exc:  # noqa: BLE001 -- keepalive probe must not crash the loop
                 self._log.warning(
                     "E27 keepalive check failed: seq=%s session_id=%s error=%s",
                     seq,
@@ -1262,6 +1253,32 @@ class E27Kernel:
     def unsubscribe(self, token: int) -> bool:
         return self._subscribers.pop(token, None) is not None
 
+    def add_dispatch_listener(
+        self, listener: Callable[[int, tuple[str, str], bool], None]
+    ) -> Callable[[], None]:
+        self._dispatch_listeners.append(listener)
+
+        def remove() -> None:
+            with contextlib.suppress(ValueError):
+                self._dispatch_listeners.remove(listener)
+
+        return remove
+
+    def register_dispatch_correlation(
+        self, seq: int, expected_route: tuple[str, str] | None
+    ) -> None:
+        self.dispatcher.add_pending(
+            PendingRequest(
+                seq=seq,
+                expected_route=expected_route,
+                created_at=self.now(),
+                opaque=None,
+            )
+        )
+
+    def drop_dispatch_correlation(self, seq: int) -> None:
+        self.dispatcher.drop_pending(seq)
+
     # -------------------------
     # Session -> E27Kernel -> Dispatcher wiring
     # -------------------------
@@ -1315,6 +1332,21 @@ class E27Kernel:
 
         # Dispatcher handles routing + correlation + dispatch-error envelopes.
         result = self.dispatcher.dispatch(msg)
+        if (
+            isinstance(seq_val, int)
+            and seq_val > 0
+            and result.classification == "RESPONSE"
+            and self._dispatch_listeners
+        ):
+            for listener in list(self._dispatch_listeners):
+                try:
+                    listener(seq_val, result.route, result.handled)
+                except _DISPATCH_LISTENER_CALLBACK_FAILURES as dispatch_listener_failed:
+                    self._log.warning(
+                        "Dispatch listener failed: %s",
+                        dispatch_listener_failed,
+                        exc_info=True,
+                    )
         if self._log.isEnabledFor(logging.DEBUG):
             self._log.debug(
                 "Inbound routed: route=%s.%s seq=%s dispatched=%s",
@@ -1717,7 +1749,9 @@ class E27Kernel:
                 kept.append(item)
             queue.extend(kept)
 
-    def cancel_command_transport(self, seq: int, exc: BaseException) -> None:
+    def cancel_command_transport(
+        self, seq: int, exc: BaseException, *, drop_pending_response: bool = False
+    ) -> None:
         """Stop transport retries for a command and fail its pending future."""
         self._cancel_transport_retry_timer_for_seq(seq)
         self._remove_queued_seq(seq)
@@ -1726,21 +1760,24 @@ class E27Kernel:
             cancel_outbound = getattr(session, "cancel_outbound_pending_seq", None)
             if cancel_outbound is not None:
                 cancel_outbound(seq)
+
+        def _finish_cancel() -> None:
+            self.dispatcher.drop_pending(seq)
+            if drop_pending_response:
+                self._pending_responses.drop(seq)
+            elif not self._pending_responses.fail(seq, exc):
+                self._pending_responses.drop(seq)
+            self._signal_sent_event(seq)
+
         if (
             self._request_state is _RequestState.IN_FLIGHT
             and self._active_seq == seq
             and not self._active_released
         ):
-            self.dispatcher.drop_pending(seq)
-            if not self._pending_responses.fail(seq, exc):
-                self._pending_responses.drop(seq)
-            self._signal_sent_event(seq)
+            _finish_cancel()
             self._complete_active(reason="cancelled")
             return
-        self.dispatcher.drop_pending(seq)
-        if not self._pending_responses.fail(seq, exc):
-            self._pending_responses.drop(seq)
-        self._signal_sent_event(seq)
+        _finish_cancel()
 
     def _fail_queued_command(self, item: _QueuedRequest, exc: BaseException) -> None:
         self._cancel_transport_retry_timer_for_seq(item.seq)
@@ -2230,9 +2267,10 @@ class E27Kernel:
         return msg
 
     def mark_raw_passthrough(self, seq: int) -> None:
-        """Suppress logging, handler dispatch and retries for this seq (decision 34).
+        """Suppress raw pass-through logging, dispatch and retries (decision 34).
 
-        In-flight seqs are never evicted; see ``finish_raw_passthrough``.
+        Inbound and outbound debug logs never include the message or reply body for
+        marked seqs. In-flight seqs are never evicted; see ``finish_raw_passthrough``.
         """
         self._raw_passthrough_seqs.mark(seq)
 
@@ -2248,7 +2286,7 @@ class E27Kernel:
             return
         if not self._log.isEnabledFor(logging.DEBUG):
             return
-        redacted = _redact_value(msg)
+        redacted = redact_for_diagnostics(msg)
         payload = json.dumps(redacted, sort_keys=True, separators=(",", ":"))
         if name in {"get_attribs", "get_configured"}:
             self._log.debug("Outbound request meta: route=%s.%s payload=%s", domain, name, payload)

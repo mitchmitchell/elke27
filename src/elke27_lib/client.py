@@ -26,7 +26,6 @@ import time
 import types
 import types as types_mod
 import typing
-from collections import defaultdict
 from collections.abc import (
     AsyncIterator,
     Callable,
@@ -63,6 +62,8 @@ else:
 
 from . import discovery as discovery_mod
 from . import linking_thread as linking_mod
+from .area_delay import delay_state_from_area_status
+from .arm_panel import arm_mode_from_panel_string as _arm_mode_from_panel_string
 from .command_kinds import is_read_only_route
 from .const import E27ErrorCode as PanelErrorCode
 from .dispatcher_loop import PagedBlock, RouteKey
@@ -95,9 +96,13 @@ from .errors import (
     Elke27InvalidArgument,
     Elke27LinkRequiredError,
     Elke27LinkSlotsFullError,
+    Elke27NightArmFirmwareTooOldError,
+    Elke27PanelApplicationFirmwareUnknownError,
     Elke27PanelError,
     Elke27PermissionError,
     Elke27PinRequiredError,
+    Elke27SnapshotPublicationError,
+    Elke27StayInstantRequiredError,
     Elke27TimeoutError,
     InvalidCredentials,
     InvalidLinkKeys,
@@ -149,6 +154,12 @@ from .events import (
     ZonesStatusBulkUpdated,
     ZoneStatusUpdated,
     ZoneTableInfoUpdated,
+)
+from .firmware_version import (
+    NIGHT_ARM_MIN_FIRMWARE,
+    application_firmware_tuple_from_app_field,
+    night_arm_supported_from_app_field,
+    version_tuple_at_least,
 )
 from .generators.registry import COMMANDS, CommandSpec, MergeStrategy
 from .handlers.area import (
@@ -280,19 +291,16 @@ _CLIENT_EXCEPTIONS = (
 )
 
 
-# area.set_arm_state accepts only these arm states (generators/area.py). The E27
-# has Away and Stay arming; it has no Night mode.
-_SUPPORTED_ARM_MODES: frozenset[ArmMode] = frozenset({ArmMode.ARMED_AWAY, ArmMode.ARMED_STAY})
+_BASE_SUPPORTED_ARM_MODES: frozenset[ArmMode] = frozenset({ArmMode.ARMED_AWAY, ArmMode.ARMED_STAY})
+_PANEL_ARM_STATE_STAY_INST = "ARMED_STAY_INST"
 
-_ARM_STATE_TO_MODE: Mapping[str, ArmMode] = {
-    "DISARMED": ArmMode.DISARMED,
-    "ARMED_STAY": ArmMode.ARMED_STAY,
-    "ARMED_STAY_INST": ArmMode.ARMED_STAY,
-    "ARMED_AWAY": ArmMode.ARMED_AWAY,
-    "ARMED_VACATION": ArmMode.ARMED_VACATION,
-    "ARMED_NIGHT": ArmMode.ARMED_NIGHT,
-}
 _NON_ARM_STATES: frozenset[str] = frozenset({"ALARM_MEM"})
+
+
+def _panel_arm_state_for_mode(mode: ArmMode) -> str:
+    if mode is ArmMode.ARMED_NIGHT:
+        return _PANEL_ARM_STATE_STAY_INST
+    return mode.value.upper()
 
 
 def _area_alarm_memory(alarm_mem: str | None, arm_state: str | None) -> bool | None:
@@ -482,11 +490,32 @@ def _table_elements_for_domain(state: PanelState, domain: str) -> int | None:
     return None
 
 
+REPLY_PUBLICATION_COMMAND_KEYS: tuple[str, ...] = (
+    "area_set_arm_state",
+    "area_get_status",
+    "zone_set_status",
+    "zone_get_status",
+    "zone_get_all_zones_status",
+)
+
+_MISSING_REPLY_PUBLICATION_COMMAND_KEYS = tuple(
+    key for key in REPLY_PUBLICATION_COMMAND_KEYS if key not in COMMANDS
+)
+if _MISSING_REPLY_PUBLICATION_COMMAND_KEYS:
+    raise RuntimeError(
+        "Reply publication command keys missing from COMMANDS registry: "
+        + ", ".join(sorted(_MISSING_REPLY_PUBLICATION_COMMAND_KEYS))
+    )
+
+
 class Elke27Client:
     """
     Stable client API for consumers (e.g., Home Assistant).
 
     This facade intentionally avoids HA-specific concepts.
+
+    ``skip_connect_bootstrap`` is for unit/simulator tests only; Home Assistant
+    integrations must never enable it.
     """
 
     def __init__(
@@ -500,11 +529,13 @@ class Elke27Client:
         logger: logging.Logger | None = None,
         filter_attribs_to_configured: bool = True,
         enable_raw_passthrough: bool = False,
+        skip_connect_bootstrap: bool = False,
     ) -> None:
         self._log: logging.Logger = logger or logging.getLogger(__name__)
         # Raw API pass-through (decision 34) is off unless the caller opts in at
         # construction. The Home Assistant integration must never set this.
         self._raw_passthrough_enabled: bool = bool(enable_raw_passthrough)
+        self._skip_connect_bootstrap: bool = skip_connect_bootstrap
         self._connection_lost_logged = False
         self._warned_arm_states: set[str] = set()
         self._connect_failures_warning_logged = False
@@ -522,16 +553,14 @@ class Elke27Client:
         self._subscriber_lock: threading.Lock = threading.Lock()
         self._subscriber_error_types: set[type] = set()
         self._kernel_event_token: int | None = None
+        self._dispatch_listener_remove: Callable[[], None] | None = None
         self._now_monotonic: Callable[[], float] = now_monotonic or time.monotonic
         self._snapshot: PanelSnapshot = PanelSnapshot.empty()
         self._snapshot_version: int = 0
         self._stale_area_ids: set[int] = set()
         self._stale_zone_ids: set[int] = set()
-        self._area_status_seq: dict[int, int] = {}
         self._arm_write_inflight_area_ids: collections.Counter[int] = collections.Counter()
-        self._zone_status_seq: dict[int, int] = {}
-        self._area_status_waiters: dict[int, list[asyncio.Future[None]]] = defaultdict(list)
-        self._zone_status_waiters: dict[int, list[asyncio.Future[None]]] = defaultdict(list)
+        self._reply_publication_by_seq: dict[int, asyncio.Future[None]] = {}
         # PIN of the last authenticate the panel accepted, and the session it was
         # accepted in. Cleared on disconnect, close, auth failure and session change.
         self._last_auth_pin: int | None = None
@@ -566,6 +595,7 @@ class Elke27Client:
                 outbound_min_interval_s=outbound_min_interval_s,
                 outbound_max_burst=outbound_max_burst,
                 filter_attribs_to_configured=filter_attribs_to_configured,
+                skip_connect_bootstrap=self._skip_connect_bootstrap,
             )
         else:
             self._kernel = kernel
@@ -592,10 +622,26 @@ class Elke27Client:
         """Test-only: record the kernel asyncio loop as bound to the current thread."""
         self._kernel.bind_loop_thread_for_tests(loop)
 
-    def _ensure_kernel_subscription(self) -> None:
+    def _detach_kernel_subscription(self) -> None:
+        if self._dispatch_listener_remove is not None:
+            self._dispatch_listener_remove()
+            self._dispatch_listener_remove = None
         if self._kernel_event_token is not None:
+            self._kernel.unsubscribe(self._kernel_event_token)
+            self._kernel_event_token = None
+
+    def _prepare_panel_connect_listeners(self) -> None:
+        self._event_loop = asyncio.get_running_loop()
+        self._ensure_kernel_subscription()
+
+    def _ensure_kernel_subscription(self) -> None:
+        if self._kernel_event_token is not None and self._dispatch_listener_remove is not None:
             return
+        self._detach_kernel_subscription()
         self._kernel_event_token = self._kernel.subscribe(self._on_kernel_event)
+        self._dispatch_listener_remove = self._kernel.add_dispatch_listener(
+            self._on_kernel_dispatch_response
+        )
 
     @property
     def state(self):
@@ -938,16 +984,44 @@ class Elke27Client:
                 "outcome unknown.",
             )
 
+        publication_fut: asyncio.Future[None] | None = None
+        publication_handled = False
+        msg: Mapping[str, Any] | None = None
+
+        def _consume_done_publication_future() -> None:
+            nonlocal publication_handled
+            if publication_fut is None or publication_handled or not publication_fut.done():
+                return
+            if not publication_fut.cancelled():
+                publication_fut.exception()
+            publication_handled = True
+
         try:
             async with asyncio.timeout(budget_s):
                 await sent_event.wait()
-                msg = await future
+                publication_fut = self._reply_publication_by_seq.get(seq)
+                publication_handled = publication_fut is None
+
+                _consume_done_publication_future()
+                while not future.done():
+                    wait_on: set[asyncio.Future[Any]] = {cast(asyncio.Future[Any], future)}
+                    if publication_fut is not None and not publication_handled:
+                        wait_on.add(cast(asyncio.Future[Any], publication_fut))
+                    done, _pending = await asyncio.wait(
+                        wait_on, return_when=asyncio.FIRST_COMPLETED
+                    )
+                    if future in done:
+                        break
+                    if publication_fut is not None and publication_fut in done:
+                        _consume_done_publication_future()
+                _consume_done_publication_future()
+                msg = future.result()
         except TimeoutError:
             if self._asyncio_cancellation_pending():
                 cancel_error: BaseException = _outcome_unknown("caller cancelled") or E27Timeout(
                     f"async_execute cancelled for {command_key} seq={seq}"
                 )
-                self._kernel.cancel_command_transport(seq, cancel_error)
+                self._kernel.cancel_command_transport(seq, cancel_error, drop_pending_response=True)
                 raise asyncio.CancelledError() from cancel_error
             timeout_error: BaseException = _outcome_unknown("deadline") or E27Timeout(
                 f"async_execute timeout waiting for {command_key} seq={seq}"
@@ -958,7 +1032,7 @@ class Elke27Client:
             cancel_error = _outcome_unknown("caller cancelled") or E27Timeout(
                 f"async_execute cancelled for {command_key} seq={seq}"
             )
-            self._kernel.cancel_command_transport(seq, cancel_error)
+            self._kernel.cancel_command_transport(seq, cancel_error, drop_pending_response=True)
             if isinstance(cancel_error, Elke27CommandOutcomeUnknownError):
                 # CancelledError must still propagate; chain the outcome for callers/logs.
                 raise asyncio.CancelledError(*cancelled.args) from cancel_error
@@ -968,12 +1042,23 @@ class Elke27Client:
                 outcome = _outcome_unknown("reply timeout")
                 if outcome is not None:
                     return _err(outcome)
+            if isinstance(exc, ConnectionLost):
+                return _err(self._disconnected_from_connection_lost(exc))
             detail = f"command_key={command_key} seq={seq}"
             return _err(self._normalize_error(exc, phase="execute", detail=detail))
         finally:
             self._kernel.forget_request_sent(seq)
+            _consume_done_publication_future()
+            if future.done():
+                future.exception()
 
-        return _ok(msg)
+        return _ok(cast(Mapping[str, Any], msg))
+
+    @staticmethod
+    def _disconnected_from_connection_lost(err: ConnectionLost) -> Elke27DisconnectedError:
+        disconnected = Elke27DisconnectedError("Connection lost during the command.")
+        disconnected.__cause__ = err
+        return disconnected
 
     @staticmethod
     def _wire_pin_string_error(
@@ -1025,7 +1110,7 @@ class Elke27Client:
         if isinstance(err, (E27AuthFailed, InvalidPinError, InvalidCredentials)):
             raise Elke27AuthError("Authentication failed for this operation.") from None
         if isinstance(err, ConnectionLost):
-            raise Elke27DisconnectedError("Connection lost during the command.") from err
+            raise self._disconnected_from_connection_lost(err)
         if isinstance(err, (E27Timeout, E27TransportError, TimeoutError, asyncio.TimeoutError)):
             raise Elke27TimeoutError("Operation timed out.") from None
         if isinstance(err, E27NotReady):
@@ -1064,9 +1149,7 @@ class Elke27Client:
         warns once per connection-owning client when it sees one
         (https://github.com/mitchmitchell/elke27/issues/100).
         """
-        if not isinstance(value, str):
-            return None
-        return _ARM_STATE_TO_MODE.get(value.strip().upper())
+        return _arm_mode_from_panel_string(value)
 
     def _build_panel_info(self) -> PanelInfo:
         panel = self._kernel.state.panel
@@ -1074,6 +1157,7 @@ class Elke27Client:
             mac=getattr(panel, "mac", None),
             model=panel.model,
             firmware=panel.firmware,
+            application_firmware=panel.application_firmware,
             serial=panel.serial,
             panel_name=getattr(panel, "panel_name", None),
         )
@@ -1091,8 +1175,11 @@ class Elke27Client:
 
     def _build_area_map(self) -> Mapping[int, V2AreaState]:
         out: dict[int, V2AreaState] = {}
+        app_version = self._kernel.state.panel.app_version
+        night_supported = night_arm_supported_from_app_field(app_version)
         for area_id, area in self._kernel.state.areas.items():
             arm_value = area.arm_state or area.armed_state
+            delay_state = delay_state_from_area_status(area)
             out[area_id] = V2AreaState(
                 area_id=area_id,
                 name=area.name,
@@ -1106,6 +1193,8 @@ class Elke27Client:
                 ready_status=area.ready_status,
                 alarm_memory=_area_alarm_memory(area.alarm_mem, arm_value),
                 trouble_status=area.trouble_status,
+                night_arm_supported=night_supported,
+                delay_state=delay_state,
             )
         return types_mod.MappingProxyType(out)
 
@@ -1627,59 +1716,131 @@ class Elke27Client:
                 self._mark_zone_stale(zone_id)
         return False
 
-    def _notify_entity_status_publication(
-        self, domain: Literal["area", "zone"], entity_id: int
-    ) -> None:
-        seq_map = self._area_status_seq if domain == "area" else self._zone_status_seq
-        waiters_map = self._area_status_waiters if domain == "area" else self._zone_status_waiters
-        seq_map[entity_id] = seq_map.get(entity_id, 0) + 1
-        for fut in list(waiters_map.pop(entity_id, [])):
-            if not fut.done():
-                fut.set_result(None)
+    _REPLY_PUBLICATION_COMMANDS = frozenset(REPLY_PUBLICATION_COMMAND_KEYS)
 
-    async def _await_entity_status_publication(
-        self,
-        *,
-        domain: Literal["area", "zone"],
-        entity_id: int,
-        seen_before: int,
-        deadline: float,
+    _DISPATCH_COMPLETE_PUBLICATION_ROUTES = frozenset(
+        (COMMANDS[key].domain, COMMANDS[key].command)
+        for key in REPLY_PUBLICATION_COMMAND_KEYS
+        if COMMANDS[key].command.startswith("get_")
+    )
+
+    _LOOP_CLOSED_DURING_CROSS_THREAD_SCHEDULE: tuple[type[BaseException], ...] = (RuntimeError,)
+
+    @staticmethod
+    def _reply_publication_qualifies(evt: Event) -> bool:
+        if isinstance(evt, AreaStatusUpdated):
+            return evt.status_confirmed
+        if isinstance(evt, ZoneStatusUpdated):
+            return evt.status_confirmed
+        if isinstance(evt, ZonesStatusBulkUpdated):
+            return True
+        return False
+
+    def _on_kernel_dispatch_response(
+        self, reply_seq: int, route: tuple[str, str], _handled: bool
     ) -> None:
-        """Wait for ``AreaStatusUpdated`` / ``ZoneStatusUpdated`` covering ``entity_id``."""
-        seq_map = self._area_status_seq if domain == "area" else self._zone_status_seq
-        if seq_map.get(entity_id, 0) > seen_before:
+        if route not in self._DISPATCH_COMPLETE_PUBLICATION_ROUTES:
             return
+        if self._event_loop is None:
+            return
+        with contextlib.suppress(*self._LOOP_CLOSED_DURING_CROSS_THREAD_SCHEDULE):
+            self._event_loop.call_soon_threadsafe(
+                self._complete_dispatch_only_reply_publication, reply_seq
+            )
+
+    def _replace_snapshot_for_reply_publication(self, reply_seq: int | None) -> None:
+        try:
+            self._replace_snapshot(
+                panel_info=self._build_panel_info(),
+                table_info=self._build_table_info(),
+                areas=self._build_area_map(),
+                zones=self._build_zone_map(),
+                zone_definitions=self._build_zone_definitions(),
+                outputs=self._build_output_map(),
+                output_definitions=self._build_output_definitions(),
+                lights=self._build_light_map(),
+                barriers=self._build_barrier_map(),
+                locks=self._build_lock_map(),
+                thermostats=self._build_thermostat_map(),
+            )
+        except Exception as snapshot_replace_failed:
+            if reply_seq is not None:
+                self._fail_reply_publication(
+                    reply_seq,
+                    Elke27SnapshotPublicationError(
+                        "Snapshot replace failed during reply publication."
+                    ),
+                )
+            raise snapshot_replace_failed
+
+    def _complete_dispatch_only_reply_publication(self, reply_seq: int) -> None:
+        fut = self._reply_publication_by_seq.get(reply_seq)
+        if fut is None or fut.done():
+            return
+        self._replace_snapshot_for_reply_publication(reply_seq)
+        self._complete_reply_publication(reply_seq)
+
+    def _begin_reply_publication_command(
+        self,
+        reply_seq: int,
+        expected_route: tuple[str, str] | None,
+        loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        self._reply_publication_by_seq[reply_seq] = loop.create_future()
+        self._kernel.register_dispatch_correlation(reply_seq, expected_route)
+
+    def _release_reply_publication_command(self, reply_seq: int) -> None:
+        fut = self._reply_publication_by_seq.pop(reply_seq, None)
+        if fut is not None and not fut.done():
+            fut.cancel()
+        self._kernel.drop_dispatch_correlation(reply_seq)
+
+    def _complete_reply_publication(self, reply_seq: int) -> None:
+        fut = self._reply_publication_by_seq.get(reply_seq)
+        if fut is not None and not fut.done():
+            fut.set_result(None)
+
+    def _fail_reply_publication(self, reply_seq: int, exc: BaseException) -> None:
+        fut = self._reply_publication_by_seq.get(reply_seq)
+        if fut is not None and not fut.done():
+            fut.set_exception(exc)
+
+    def _fail_all_reply_publication_waiters(self, exc: BaseException) -> None:
+        for fut in self._reply_publication_by_seq.values():
+            if not fut.done():
+                fut.set_exception(exc)
+
+    def _command_needs_reply_publication_wait(
+        self, command_key: str, response_payload: Mapping[str, Any] | None
+    ) -> bool:
+        if command_key not in self._REPLY_PUBLICATION_COMMANDS:
+            return False
+        if command_key in {"area_set_arm_state", "zone_set_status"}:
+            return self._command_reply_includes_confirmed_status(command_key, response_payload)
+        return True
+
+    async def _await_reply_snapshot_publication(self, reply_seq: int, *, deadline: float) -> None:
         loop = asyncio.get_running_loop()
         remaining = deadline - loop.time()
         if remaining <= 0:
             self._log.warning(
-                "Timed out waiting for %s %s status publication (seq=%s current=%s)",
-                domain,
-                entity_id,
-                seen_before,
-                seq_map.get(entity_id, 0),
+                "Timed out waiting for reply seq=%s snapshot publication",
+                reply_seq,
             )
             return
-        fut: asyncio.Future[None] = loop.create_future()
-        waiters_map = self._area_status_waiters if domain == "area" else self._zone_status_waiters
-        waiters_map[entity_id].append(fut)
-        if seq_map.get(entity_id, 0) > seen_before:
-            if not fut.done():
-                fut.set_result(None)
+        fut = self._reply_publication_by_seq.get(reply_seq)
+        if fut is None:
+            return
+        if fut.done():
+            fut.result()
+            return
         try:
             await asyncio.wait_for(fut, timeout=remaining)
         except TimeoutError:
             self._log.warning(
-                "Timed out waiting for %s %s status publication (seq=%s current=%s)",
-                domain,
-                entity_id,
-                seen_before,
-                seq_map.get(entity_id, 0),
+                "Timed out waiting for reply seq=%s snapshot publication",
+                reply_seq,
             )
-        finally:
-            pending = waiters_map.get(entity_id, [])
-            if fut in pending:
-                pending.remove(fut)
 
     def _record_local_zone_bypass(self, zone_id: int) -> None:
         zone = self._kernel.state.zones.get(zone_id)
@@ -1830,6 +1991,7 @@ class Elke27Client:
                         "not resending until the next accepted authenticate"
                     )
                 self._authenticated = False
+                self._connected = False
                 if evt.reason == "closed" or not self._reauth_on_reconnect:
                     self._forget_auth_pin()
                 self._reconnect_csm_snapshot = self._kernel.state.csm_snapshot
@@ -1843,6 +2005,11 @@ class Elke27Client:
                 )
                 self._enqueue_event(disconnected_evt)
                 self._signal_event_stream_end()
+                self._fail_all_reply_publication_waiters(
+                    Elke27DisconnectedError(
+                        "Connection lost while waiting for snapshot publication."
+                    )
+                )
                 self._reset_bootstrap_state()
 
         v2_evt = Elke27Event(
@@ -1853,13 +2020,6 @@ class Elke27Client:
             raw_type=evt.kind,
         )
         self._enqueue_event(v2_evt)
-
-        if isinstance(evt, AreaStatusUpdated):
-            if evt.status_confirmed:
-                self._notify_entity_status_publication("area", evt.area_id)
-        elif isinstance(evt, ZoneStatusUpdated):
-            if evt.status_confirmed:
-                self._notify_entity_status_publication("zone", evt.zone_id)
 
         if isinstance(evt, AreaConfiguredInventoryReady):
             self._mark_inventory_ready("area")
@@ -1979,21 +2139,14 @@ class Elke27Client:
             TstatStatusUpdated.KIND,
             ZoneStatusUpdated.KIND,
         }:
+            reply_seq_to_publish: int | None = None
             if isinstance(evt, (AreaStatusUpdated, ZoneStatusUpdated, ZonesStatusBulkUpdated)):
                 self._apply_stale_clears_from_event(evt)
-            self._replace_snapshot(
-                panel_info=self._build_panel_info(),
-                table_info=self._build_table_info(),
-                areas=self._build_area_map(),
-                zones=self._build_zone_map(),
-                zone_definitions=self._build_zone_definitions(),
-                outputs=self._build_output_map(),
-                output_definitions=self._build_output_definitions(),
-                lights=self._build_light_map(),
-                barriers=self._build_barrier_map(),
-                locks=self._build_lock_map(),
-                thermostats=self._build_thermostat_map(),
-            )
+                if self._reply_publication_qualifies(evt) and isinstance(evt.seq, int):
+                    reply_seq_to_publish = evt.seq
+            self._replace_snapshot_for_reply_publication(reply_seq_to_publish)
+            if reply_seq_to_publish is not None:
+                self._complete_reply_publication(reply_seq_to_publish)
         self._maybe_set_ready()
 
         if not self._subscriber_lock.acquire(timeout=30.0):
@@ -2113,8 +2266,7 @@ class Elke27Client:
         if port <= 0:
             raise Elke27InvalidArgument("port must be a positive integer.")
         self._reset_bootstrap_state()
-        self._event_loop = asyncio.get_running_loop()
-        self._ensure_kernel_subscription()
+        self._prepare_panel_connect_listeners()
         identity = self._v2_client_identity or self._default_identity()
         session_cfg = SessionConfig(host=host, port=port, wire_log=True)
         connect_exc: BaseException | None = None
@@ -2172,11 +2324,19 @@ class Elke27Client:
             return
         self._identity_panel_key = key
         panel = self._kernel.state.panel
-        for field in ("serial", "mac", "model", "firmware"):
-            if hasattr(panel, field):
-                setattr(panel, field, None)
-        # Publish the cleared identity; panel_info=None would keep the old PanelInfo.
-        self._replace_snapshot(panel_info=self._build_panel_info())
+        for field in (
+            "serial",
+            "mac",
+            "model",
+            "firmware",
+            "app_version",
+            "application_firmware",
+        ):
+            setattr(panel, field, None)
+        self._replace_snapshot(
+            panel_info=self._build_panel_info(),
+            areas=self._build_area_map(),
+        )
 
     def _request_panel_version_info(self) -> None:
         """Ask the panel for serial/MAC/model/firmware after HELLO (E1).
@@ -2611,6 +2771,24 @@ class Elke27Client:
             )
         return None
 
+    def _raise_if_night_arm_ignored(self, area_id: int) -> None:
+        after = self.snapshot.areas.get(area_id)
+        if after is None:
+            raise Elke27CommandOutcomeUnknownError(
+                ("area", "set_arm_state"),
+                "The panel acknowledged area.set_arm_state but the area is missing from "
+                "the snapshot after refresh; the resulting arm state is unknown.",
+            )
+        if after.arm_mode is ArmMode.ARMED_NIGHT:
+            return
+        if (
+            after.arm_mode is ArmMode.DISARMED
+            and after.arming
+            and after.arm_cmd_mode is ArmMode.ARMED_NIGHT
+        ):
+            return
+        raise Elke27StayInstantRequiredError()
+
     @overload
     async def async_arm_area(
         self,
@@ -2675,13 +2853,26 @@ class Elke27Client:
                 exit_delay_cancel=exit_delay_cancel,
                 return_result=return_result,
             )
-        if mode not in _SUPPORTED_ARM_MODES:
+        if mode not in _BASE_SUPPORTED_ARM_MODES and mode is not ArmMode.ARMED_NIGHT:
             raise Elke27InvalidArgument(
                 f"The E27 panel does not support arm mode {mode.value!r}; "
-                "use armed_away or armed_stay."
+                "use armed_away, armed_stay, or armed_night."
             )
+        if mode is ArmMode.ARMED_NIGHT:
+            app_version = self._kernel.state.panel.app_version
+            app_tuple = application_firmware_tuple_from_app_field(app_version)
+            if app_tuple is None:
+                raise Elke27PanelApplicationFirmwareUnknownError(
+                    "Panel application firmware version is unknown."
+                )
+            if not version_tuple_at_least(app_tuple, NIGHT_ARM_MIN_FIRMWARE):
+                raise Elke27NightArmFirmwareTooOldError(
+                    "Arm night requires panel application firmware 0.0.5.37 or later.",
+                    required=NIGHT_ARM_MIN_FIRMWARE,
+                    actual=app_tuple,
+                )
         pin_value = _normalize_area_pin(pin, action="arm")
-        arm_state = mode.value.upper()
+        arm_state = _panel_arm_state_for_mode(mode)
         result = await self.async_execute(
             "area_set_arm_state",
             area_id=area_id,
@@ -2694,6 +2885,14 @@ class Elke27Client:
             if result.error is not None:
                 self._raise_v2_command_error(result.error)
             raise Elke27ProtocolErrorV2("Failed to arm area.")
+        if mode is ArmMode.ARMED_NIGHT:
+            if result.status_refresh_ok is False:
+                raise Elke27CommandOutcomeUnknownError(
+                    ("area", "set_arm_state"),
+                    "The panel acknowledged area.set_arm_state but the follow-up status "
+                    "refresh failed; the resulting arm state is unknown.",
+                )
+            self._raise_if_night_arm_ignored(area_id)
         if return_result:
             return CommandResult(
                 route="area_set_arm_state", status_refresh_ok=result.status_refresh_ok
@@ -2808,6 +3007,7 @@ class Elke27Client:
         session_config: SessionConfig | None = None,
     ) -> Result[None]:
         try:
+            self._prepare_panel_connect_listeners()
             await asyncio.to_thread(self._kernel.load_features_blocking, self._feature_modules)
             await self._kernel.connect(
                 link_keys,
@@ -2815,6 +3015,7 @@ class Elke27Client:
                 client_identity=client_identity,
                 session_config=session_config,
             )
+            self._connected = True
             return _ok(None)
         except _CLIENT_EXCEPTIONS as exc:
             return _err(self._normalize_error(exc, phase="connect"))
@@ -2823,6 +3024,7 @@ class Elke27Client:
         self._cancel_reauth()
         self._forget_auth_pin()
         self._authenticated = False
+        self._connected = False
         try:
             await self._kernel.close()
             return _ok(None)
@@ -2909,8 +3111,9 @@ class Elke27Client:
         sending unless ``allow_installer=True``. This method never authenticates;
         elevate first with ``async_execute("control_authenticate", pin=...)``.
 
-        Message and reply contents are never logged; only the route, outcome,
-        panel error code, elapsed time and the ``allow_installer`` flag. A sent
+        Message and reply bodies are never logged at any level, including inbound
+        and outbound debug lines. Only the one-line summary records the route,
+        outcome, panel error code, elapsed time and the ``allow_installer`` flag. A sent
         message with no reply is reported as ``Elke27CommandOutcomeUnknownError``;
         re-read state instead of retrying.
         """
@@ -3261,23 +3464,6 @@ class Elke27Client:
             skip_busy_backoff = (
                 spec.key == "area_set_arm_state" and params.get("arm_state") == "DISARMED"
             )
-            publication_wait: tuple[Literal["area", "zone"], int, int] | None = None
-            if command_key == "area_set_arm_state":
-                area_id = params.get("area_id")
-                if isinstance(area_id, int) and area_id > 0:
-                    publication_wait = (
-                        "area",
-                        area_id,
-                        self._area_status_seq.get(area_id, 0),
-                    )
-            elif command_key == "zone_set_status":
-                zone_id = params.get("zone_id")
-                if isinstance(zone_id, int) and zone_id > 0:
-                    publication_wait = (
-                        "zone",
-                        zone_id,
-                        self._zone_status_seq.get(zone_id, 0),
-                    )
             panel_busy_attempt = 0
             timeout_value = timeout_s if timeout_s is not None else self._kernel.request_timeout_s
             while True:
@@ -3306,91 +3492,99 @@ class Elke27Client:
                 sent_event = asyncio.Event()
                 self._kernel.register_sent_event(seq, sent_event)
 
+                publication_owner: int | None = None
                 try:
-                    self._kernel.send_request_with_seq(
-                        seq,
-                        spec.domain,
-                        spec.command,
-                        payload,
-                        pending=False,
-                        opaque=None,
-                        expected_route=expected_route,
-                        timeout_s=timeout_value,
-                    )
-                except _CLIENT_EXCEPTIONS as exc:
-                    self._kernel.pending_responses.drop(seq)
-                    detail = f"command_key={command_key} seq={seq}"
-                    return _err(self._normalize_error(exc, phase="execute", detail=detail))
+                    if command_key in self._REPLY_PUBLICATION_COMMANDS:
+                        self._begin_reply_publication_command(seq, expected_route, loop)
+                        publication_owner = seq
 
-                wait_result = await self._await_kernel_command_response(
-                    seq=seq,
-                    command_key=command_key,
-                    sent_event=sent_event,
-                    future=future,
-                    per_attempt_timeout_s=timeout_value,
-                    # Reads have no side effect, so only writes report an unknown outcome.
-                    route=None
-                    if is_read_only_route(spec.domain, spec.command)
-                    else (spec.domain, spec.command),
-                )
-                if not wait_result.ok:
-                    return wait_result
-                msg = wait_result.data
-                if msg is None:
-                    return _err(ProtocolError(f"{command_key} returned no response payload."))
-
-                if not self._has_expected_payload(msg, expected_route):
-                    return _err(
-                        ProtocolError(
-                            f"{command_key} missing response payload for {expected_route[0]}.{expected_route[1]}"
+                    try:
+                        self._kernel.send_request_with_seq(
+                            seq,
+                            spec.domain,
+                            spec.command,
+                            payload,
+                            pending=False,
+                            opaque=None,
+                            expected_route=expected_route,
+                            timeout_s=timeout_value,
                         )
-                    )
+                    except _CLIENT_EXCEPTIONS as exc:
+                        self._kernel.pending_responses.drop(seq)
+                        detail = f"command_key={command_key} seq={seq}"
+                        return _err(self._normalize_error(exc, phase="execute", detail=detail))
 
-                error_code = self._extract_error_code(msg, expected_route)
-                if error_code is not None:
-                    if (
-                        self._is_panel_busy_error_code(error_code)
-                        and command_key not in _SEND_ONCE_COMMANDS
-                        and panel_busy_attempt < self._request_max_transport_retries()
-                    ):
-                        panel_busy_attempt += 1
-                        if self._log.isEnabledFor(logging.DEBUG):
-                            self._log.debug(
-                                "Panel busy (11039) on %s; retry %s/%s",
-                                command_key,
-                                panel_busy_attempt,
-                                self._request_max_transport_retries(),
+                    wait_result = await self._await_kernel_command_response(
+                        seq=seq,
+                        command_key=command_key,
+                        sent_event=sent_event,
+                        future=future,
+                        per_attempt_timeout_s=timeout_value,
+                        route=None
+                        if is_read_only_route(spec.domain, spec.command)
+                        else (spec.domain, spec.command),
+                    )
+                    if not wait_result.ok:
+                        return wait_result
+                    msg = wait_result.data
+                    if msg is None:
+                        return _err(ProtocolError(f"{command_key} returned no response payload."))
+
+                    if not self._has_expected_payload(msg, expected_route):
+                        return _err(
+                            ProtocolError(
+                                f"{command_key} missing response payload for {expected_route[0]}.{expected_route[1]}"
                             )
-                        await self._sleep_transport_backoff(
-                            panel_busy_attempt, skip_for_disarm=skip_busy_backoff
                         )
-                        continue
-                    return _err(
-                        self._panel_error_for_async_execute(
-                            command_key,
-                            error_code,
-                            user_code_sent=self._payload_carried_user_code(payload),
-                        )
-                    )
 
-                response_payload = self._extract_response_payload(msg, expected_route)
-                status_refresh_ok = await self._status_refresh_after_successful_write(
-                    command_key,
-                    params,
-                    response_payload,
-                    # Remaining budget only, so write + refresh + publication wait
-                    # together stay within the command's budget (PR #29 Bugbot).
-                    timeout_s=command_deadline - loop.time(),
-                )
-                if publication_wait is not None:
-                    domain, entity_id, seen_before = publication_wait
-                    await self._await_entity_status_publication(
-                        domain=domain,
-                        entity_id=entity_id,
-                        seen_before=seen_before,
-                        deadline=command_deadline,
+                    error_code = self._extract_error_code(msg, expected_route)
+                    if error_code is not None:
+                        if (
+                            self._is_panel_busy_error_code(error_code)
+                            and command_key not in _SEND_ONCE_COMMANDS
+                            and panel_busy_attempt < self._request_max_transport_retries()
+                        ):
+                            panel_busy_attempt += 1
+                            if self._log.isEnabledFor(logging.DEBUG):
+                                self._log.debug(
+                                    "Panel busy (11039) on %s; retry %s/%s",
+                                    command_key,
+                                    panel_busy_attempt,
+                                    self._request_max_transport_retries(),
+                                )
+                            await self._sleep_transport_backoff(
+                                panel_busy_attempt, skip_for_disarm=skip_busy_backoff
+                            )
+                            continue
+                        return _err(
+                            self._panel_error_for_async_execute(
+                                command_key,
+                                error_code,
+                                user_code_sent=self._payload_carried_user_code(payload),
+                            )
+                        )
+
+                    response_payload = self._extract_response_payload(msg, expected_route)
+                    status_refresh_ok = await self._status_refresh_after_successful_write(
+                        command_key,
+                        params,
+                        response_payload,
+                        timeout_s=command_deadline - loop.time(),
                     )
-                return _ok(response_payload, status_refresh_ok=status_refresh_ok)
+                    if self._command_needs_reply_publication_wait(command_key, response_payload):
+                        try:
+                            await self._await_reply_snapshot_publication(
+                                seq, deadline=command_deadline
+                            )
+                        except (
+                            Elke27DisconnectedError,
+                            Elke27SnapshotPublicationError,
+                        ) as publication_failed:
+                            return _err(publication_failed)
+                    return _ok(response_payload, status_refresh_ok=status_refresh_ok)
+                finally:
+                    if publication_owner is not None:
+                        self._release_reply_publication_command(publication_owner)
 
         if spec.response_mode != "paged_blocks":
             return _err(ProtocolError(f"Command {command_key!r} has unsupported response_mode."))
@@ -3908,9 +4102,7 @@ class Elke27Client:
             return False
         for area in areas:
             state = area.arm_state or area.armed_state
-            if not isinstance(state, str):
-                return False
-            if state.lower() != "disarmed":
+            if self.arm_mode_from_panel_string(state) is not ArmMode.DISARMED:
                 return False
         return True
 

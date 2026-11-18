@@ -61,12 +61,13 @@ async def _await_execute_replies(
     client._event_loop = asyncio.get_running_loop()
     on_message = get_private(kernel, "_on_message")
     seen = start_seen
-    while not task.done():
-        await asyncio.sleep(0)
-        while seen < len(fake_session.sent):
-            sent = fake_session.sent[seen]
-            on_message(synthetic_success_reply(sent, sent_history=fake_session.sent[:seen]))
-            seen += 1
+    async with asyncio.timeout(2.0):
+        while not task.done():
+            await asyncio.sleep(0)
+            while seen < len(fake_session.sent):
+                sent = fake_session.sent[seen]
+                on_message(synthetic_success_reply(sent, sent_history=fake_session.sent[:seen]))
+                seen += 1
     return await task
 
 

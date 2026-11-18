@@ -1,4 +1,8 @@
-"""Blocking socket helpers for discovery (worker thread only)."""
+"""Blocking socket helpers for discovery (worker thread only).
+
+Exports ``UDP_IPV4_FAMILY`` and ``UDP_DGRAM`` so loop modules can pass
+``getaddrinfo`` family/type without importing ``socket``.
+"""
 
 from __future__ import annotations
 
@@ -6,9 +10,12 @@ import ctypes
 import socket
 import sys
 
+UDP_IPV4_FAMILY: int = socket.AF_INET
+UDP_DGRAM: int = socket.SOCK_DGRAM
+
 
 def create_udp_socket() -> socket.socket:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock = socket.socket(UDP_IPV4_FAMILY, UDP_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     sock.bind(("", 0))
     sock.setblocking(False)

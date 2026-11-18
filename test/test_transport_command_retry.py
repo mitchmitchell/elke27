@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import gc
+import logging
+import threading
 from collections.abc import Callable
 from typing import Any, cast
 
@@ -15,10 +18,27 @@ from elke27_lib.const import E27ErrorCode
 from elke27_lib.errors import ConnectionLost, E27Timeout
 from elke27_lib.kernel_loop import E27Kernel, KernelError
 from elke27_lib.outbound_loop import OutboundPriority
-from test.helpers.internal import get_kernel, get_private
+from test.helpers.fake_session import connect_with_fake_panel
+from test.helpers.internal import (
+    deliver_panel_message,
+    get_kernel,
+    get_private,
+    reply_publication_pending,
+    reply_publication_seq_active,
+    set_private,
+    trigger_session_disconnect,
+)
+from test.helpers.panel_command_driver import connect_panel, seed_area_disarmed
+
+
+class _FakeSessionCfg:
+    host = "panel.invalid"
+    port = 2101
 
 
 class _FakeSession:
+    cfg = _FakeSessionCfg()
+
     def __init__(self, *, fail_send_count: int = 0) -> None:
         from elke27_lib.session_thread import SessionState
 
@@ -93,8 +113,9 @@ async def test_late_reply_cancels_pending_same_seq_transport_retry() -> None:
         for item in list(kernel_any._request_queue_high) + list(kernel_any._request_queue_normal)
     )
 
-    on_message = get_private(kernel, "_on_message")
-    on_message({"seq": seq, "zone": {"get_status": {"zone_id": 1, "status": "OK"}}})
+    deliver_panel_message(
+        kernel, {"seq": seq, "zone": {"get_status": {"zone_id": 1, "status": "OK"}}}
+    )
     assert seq not in kernel_any._transport_retry_timer_by_seq
     assert not any(
         item.seq == seq
@@ -201,8 +222,9 @@ async def test_kernel_timeout_then_success_retries_same_seq() -> None:
     assert len(session.sent) == 2
     assert session.sent[0]["seq"] == session.sent[1]["seq"] == seq
 
-    on_message = get_private(kernel, "_on_message")
-    on_message({"seq": seq, "zone": {"get_status": {"zone_id": 1, "status": "OK"}}})
+    deliver_panel_message(
+        kernel, {"seq": seq, "zone": {"get_status": {"zone_id": 1, "status": "OK"}}}
+    )
     msg = await asyncio.wait_for(future, timeout=0.2)
     assert msg["seq"] == seq
 
@@ -389,8 +411,9 @@ async def test_kernel_lock_set_status_retried_on_pre_send_failure() -> None:
     )
     await asyncio.sleep(0)
     assert len(session.sent) == 1
-    on_message = get_private(kernel, "_on_message")
-    on_message({"seq": seq, "lock": {"set_status": {"lock_id": 1, "error_code": 0}}})
+    deliver_panel_message(
+        kernel, {"seq": seq, "lock": {"set_status": {"lock_id": 1, "error_code": 0}}}
+    )
     await asyncio.wait_for(future, timeout=0.2)
 
 
@@ -429,8 +452,9 @@ async def test_kernel_disarm_retried_immediately_without_backoff() -> None:
 
     cancel_active_timeout = get_private(kernel, "_cancel_active_timeout")
     cancel_active_timeout()
-    on_message = get_private(kernel, "_on_message")
-    on_message({"seq": seq, "area": {"set_arm_state": {"area_id": 1, "error_code": 0}}})
+    deliver_panel_message(
+        kernel, {"seq": seq, "area": {"set_arm_state": {"area_id": 1, "error_code": 0}}}
+    )
     await asyncio.wait_for(future, timeout=0.2)
 
 
@@ -700,8 +724,62 @@ async def test_cancel_command_transport_drops_outbound_queued_frame() -> None:
     kernel = E27Kernel()
     cast(Any, kernel)._session = _OutboundSession()
 
-    kernel.cancel_command_transport(96, E27Timeout("cancelled"))
+    kernel.cancel_command_transport(96, E27Timeout("cancelled"), drop_pending_response=True)
     assert outbound.cancel_pending_seq(96) is False
+
+
+@pytest.mark.asyncio
+async def test_cancel_drop_pending_late_reply_does_not_complete(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _FakeSession()
+    client = _make_client(session)
+    kernel = get_kernel(client)
+    loop = asyncio.get_running_loop()
+    set_private(client, "_connected", True)
+    set_private(client, "_event_loop", loop)
+    kernel.state.panel.connected = True
+    client.bind_kernel_loop_thread_for_tests(loop)
+    caplog.set_level(logging.ERROR, logger="asyncio")
+    drop_calls: list[int] = []
+    real_drop = kernel.pending_responses.drop
+
+    def tracked_drop(seq: int) -> None:
+        drop_calls.append(seq)
+        real_drop(seq)
+
+    monkeypatch.setattr(kernel.pending_responses, "drop", tracked_drop)
+    task = asyncio.create_task(client.async_execute("zone_get_status", zone_id=1, timeout_s=2.0))
+    async with asyncio.timeout(2.0):
+        while not session.sent:
+            await asyncio.sleep(0.01)
+    seq = session.sent[0]["seq"]
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.sleep(0)
+    assert drop_calls == [seq]
+    assert kernel.pending_responses.pending_count() == 0
+    deliver_panel_message(
+        kernel, {"seq": seq, "zone": {"get_status": {"zone_id": 1, "status": "OK"}}}
+    )
+    await asyncio.sleep(0)
+    gc.collect()
+    assert kernel.dispatcher.pending_count() == 0
+    assert kernel.dispatcher.match_pending(seq, pop=False) is None
+    assert kernel.pending_responses.pending_count() == 0
+    assert not any("never retrieved" in rec.getMessage() for rec in caplog.records)
+    follow = asyncio.create_task(client.async_execute("zone_get_status", zone_id=2, timeout_s=2.0))
+    async with asyncio.timeout(2.0):
+        while len(session.sent) < 2:
+            await asyncio.sleep(0.01)
+    late_seq = session.sent[1]["seq"]
+    deliver_panel_message(
+        kernel, {"seq": late_seq, "zone": {"get_status": {"zone_id": 2, "status": "OK"}}}
+    )
+    follow_result = await asyncio.wait_for(follow, timeout=2.0)
+    assert follow_result.ok is True
 
 
 @pytest.mark.parametrize(
@@ -750,8 +828,9 @@ async def test_async_execute_timeout_retry_then_success() -> None:
     await asyncio.sleep(0)
     assert len(session.sent) == 2
     assert session.sent[0]["seq"] == session.sent[1]["seq"]
-    on_message = get_private(kernel, "_on_message")
-    on_message({"seq": seq, "zone": {"get_status": {"zone_id": 1, "status": "OK"}}})
+    deliver_panel_message(
+        kernel, {"seq": seq, "zone": {"get_status": {"zone_id": 1, "status": "OK"}}}
+    )
     result = await asyncio.wait_for(task, timeout=0.5)
     assert result.ok
 
@@ -776,8 +855,9 @@ async def test_async_execute_waits_for_kernel_disarm_transport_retry() -> None:
     on_reply_timeout(seq)
     await asyncio.sleep(0)
     assert len(session.sent) == 2
-    on_message = get_private(kernel, "_on_message")
-    on_message({"seq": seq, "area": {"set_arm_state": {"area_id": 1, "error_code": 0}}})
+    deliver_panel_message(
+        kernel, {"seq": seq, "area": {"set_arm_state": {"area_id": 1, "error_code": 0}}}
+    )
     result = await asyncio.wait_for(task, timeout=0.5)
     assert result.ok
 
@@ -818,6 +898,7 @@ def _make_client(session: _FakeSession, *, max_retries: int = 2) -> Elke27Client
 async def test_async_execute_panel_refusal_single_send() -> None:
     session = _FakeSession()
     client = _make_client(session, max_retries=2)
+    kernel = get_kernel(client)
 
     task = asyncio.create_task(
         client.async_execute("area_set_arm_state", area_id=1, arm_state="ARMED_AWAY", pin=1234)
@@ -827,14 +908,14 @@ async def test_async_execute_panel_refusal_single_send() -> None:
             break
         await asyncio.sleep(0)
     sent = session.sent[0]
-    on_message = get_private(get_kernel(client), "_on_message")
-    on_message(
+    deliver_panel_message(
+        kernel,
         {
             "seq": sent["seq"],
             "area": {
                 "set_arm_state": {"area_id": 1, "error_code": int(E27ErrorCode.ELKERR_NOT_READY)}
             },
-        }
+        },
     )
     result = await task
     assert not result.ok
@@ -847,6 +928,7 @@ async def test_async_execute_panel_refusal_single_send() -> None:
 async def test_async_execute_panel_busy_then_success() -> None:
     session = _FakeSession()
     client = _make_client(session, max_retries=2)
+    kernel = get_kernel(client)
 
     task = asyncio.create_task(client.async_execute("zone_get_status", zone_id=1))
     busy_code = int(E27ErrorCode.ELKERR_ZWAVE_BUSY)
@@ -856,16 +938,19 @@ async def test_async_execute_panel_busy_then_success() -> None:
                 break
             await asyncio.sleep(0)
         sent = session.sent[attempt]
-        on_message = get_private(get_kernel(client), "_on_message")
         if attempt == 0:
-            on_message(
+            deliver_panel_message(
+                kernel,
                 {
                     "seq": sent["seq"],
                     "zone": {"get_status": {"zone_id": 1, "error_code": busy_code}},
-                }
+                },
             )
         else:
-            on_message({"seq": sent["seq"], "zone": {"get_status": {"zone_id": 1, "status": "OK"}}})
+            deliver_panel_message(
+                kernel,
+                {"seq": sent["seq"], "zone": {"get_status": {"zone_id": 1, "status": "OK"}}},
+            )
 
     result = await task
     assert result.ok
@@ -889,7 +974,8 @@ async def test_disarm_uses_high_priority() -> None:
         priorities.append(priority)
         original_send(msg, priority=priority, on_sent=on_sent, on_fail=on_fail)
 
-    cast(Any, get_kernel(client)._session).send_json = _send_json
+    kernel = get_kernel(client)
+    cast(Any, kernel._session).send_json = _send_json
 
     task = asyncio.create_task(
         client.async_execute("area_set_arm_state", area_id=1, arm_state="DISARMED", pin=1234)
@@ -899,13 +985,12 @@ async def test_disarm_uses_high_priority() -> None:
             break
         await asyncio.sleep(0)
     sent = session.sent[0]
-    on_message = get_private(get_kernel(client), "_on_message")
-    # Reply confirms arm_state so #29 needs no follow-up area_get_status read.
-    on_message(
+    deliver_panel_message(
+        kernel,
         {
             "seq": sent["seq"],
             "area": {"set_arm_state": {"area_id": 1, "error_code": 0, "arm_state": "DISARMED"}},
-        }
+        },
     )
     result = await task
     assert result.ok
@@ -913,36 +998,200 @@ async def test_disarm_uses_high_priority() -> None:
 
 
 @pytest.mark.asyncio
-async def test_recv_thread_reply_marshals_retry_cleanup_to_loop() -> None:
-    """_on_message runs on the recv thread; retry-state cleanup must run on the loop."""
-    import threading
+@pytest.mark.parametrize(
+    "command", ["area_get_status", "zone_get_status", "zone_get_all_zones_status"]
+)
+async def test_session_loss_while_reply_pending(
+    command: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    from elke27_lib.client import Elke27DisconnectedError
 
+    session = _FakeSession()
+    client = _make_client(session)
+    kernel = get_kernel(client)
+    loop = asyncio.get_running_loop()
+    set_private(client, "_connected", True)
+    set_private(client, "_event_loop", loop)
+    kernel.state.panel.connected = True
+    client.bind_kernel_loop_thread_for_tests(loop)
+    kernel.state.get_or_create_area(1).arm_state = "DISARMED"
+    for zone_id in (1,):
+        zone = kernel.state.get_or_create_zone(zone_id)
+        zone.area_id = 1
+        zone.bypassed = False
+    caplog.set_level(logging.ERROR, logger="asyncio")
+    kwargs = {"area_get_status": {"area_id": 1}, "zone_get_status": {"zone_id": 1}}.get(command, {})
+    task = asyncio.create_task(client.async_execute(command, timeout_s=5.0, **kwargs))
+    async with asyncio.timeout(2.0):
+        while not session.sent:
+            await asyncio.sleep(0.01)
+    seq = session.sent[0]["seq"]
+    assert reply_publication_pending(client, seq)
+    assert not task.done()
+    trigger_session_disconnect(kernel, ConnectionResetError())
+    async with asyncio.timeout(5.0):
+        result = await task
+    gc.collect()
+    await asyncio.sleep(0)
+    assert not result.ok
+    assert isinstance(result.error, Elke27DisconnectedError), repr(result.error)
+    assert not any("never retrieved" in rec.getMessage() for rec in caplog.records)
+    assert not reply_publication_seq_active(client, seq)
+    assert kernel.dispatcher.pending_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_async_execute_connection_lost_maps_to_disconnected_result() -> None:
+    from elke27_lib.client import Elke27DisconnectedError
+
+    session = _FakeSession()
+    client = _make_client(session)
+    kernel = get_kernel(client)
+    task = asyncio.create_task(client.async_execute("zone_get_status", zone_id=1))
+    for _ in range(20):
+        if session.sent or task.done():
+            break
+        await asyncio.sleep(0)
+    abort_requests = get_private(kernel, "_abort_requests")
+    abort_requests(ConnectionLost("Session disconnected."))
+    result = await asyncio.wait_for(task, timeout=0.5)
+    assert not result.ok
+    assert isinstance(result.error, Elke27DisconnectedError)
+    assert "Connection lost during the command." in str(result.error)
+
+
+@pytest.mark.asyncio
+async def test_reply_snapshot_publication_release_paths(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, session = await connect_panel(monkeypatch)
+    kernel = get_kernel(client)
+    loop = asyncio.get_running_loop()
+    client.bind_kernel_loop_thread_for_tests(loop)
+    kernel.state.get_or_create_area(1).arm_state = "DISARMED"
+    sent_before = len(session.sent)
+    task = asyncio.create_task(client.async_execute("area_get_status", area_id=1, timeout_s=5.0))
+    async with asyncio.timeout(2.0):
+        while len(session.sent) == sent_before:
+            await asyncio.sleep(0.01)
+    seq = session.sent[-1]["seq"]
+    deliver_panel_message(
+        kernel,
+        {
+            "seq": seq,
+            "area": {
+                "get_status": {
+                    "area_id": 1,
+                    "arm_state": "DISARMED",
+                    "error_code": E27ErrorCode.ELKERR_NONE,
+                }
+            },
+        },
+    )
+    await asyncio.sleep(0)
+    async with asyncio.timeout(2.0):
+        result = await task
+    assert result.ok is True
+    assert not reply_publication_seq_active(client, seq)
+    assert kernel.dispatcher.match_pending(seq, pop=False) is None
+
+    caplog.clear()
+    caplog.set_level(logging.WARNING, logger="elke27_lib.client")
+    monkeypatch.setattr(kernel, "command_transport_wait_budget_s", lambda _t: 0.08)
+
+    async def _burn_budget_before_publication(*_args: Any, **_kwargs: Any) -> None:
+        await asyncio.sleep(0.12)
+
+    monkeypatch.setattr(
+        client, "_status_refresh_after_successful_write", _burn_budget_before_publication
+    )
+    sent_before = len(session.sent)
+    task = asyncio.create_task(client.async_execute("area_get_status", area_id=1, timeout_s=5.0))
+    async with asyncio.timeout(2.0):
+        while len(session.sent) <= sent_before:
+            await asyncio.sleep(0.01)
+    spent_seq = session.sent[-1]["seq"]
+    deliver_panel_message(
+        kernel,
+        {
+            "seq": spent_seq,
+            "area": {
+                "get_status": {
+                    "area_id": 1,
+                    "arm_state": "DISARMED",
+                    "error_code": E27ErrorCode.ELKERR_NONE,
+                }
+            },
+        },
+    )
+    publication_timeout = f"Timed out waiting for reply seq={spent_seq} snapshot publication"
+    async with asyncio.timeout(2.0):
+        while not task.done() and not any(
+            publication_timeout in rec.message for rec in caplog.records
+        ):
+            await asyncio.sleep(0)
+    async with asyncio.timeout(2.0):
+        result = await task
+    assert result.ok is True
+    assert any(publication_timeout in rec.message for rec in caplog.records)
+    assert not reply_publication_seq_active(client, spent_seq)
+    assert kernel.dispatcher.match_pending(spent_seq, pop=False) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "disconnect",
+    ["panel_close", "client_close"],
+    ids=["inactive_session", "no_session"],
+)
+async def test_async_execute_send_failure_clears_dispatch_correlation(
+    disconnect: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop = asyncio.get_running_loop()
+    kernel = E27Kernel()
+    client = Elke27Client(kernel=kernel, skip_connect_bootstrap=True)
+    panel = await connect_with_fake_panel(monkeypatch, client)
+    client.bind_kernel_loop_thread_for_tests(loop)
+    await seed_area_disarmed(panel, 1)
+    if disconnect == "panel_close":
+        panel.close()
+    else:
+        await client.close()
+    pending_before_execute = kernel.dispatcher.pending_count()
+    result = await client.async_execute("area_get_status", area_id=1, timeout_s=5.0)
+    assert not result.ok
+    assert kernel.dispatcher.pending_count() == pending_before_execute
+
+
+@pytest.mark.asyncio
+async def test_recv_thread_reply_marshals_retry_cleanup_to_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     kernel = E27Kernel(request_timeout_s=0.02, request_max_retries=2, request_max_backoff_s=60.0)
     session = _FakeSession()
     _wire_kernel(kernel, session)
-    kernel_any = cast(Any, kernel)
     loop = asyncio.get_running_loop()
     loop_thread = threading.get_ident()
     calls: list[tuple[int, int]] = []
-    original = kernel_any._clear_pending_transport_retry_for_seq
+    original = get_private(kernel, "_clear_pending_transport_retry_for_seq")
 
     def _spy(seq: int) -> None:
         calls.append((seq, threading.get_ident()))
         original(seq)
 
-    kernel_any._clear_pending_transport_retry_for_seq = _spy
+    monkeypatch.setattr(kernel, "_clear_pending_transport_retry_for_seq", _spy)
+    threadsafe = get_private(kernel, "_clear_pending_transport_retry_for_seq_threadsafe")
 
-    worker = threading.Thread(
-        target=kernel_any._clear_pending_transport_retry_for_seq_threadsafe, args=(77,)
-    )
+    worker = threading.Thread(target=threadsafe, args=(77,))
     worker.start()
     worker.join()
-    assert calls == []  # not run on the recv thread
+    assert calls == []
     await asyncio.sleep(0)
     await asyncio.sleep(0)
     assert calls == [(77, loop_thread)]
 
-    # On the loop thread itself it runs inline.
-    kernel_any._clear_pending_transport_retry_for_seq_threadsafe(78)
+    threadsafe(78)
     assert calls[-1] == (78, loop_thread)
     assert loop is asyncio.get_running_loop()

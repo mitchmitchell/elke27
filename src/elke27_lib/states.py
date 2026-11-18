@@ -39,6 +39,8 @@ class PanelMetaState:
     panel_name: str | None = None
     model: str | None = None
     firmware: str | None = None
+    application_firmware: str | None = None
+    app_version: int | None = None
     serial: str | None = None
     mac: str | None = None
 
@@ -76,8 +78,6 @@ class AreaState:
     away: bool | None = None
     bypass: bool | None = None
     chime: bool | None = None
-    entry_delay_active: bool | None = None
-    exit_delay_active: bool | None = None
     trouble_status: str | None = None
 
     # Common counts (if reported)

@@ -43,6 +43,7 @@ from .linking_thread import (
     send_unframed_json,
 )
 from .presentation_loop import decrypt_key_field_with_linkkey
+from .redact import redact_for_diagnostics
 
 LOG = logging.getLogger(__name__)
 
@@ -51,6 +52,8 @@ LOG = logging.getLogger(__name__)
 #   11006 ELKERR_INVALID_ID (seen on hardware for an unlinked/revoked sn)
 #   11008 ELKERR_NOAUTH
 HELLO_LINK_REQUIRED_ERROR_CODES: frozenset[int] = frozenset({11006, 11008})
+
+_HELLO_REQUEST_FIELDS: tuple[str, ...] = ("mn", "sn", "fwver", "hwver", "osver")
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,13 +74,7 @@ def build_hello_request(*, seq: int, client_identity: E27Identity) -> str:
     """
     msg = {
         "seq": int(seq),
-        "hello": {
-            "mn": client_identity.mn,
-            "sn": client_identity.sn,
-            "fwver": client_identity.fwver,
-            "hwver": client_identity.hwver,
-            "osver": client_identity.osver,
-        },
+        "hello": {name: getattr(client_identity, name) for name in _HELLO_REQUEST_FIELDS},
     }
     return json.dumps(msg, separators=(",", ":"))
 
@@ -126,19 +123,25 @@ def perform_hello(
         try:
             predata = sock.recv(4096)
             if predata:
-                LOG.debug("Pre-HELLO bytes received: %s", predata.hex())
+                LOG.debug("Pre-HELLO bytes received: %s", redact_for_diagnostics(predata))
                 try:
                     pre_batch = recv_cleartext_json_objects_from_bytes(predata)
                     pre_objs = [cast(Mapping[str, object], obj) for obj in pre_batch]
-                except (ValueError, json.JSONDecodeError) as e:
-                    LOG.warning("Pre-HELLO JSON parse failed: %s", e)
+                except json.JSONDecodeError as e:
+                    LOG.warning(
+                        "Pre-HELLO JSON parse failed: %s line=%s column=%s",
+                        type(e).__name__,
+                        e.lineno,
+                        e.colno,
+                    )
+                except ValueError as e:
+                    LOG.warning("Pre-HELLO JSON parse failed: %s", type(e).__name__)
         except (TimeoutError, BlockingIOError):
             pass
     finally:
         sock.settimeout(prev_timeout)
 
-    # Send clear, UNFRAMED JSON
-    LOG.debug("Hello request payload: %s", req)
+    LOG.debug("Hello request payload: seq=%s hello=%s", seq, sorted(_HELLO_REQUEST_FIELDS))
     send_unframed_json(sock, req)
 
     # Receive clear, UNFRAMED JSON (may be concatenated objects). Some panels emit
@@ -167,11 +170,15 @@ def perform_hello(
             break
 
     if not any("hello" in o for o in objs):
-        raw_preview = json.dumps(objs, separators=(",", ":"), ensure_ascii=True)
-        LOG.debug("HELLO response missing 'hello': %s", raw_preview)
+        redacted_preview = json.dumps(
+            redact_for_diagnostics(objs),
+            separators=(",", ":"),
+            ensure_ascii=True,
+        )
+        LOG.debug("HELLO response missing 'hello': %s", redacted_preview)
         raise E27HelloTimeout(
             "Hello response not found in cleartext JSON stream.",
-            context=E27ErrorContext(phase="hello_recv", detail=f"objs={raw_preview}"),
+            context=E27ErrorContext(phase="hello_recv", detail=f"objs={redacted_preview}"),
         )
 
     hello_obj = _select_hello_object(objs)

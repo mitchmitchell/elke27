@@ -1,15 +1,131 @@
-  Unreleased
+  Area Delay, Arm Night Stay Instant, Status Read Publication (0.6.0, 2026-11-17)
 
-  Developer note (encryption / cryptography, #114)
+  - Entry/exit delay (#92, #141): public ``AreaState`` exposes ``delay_state``
+    (``DelayStateNone``, ``DelayStateEntry``, or ``DelayStateExit``) derived from
+    documented ``area.get_status`` fields on each snapshot refresh (not a separate
+    public entry point). ``entry_delay`` is ``True`` during entry delay; ``arming``
+    is ``True`` during exit delay. Remaining seconds follow the panel's five-second
+    broadcasts only (no local countdown). The undocumented ``entry_delay_active``
+    key is no longer read. Entry delay is simulator-proven only; hardware entry
+    testing needs explicit approval before it is claimed in release notes beyond
+    that.
+  - Being armed no longer clears ``ee_timer`` / ``alarm_zone`` on unrelated
+    partial payloads; fields clear only when a payload that touches them omits
+    them or sends the wrong type. ``arming`` can stay true across stay→away
+    command changes while ``ee_timer`` is still present; partial cmd-only
+    payloads that clear ``ee_timer`` still drop ``arming``. When exit delay
+    completes, ``ee_timer`` often remains ``1`` on the final armed frame (#141).
+  - Arm night (#140, #142): ``ArmMode.ARMED_NIGHT`` sends `area.set_arm_state`
+    with `arm_state` ``ARMED_STAY_INST``; panel ``ARMED_STAY_INST`` status maps
+    to ``armed_night`` instead of ``armed_stay``.
+  - Arm night requires application firmware **0.0.5.37 or later** (from
+    `control.get_version_info` ``app``, not SSP). Unknown firmware raises
+    ``Elke27PanelApplicationFirmwareUnknownError``; firmware below the minimum
+    raises ``Elke27NightArmFirmwareTooOldError``. ``PanelInfo.application_firmware``
+    and per-area ``AreaState.night_arm_supported`` expose capability on the public
+    snapshot.
+  - Panel rejections on arm night raise ``Elke27PanelError`` (subclass of
+    ``Elke27ProtocolError``). Ignored Stay Instant (accepted write, state
+    unchanged) raises ``Elke27StayInstantRequiredError`` (subclass of
+    ``Elke27Error``). ``async_arm_area`` with ``ArmMode.ARMED_NIGHT`` raises
+    ``Elke27CommandOutcomeUnknownError`` when the write succeeded but
+    ``status_refresh_ok`` is ``False`` after the follow-up read, or when the area
+    is missing from the snapshot after refresh (#142).
+  - Status reads (#144), two cases. (a) ``area_get_status``, ``zone_get_status``,
+    ``zone_get_all_zones_status``, and arm or bypass writes whose reply already
+    includes confirmed status wait until the reply is published into
+    ``get_snapshot()`` or the command wait budget runs out. When that publication
+    wait fails, ``async_execute`` returns ``Result(ok=False, error=...)`` with
+    ``Elke27DisconnectedError`` or ``Elke27SnapshotPublicationError``; it does not
+    raise those types. (b) Ack-only ``area_set_arm_state`` or ``zone_set_status``
+    runs a follow-up ``area_get_status`` or ``zone_get_status``. Any failure of that
+    nested read (including its publication wait) is a failed refresh on the write:
+    ``Result(ok=True, status_refresh_ok=False)``, a WARNING, and the area or zone
+    marked stale. On that refresh-failed path, only ``async_arm_area`` with
+    ``ArmMode.ARMED_NIGHT`` raises ``Elke27CommandOutcomeUnknownError`` (failed
+    follow-up or area missing after refresh); ``async_arm_area`` with Away or Stay,
+    ``async_disarm_area``, and ``async_set_zone_bypass`` return without raising.
+    When the outer ``async_execute`` returns ``ok=False`` (including
+    ``Elke27CommandOutcomeUnknownError`` after a confirmed send with no reply),
+    public typed helpers such as ``async_arm_area``, ``async_disarm_area``,
+    ``async_set_zone_bypass``, ``async_set_output``, ``async_set_barrier``, and
+    ``async_refresh_barrier`` raise via their normal ``result.ok`` check.
+
+  Discovery Blocking Import (0.5.1, 2026-11-12)
+
+  Developer note (discovery blocking import, #136) (#137)
+
+  - ``discovery`` eagerly imports ``discovery_socket_thread`` at module load
+    instead of ``importlib.import_module`` on the event loop, so Home Assistant
+    does not log blocking-call warnings during ``async_discover_host``.
+  - ``discovery_socket_thread`` exports ``UDP_IPV4_FAMILY`` and ``UDP_DGRAM``
+    for asyncio ``getaddrinfo`` from loop code without importing ``socket``.
+
+  Loop Module Renames, Diagnostics Redaction, Loopcheck (0.5.0)
+
+  - Breaking (#120): internal modules renamed to ``*_loop`` / ``*_thread``.
+    Deep imports (for example ``elke27_lib.kernel``) and logger names (for
+    example ``"elke27_lib.session"``) must use the new names (``kernel_loop``,
+    ``session_thread``, and so on). There are no compatibility shims.
+  - Breaking (#121): ``ArmMode``, ``EventType`` and ``E27ErrorCode`` are now
+    ``StrEnum``, so ``str()`` and f-strings yield the value (for example
+    ``"disarmed"``); a synchronous ``control.authenticate`` called on the kernel
+    loop thread now raises ``ProtocolError``.
+  - Breaking (#126): ``redact.should_redact`` is now public;
+    ``redact_for_diagnostics`` also redacts ``access``, ``lat``, ``long``,
+    ``cloud_url``, ``pw``, ``pwd``, ``cloud_pw`` and ``*_pw`` keys
+    (``password_required`` is exempt).
+
+  Developer note (all areas disarmed, #109) (#132)
+
+  - ``_all_areas_disarmed`` uses ``arm_mode_from_panel_string`` only; unknown,
+    ``ALARM_MEM``, and missing ``arm_state`` never count as disarmed.
+
+  Developer note (log redaction, #110, #112, #128) (#126)
+
+  - Non-raw kernel inbound and outbound debug logs share one rule via
+    ``redact.should_redact`` and ``redact_for_diagnostics``.
+  - That rule also redacts ``access``, ``lat``, ``long``, ``cloud_url``, ``pw``,
+    ``pwd``, ``cloud_pw``, and any key whose lowercase form ends with ``_pw``.
+    The exact key ``password_required`` is exempt so boolean flags stay visible.
+  - Raw pass-through still omits message and reply bodies in both directions;
+    only the one-line outcome summary is logged.
+  - The discovery scanner debug line logs ``redact_for_diagnostics(data)``
+    instead of the raw UDP reply.
+
+  Developer note (keepalive check, #93) (#125)
+
+  - The keepalive reply ``except Exception`` in ``kernel_loop`` now documents why
+    the catch-all is intentional (probe failures must not stop the loop).
+
+  Developer note (encryption / cryptography, #114) (#123)
 
   - ``encryption_loop`` imports ``cryptography`` directly (required
     dependency); the optional-import fallback and ``default_backend()`` call
     were removed.
 
-  Developer note (local lint / loopcheck)
+  Developer note (local lint / loopcheck, #96, #122)
 
-  - ``python devtools/lint.py`` and ``make lint`` now run loopcheck on ``src``;
-    any ELK finding fails lint like ruff or basedpyright.
+  - ``devtools/loopcheck.py`` is a stdlib-only AST checker for loop-module
+    rules (ELK001-005, ELK101-110). ``python devtools/lint.py`` and ``make lint``
+    now run it on ``src``; any ELK finding fails lint like ruff or basedpyright.
+
+  Developer note (HELLO diagnostics redaction, #127) (#129)
+
+  - Pre-HELLO bytes at DEBUG log as ``<bytes:N>`` via ``redact_for_diagnostics``
+    instead of raw hex.
+  - When the cleartext JSON stream has no ``hello`` object, the DEBUG line and
+    ``E27HelloTimeout`` context ``detail`` are built from
+    ``redact_for_diagnostics`` on the parsed objects so secrets in pre-HELLO or
+    mis-routed JSON are not echoed.
+
+  Developer note (HELLO / session wire log redaction, #130) (#131)
+
+  - The HELLO request DEBUG line logs ``seq`` and the ``hello`` field names only,
+    not identity values. Pre-HELLO JSON parse failures log exception type and
+    position, not parse input.
+  - Session wire-log DEBUG lines for framed TX and deframed RX ciphertext log
+    length only (no hex dumps or frame bytes).
 
   Developer note (deep imports / logging, #120)
 
@@ -18,6 +134,28 @@
     deep imports (``elke27_lib.kernel``, etc.) or
     ``logging.getLogger("elke27_lib.<name>")`` must use the new module names
     (``kernel_loop``, ``session_thread``, and so on).
+
+  Developer note (loop module fixes, #121)
+
+  - ``ArmMode``, ``EventType`` and ``E27ErrorCode`` are ``StrEnum``; ``str()``
+    and f-strings yield the enum value string, not the member name.
+  - Synchronous ``control.authenticate`` on the kernel's bound asyncio loop
+    thread raises ``ProtocolError`` so inbound dispatch is not blocked.
+  - New ``Elke27Client.bind_kernel_loop_thread_for_tests`` records the kernel
+    loop on the current thread for offline tests.
+  - Auto-receive session callbacks are dispatched on the kernel loop via
+    ``call_soon_threadsafe``.
+  - ``Session.close()`` on the bound loop no longer joins the receive thread;
+    stale receive-join helpers are generation-bound so reconnect cannot clear a
+    new receiver.
+  - Discovery ``async_scan`` runs UDP socket work in ``asyncio.to_thread`` so
+    the asyncio loop is not blocked.
+
+  Developer note (disarmed-gate execute tests, #133) (#134)
+
+  - Test-only: tightened offline coverage for the installer disarmed permission
+    gate via ``async_raw_request`` (parametrized blocked ``arm_state`` cases,
+    installer send assertion on the allows path).
 
   Arm Modes, Area Troubles, Triggered Alarms, Keepalive Stats (0.4.0)
 
@@ -419,7 +557,7 @@
   - `async_execute` now returns `Elke27PanelError` (with `panel_error_code`,
     `reason`, and a warning log) when the panel answers with a non-zero
     `error_code`, including single and paged responses. Helpers that already
-    mapped panel errors via `_raise_v2_command_error` are unchanged.
+    mapped panel errors; public typed command helpers are unchanged.
   - String PIN validation for `async_execute` and wire coercion now requires
     ASCII digits only (`0`–`9`). Unicode numerals and other non-digit strings
     raise `Elke27InvalidArgument` before anything is sent instead of escaping

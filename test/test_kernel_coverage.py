@@ -20,11 +20,11 @@ def test_as_mapping_and_redact_value(monkeypatch: pytest.MonkeyPatch) -> None:
     assert kernel_mod._as_mapping({"a": 1}) is not None
     assert kernel_mod._as_mapping(1) is None
 
-    monkeypatch.setattr(kernel_mod, "REDACT_DIAGNOSTICS", True)
-    redacted = kernel_mod._redact_value([{"pin": "123"}])
+    from elke27_lib import redact
+
+    monkeypatch.setattr(redact, "REDACT_DIAGNOSTICS", True)
+    redacted = redact.redact_for_diagnostics([{"pin": "123"}])
     assert redacted == [{"pin": "***"}]
-    redacted_tuple = kernel_mod._redact_value(({"pin": "123"},))
-    assert redacted_tuple == ({"pin": "***"},)
 
 
 def test_session_property_raises() -> None:

@@ -35,11 +35,15 @@ class _FakeState:
         self.panel = _FakePanel()
 
 
-class _FakeKernel:
+from test.helpers.fake_kernel_dispatch import FakeKernelDispatchSupport
+
+
+class _FakeKernel(FakeKernelDispatchSupport):
     sent: list[tuple[str, dict[str, object]]]
     state: _FakeState
 
     def __init__(self) -> None:
+        super().__init__()
         self.sent = []
         self.state = _FakeState()
 
@@ -103,7 +107,7 @@ async def test_async_arm_disarm_calls_async_execute(monkeypatch: MonkeyPatch):
 
     await client.async_arm_area(1, mode=ArmMode.ARMED_AWAY, pin="1234")
     await client.async_arm_area(1, mode=ArmMode.ARMED_STAY, pin="1234")
-    with pytest.raises(Elke27InvalidArgument):
+    with pytest.raises(Elke27InvalidArgument, match="unknown"):
         await client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234")
     await client.async_set_zone_bypass(1, bypassed=True, pin="1234")
     await client.async_disarm_area(1, pin="1234")

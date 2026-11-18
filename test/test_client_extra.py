@@ -159,6 +159,7 @@ def test_arm_mode_and_block_count_helpers() -> None:
     client = Elke27Client(kernel=E27Kernel())
     assert Elke27Client.arm_mode_from_panel_string("DISARMED") is ArmMode.DISARMED
     assert Elke27Client.arm_mode_from_panel_string("ARMED_STAY") is ArmMode.ARMED_STAY
+    assert Elke27Client.arm_mode_from_panel_string("ARMED_STAY_INST") is ArmMode.ARMED_NIGHT
     assert Elke27Client.arm_mode_from_panel_string("ARMED_AWAY") is ArmMode.ARMED_AWAY
     assert client.arm_mode_from_panel_string("ARMED_VACATION") is ArmMode.ARMED_VACATION
     assert client._arm_mode_from_string("foo") is None

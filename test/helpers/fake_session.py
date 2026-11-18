@@ -43,8 +43,16 @@ class FakePanelSession:
     def start_auto_receive(self) -> None:
         return None
 
-    def send_json(self, obj: Mapping[str, Any], *args: object, **kwargs: object) -> None:
+    def send_json(
+        self,
+        obj: Mapping[str, Any],
+        *args: object,
+        on_sent: Callable[[float], None] | None = None,
+        **kwargs: object,
+    ) -> None:
         self.sent.append(obj)
+        if on_sent is not None:
+            on_sent(0.0)
 
     def handle_disconnect(self, err: Exception | None) -> None:
         self.state = session_mod.SessionState.DISCONNECTED

@@ -96,8 +96,6 @@ _EXPECTED_TYPES: dict[str, type | tuple[type, ...]] = {
     "bypass": bool,
     "chime": bool,
     "Chime": bool,
-    "entry_delay_active": bool,
-    "exit_delay_active": bool,
     # ints
     "num_not_ready_zones": int,
     "num_bypassed_zones": int,
@@ -128,8 +126,6 @@ _FIELD_MAP: dict[str, str] = {
     "bypass": "bypass",
     "chime": "chime",
     "Chime": "chime",
-    "entry_delay_active": "entry_delay_active",
-    "exit_delay_active": "exit_delay_active",
     "troubles": "trouble_status",
     "num_not_ready_zones": "num_not_ready_zones",
     "num_bypassed_zones": "num_bypassed_zones",
@@ -170,12 +166,6 @@ def area_alarm_active(area: AreaState) -> bool:
         "none",
         "",
     }
-
-
-def _is_disarmed_arm_state(value: str | None) -> bool:
-    if value is None:
-        return False
-    return value.upper() == "DISARMED"
 
 
 _EXIT_DELAY_PAYLOAD_KEYS: tuple[str, ...] = (
@@ -239,9 +229,6 @@ def apply_area_exit_delay_clearing_rules(
     Shared by get_status, set_status, and set_arm_state reconcile paths (PR #29).
     """
     if not _payload_touches_exit_delay(payload):
-        if area.arm_state is not None and not _is_disarmed_arm_state(area.arm_state):
-            _clear_area_exit_delay_pending(area, changed)
-            area.exit_delay_payload_complete = False
         return
 
     applied_keys = {
@@ -275,9 +262,6 @@ def apply_area_exit_delay_clearing_rules(
     for key in _EXIT_DELAY_PENDING_CLEAR_KEYS:
         if not _exit_delay_field_valid_in_payload(payload, key):
             _clear_exit_delay_field(area, _FIELD_MAP[key], changed)
-
-    if area.arm_state is not None and not _is_disarmed_arm_state(area.arm_state):
-        _clear_area_exit_delay_pending(area, changed)
 
     area.exit_delay_payload_complete = applied_keys == set(_EXIT_DELAY_PAYLOAD_KEYS)
 

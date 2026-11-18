@@ -64,16 +64,25 @@ a breaking change.
 - `table_info`
 - `areas`
   - Each area snapshot includes `arm_mode` (current `arm_state`), optional
-    `arm_cmd_mode` (`arm_cmd_state` while arming), optional `ee_timer` (exit
-    delay seconds when reported), optional `alarm_zone`, and `arming` (`True`
-    only when all four exit-delay fields are coherent, `alarm_zone == ""`
-    exactly, `ee_timer` > 0, disarmed, and pending away/stay). Partial status
-    payloads clear exit-delay fields not present (except allowed `ee_timer`-only
-    ticks after a complete four-field payload: `0 < new <= previous`, ignore
-    late `new > previous`, clear on `new == 0`; a restarted timer needs a full
-    status read). Reconnect / snapshot reset clears
-    pending exit-delay state. Stay→away changes without a full `get_status`
-    show `arming` false; use a fresh full status read before skip/entry logic.
+    `arm_cmd_mode` (last reported `arm_cmd_state`), optional `ee_timer`,
+    optional `alarm_zone`, `delay_state` (`DelayStateNone`, `DelayStateEntry`, or
+    `DelayStateExit`), `entry_delay` (`True` while armed with non-zero
+    `ee_timer` and non-empty `alarm_zone`), and `arming` (`True` during exit
+    delay while `arm_state` lags `arm_cmd_state` with non-zero `ee_timer`). Blank
+    `ee_timer` means missing, zero, or non-positive; blank `alarm_zone` means
+    missing or empty. Entry delay ends on `DISARMED` or populated `alarms`;
+    exit delay ends when typed `arm_mode` and `arm_cmd_mode` match (including the
+    final armed frame where `ee_timer` may still be `1`); `ee_timer` is not
+    cleared on that frame. `arming` can remain true during stay→away command
+    changes while `ee_timer` is still reported. Partial status payloads clear exit-delay fields not
+    present (except allowed `ee_timer`-only ticks after a complete four-field
+    payload: `0 < new <= previous`, ignore late `new > previous`, clear on
+    `new == 0`; a restarted timer needs a full status read). Reconnect /
+    snapshot reset clears pending exit-delay state. Stay→away changes without a
+    full `get_status` show `arming` false; use a fresh full status read before
+    skip/entry logic. The undocumented `entry_delay_active` payload key is not
+    read (#92). Entry delay behaviour is simulator-proven; hardware entry capture
+    is not part of this contract until explicitly verified on TEST.
 - `zones`
 - `outputs`
 - `lights`

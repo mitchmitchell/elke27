@@ -49,6 +49,21 @@ def test_zone_status_flags_all_false() -> None:
     assert zone.low_battery is False
 
 
+def test_zone_status_violated_char_b_sets_violated() -> None:
+    from elke27_lib.handlers.zone import make_zone_get_all_zones_status_handler
+
+    state = PanelState()
+    state.get_or_create_zone(1)
+    emit = _EmitSpy()
+    handler = make_zone_get_all_zones_status_handler(state, emit, now=lambda: 1.0)
+    msg = {
+        "zone": {"get_all_zones_status": {"status": "B", "error_code": E27ErrorCode.ELKERR_NONE}}
+    }
+    assert handler(msg, _ctx(("zone", "get_all_zones_status"))) is True
+    assert state.zones[1].violated is True
+    assert state.panel.last_message_at == 1.0
+
+
 def test_zone_status_flags_multiple_true() -> None:
     state = PanelState()
     emit = _EmitSpy()

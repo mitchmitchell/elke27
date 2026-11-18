@@ -46,6 +46,9 @@ class _FakeSession:
         if on_sent is not None:
             on_sent(0.0)
 
+    def close(self) -> None:
+        return None
+
 
 def _make_client() -> tuple[Elke27Client, _FakeSession]:
     client = Elke27Client()
@@ -69,22 +72,25 @@ async def _reply(
     on_message = get_private(get_kernel(client), "_on_message")
     seen = 0
     client._event_loop = asyncio.get_running_loop()
-    while not task.done():
-        await asyncio.sleep(0)
-        while seen < len(session.sent):
-            sent = session.sent[seen]
-            if seen == 0:
-                on_message({"seq": sent["seq"], domain: {command: payload}})
-            else:
-                on_message(synthetic_success_reply(sent, sent_history=session.sent[:seen]))
-            seen += 1
+    async with asyncio.timeout(2.0):
+        while not task.done():
+            await asyncio.sleep(0)
+            while seen < len(session.sent):
+                sent = session.sent[seen]
+                if seen == 0:
+                    on_message({"seq": sent["seq"], domain: {command: payload}})
+                else:
+                    on_message(synthetic_success_reply(sent, sent_history=session.sent[:seen]))
+                seen += 1
     return await task
 
 
 @pytest.mark.asyncio
 async def test_arm_night_rejected_with_clear_error_before_send() -> None:
     client, session = _make_client()
-    with pytest.raises(Elke27InvalidArgument, match="does not support arm mode 'armed_night'"):
+    from elke27_lib import Elke27PanelApplicationFirmwareUnknownError
+
+    with pytest.raises(Elke27PanelApplicationFirmwareUnknownError, match="unknown"):
         await client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234")
     assert session.sent == []
 

@@ -52,6 +52,18 @@ def synthetic_success_reply(
     domain, command, request_payload = parsed
     history = sent_history or []
 
+    if domain == "control" and command == "get_version_info":
+        return {
+            "seq": seq,
+            "control": {
+                "get_version_info": {
+                    "error_code": E27ErrorCode.ELKERR_NONE,
+                    "app": request_payload.get("app", 0),
+                    "SSP": request_payload.get("SSP", "0.0.0"),
+                }
+            },
+        }
+
     if domain == "area" and command == "set_arm_state":
         area_id = request_payload.get("area_id", 1)
         return {
@@ -113,6 +125,45 @@ def synthetic_success_reply(
             "seq": seq,
             "zone": {
                 "get_all_zones_status": {"error_code": E27ErrorCode.ELKERR_NONE, "status": ""}
+            },
+        }
+
+    if command == "get_table_info":
+        return {
+            "seq": seq,
+            domain: {
+                command: {
+                    "error_code": E27ErrorCode.ELKERR_NONE,
+                    "tablesize": 0,
+                    "table_elements": 0,
+                    "table_csm": 0,
+                    "increment_size": 0,
+                    "element_size": 0,
+                }
+            },
+        }
+
+    if command == "get_attribs":
+        return {
+            "seq": seq,
+            domain: {command: {"error_code": E27ErrorCode.ELKERR_NONE, "count": 0}},
+        }
+
+    if command == "get_configured":
+        return {
+            "seq": seq,
+            domain: {command: {"error_code": E27ErrorCode.ELKERR_NONE, "count": 0, "ids": []}},
+        }
+
+    if command == "get_defs":
+        return {
+            "seq": seq,
+            domain: {
+                command: {
+                    "error_code": E27ErrorCode.ELKERR_NONE,
+                    "block_id": request_payload.get("block_id", 1),
+                    "data": "",
+                }
             },
         }
 

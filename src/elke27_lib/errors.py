@@ -617,6 +617,10 @@ class Elke27CommandOutcomeUnknownError(Elke27TimeoutError):
     The panel may or may not have applied the command. Callers should re-read the
     affected entity instead of assuming failure. ``route`` is ``(domain, command)``.
     Timeouts before the frame was sent stay plain ``Elke27TimeoutError``.
+
+    Also raised when a command is accepted (``error_code`` 0) but the follow-up
+    status refresh fails or does not confirm the outcome; the write may still have
+    been applied on the panel.
     """
 
     def __init__(
@@ -720,6 +724,18 @@ class Elke27ProtocolError(Elke27Error):
         super().__init__(message, code="protocol", is_transient=False, user_message=user_message)
 
 
+class Elke27SnapshotPublicationError(Elke27ProtocolError):
+    """Snapshot update tied to a command reply could not be published."""
+
+    def __init__(
+        self,
+        message: str = "Snapshot publication failed.",
+        *,
+        user_message: str | None = None,
+    ) -> None:
+        super().__init__(message, user_message=user_message)
+
+
 class Elke27PanelError(Elke27ProtocolError):
     """The panel answered a command with a non-zero ``error_code``.
 
@@ -802,6 +818,38 @@ class Elke27InvalidArgument(ValueError):
     @override
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self.__str__()!r})"
+
+
+class Elke27PanelApplicationFirmwareUnknownError(Elke27InvalidArgument):
+    """Arm night was requested before application firmware is known."""
+
+
+class Elke27NightArmFirmwareTooOldError(Elke27InvalidArgument):
+    """Panel application firmware is below the arm night minimum."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        required: tuple[int, ...],
+        actual: tuple[int, ...],
+    ) -> None:
+        super().__init__(message)
+        self.required: tuple[int, ...] = required
+        self.actual: tuple[int, ...] = actual
+
+
+class Elke27StayInstantRequiredError(Elke27Error):
+    """Arm night failed because Stay Instant is unavailable for the area."""
+
+    _DEFAULT_MESSAGE = "Stay Instant must be enabled in area settings."
+
+    def __init__(self, message: str | None = None) -> None:
+        super().__init__(
+            message or self._DEFAULT_MESSAGE,
+            code="stay_instant_required",
+            is_transient=False,
+        )
 
 
 class E27HelloLinkRequired(E27ProvisioningRequired):
