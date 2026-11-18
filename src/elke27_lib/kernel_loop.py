@@ -191,12 +191,16 @@ def _queued_request_is_keepalive(item: _QueuedRequest) -> bool:
 class KeepaliveTestHooks:
     """Optional hooks for offline keepalive/statechart tests (#79).
 
-    Production code leaves this unset. Tests may inject a controllable sleep and
-    a scheduler for keepalive reply timeouts so probes run without wall-clock waits.
+    Production code leaves this unset. Tests may inject a controllable sleep, a
+    scheduler for keepalive reply timeouts, and a shorter probe send wait so
+    probes run without wall-clock waits.
     """
 
     sleep: Callable[[float], Awaitable[None]] | None = None
     schedule_reply_timeout: Callable[[float, Callable[[], None]], None] | None = None
+    send_wait_s: float | None = None
+    """Seconds a probe may wait in the outbound queue before the transport is
+    treated as wedged (#151). ``None`` keeps the production value of 30 s."""
 
 
 def _queued_request_is_disarm(item: _QueuedRequest) -> bool:
@@ -493,7 +497,8 @@ class E27Kernel:
         self._keepalive_max_missed = 2
         # Max wait for a probe to leave the outbound queue (covers one in-flight
         # command's reply timeout).
-        self._keepalive_send_wait_s = 30.0
+        hook_send_wait_s = keepalive_test_hooks.send_wait_s if keepalive_test_hooks else None
+        self._keepalive_send_wait_s = 30.0 if hook_send_wait_s is None else hook_send_wait_s
         self._keepalive_stats = KeepaliveStats()
         self._keepalive_missed = 0
         now = self.now()
@@ -987,12 +992,13 @@ class E27Kernel:
         The reply deadline (``keepalive_timeout_s``) starts when the probe is
         written to the socket, so a probe still waiting in the outbound queue is
         not a miss (#151). One documented exception: if the probe has not been
-        written to the socket within ``_keepalive_send_wait_s`` (30 s, timed on the
-        bound loop from when it was queued), the transport is treated as wedged
-        and the check fails, unless inbound traffic arrived after the probe was
-        queued. With the default ``keepalive_max_missed`` of 2 and the immediate
-        follow-up probe, a wedged transport is disconnected about 60 s after the
-        first probe is queued (two 30 s send waits back to back).
+        written to the socket within ``_keepalive_send_wait_s`` (30 s, or
+        ``KeepaliveTestHooks.send_wait_s`` in tests, timed on the bound loop from
+        when it was queued), the transport is treated as wedged and the check
+        fails, unless inbound traffic arrived after the probe was queued. With
+        the default ``keepalive_max_missed`` of 2 and the immediate follow-up
+        probe, a wedged transport is disconnected about 60 s after the first
+        probe is queued (two 30 s send waits back to back).
         """
         self._set_loop_if_needed()
         if self._loop is None:

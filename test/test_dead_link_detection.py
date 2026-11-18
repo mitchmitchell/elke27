@@ -11,7 +11,7 @@ import pytest
 
 import elke27_lib.kernel_loop as kernel_mod
 from elke27_lib.errors import E27Timeout
-from elke27_lib.kernel_loop import E27Kernel
+from elke27_lib.kernel_loop import E27Kernel, KeepaliveTestHooks
 from elke27_lib.outbound_loop import OutboundPriority
 from elke27_lib.session_thread import Session, SessionConfig, SessionProtocolError, SessionState
 
@@ -142,8 +142,8 @@ def test_client_request_link_check_delegates() -> None:
     assert kernel._keepalive_probe_requested is True
 
 
-def _probing_kernel() -> E27Kernel:
-    kernel = E27Kernel()
+def _probing_kernel(hooks: KeepaliveTestHooks | None = None) -> E27Kernel:
+    kernel = E27Kernel(keepalive_test_hooks=hooks)
     kernel._keepalive_enabled = True
     cast(Any, kernel)._session = _FakeSession()
     kernel.requests.register(("system", "r_u_alive"), lambda: {})
@@ -291,10 +291,9 @@ async def test_forced_probe_is_high_priority_while_command_queued() -> None:
 
 @pytest.mark.asyncio
 async def test_wedged_outbound_does_not_hang_forced_probe() -> None:
-    kernel = _probing_kernel()
+    kernel = _probing_kernel(KeepaliveTestHooks(send_wait_s=0.05))
     kernel._loop = asyncio.get_running_loop()
     kernel._last_rx_at = 0.0
-    kernel._keepalive_send_wait_s = 0.05
 
     def _send(seq: int, *_a: Any, **_k: Any) -> int:
         return seq  # never leaves the outbound queue

@@ -3,6 +3,8 @@
 Runs the real ``Session`` and ``E27Kernel`` against
 ``test.helpers.panel_simulator`` and checks public results only: connection
 events, ``keepalive_stats``, and when the panel actually received each probe.
+The one documented exception, a probe stuck in the queue past the send wait, is
+exercised with a short ``KeepaliveTestHooks.send_wait_s``.
 """
 
 from __future__ import annotations
@@ -15,11 +17,14 @@ from dataclasses import dataclass
 import pytest
 
 from elke27_lib.events import ConnectionStateChanged, Event
-from elke27_lib.kernel_loop import E27Kernel
+from elke27_lib.kernel_loop import E27Kernel, KeepaliveTestHooks
 from test.helpers.panel_simulator import IDENTITY, LINK_KEYS, PanelSimulator
 
 PROBE_TIMEOUT_S = 0.25
 COMMAND_TIMEOUT_S = 1.0
+SEND_WAIT_S = 0.4
+WEDGED_COMMAND_TIMEOUT_S = 100.0
+DISCONNECT_MARGIN_S = 0.6
 
 
 @dataclass
@@ -88,4 +93,69 @@ async def test_probe_queued_behind_unanswered_command_is_not_a_miss_until_sent()
             assert drop_at >= panel.probe_times[1] + PROBE_TIMEOUT_S * 0.8
         finally:
             watcher.cancel()
+            await kernel.close()
+
+
+async def _connect_wedged(panel: PanelSimulator) -> tuple[E27Kernel, list[tuple[float, int]]]:
+    """Connect with a short send wait, then hold the queue with an unanswered command."""
+    kernel = E27Kernel(
+        skip_connect_bootstrap=True,
+        request_timeout_s=WEDGED_COMMAND_TIMEOUT_S,
+        request_max_retries=0,
+        keepalive_test_hooks=KeepaliveTestHooks(send_wait_s=SEND_WAIT_S),
+    )
+    drops: list[tuple[float, int]] = []
+
+    def _on_event(evt: Event) -> None:
+        if isinstance(evt, ConnectionStateChanged) and not evt.connected:
+            drops.append((time.monotonic(), panel.probes))
+
+    kernel.subscribe(_on_event, kinds=[ConnectionStateChanged.KIND])
+    await kernel.connect(
+        LINK_KEYS,
+        client_identity=IDENTITY,
+        session_config=panel.session_config(interval_s=30.0, timeout_s=PROBE_TIMEOUT_S),
+    )
+    kernel.request(("area", "get_status"), area_id=1)
+    return kernel, drops
+
+
+@pytest.mark.asyncio
+async def test_probe_stuck_past_send_wait_counts_as_miss_and_disconnects() -> None:
+    """Wedged queue: two send waits, two misses, then a disconnect.
+
+    The bound is ``2 * SEND_WAIT_S + DISCONNECT_MARGIN_S`` (0.8 s + 0.6 s) from
+    the link check. The 0.6 s margin covers event-loop and thread scheduling lag
+    under heavy CPU load and is still well short of a third send wait.
+    """
+    with PanelSimulator() as panel:
+        kernel, drops = await _connect_wedged(panel)
+        try:
+            requested_at = time.monotonic()
+            kernel.request_link_check()
+            await _wait_for(lambda: bool(drops), timeout_s=5.0)
+            drop_at, probes_at_drop = drops[0]
+            assert probes_at_drop == 0
+            assert panel.probes == 0
+            assert kernel.keepalive_stats.misses == 2
+            assert drop_at - requested_at >= 2 * SEND_WAIT_S * 0.95
+            assert drop_at - requested_at <= 2 * SEND_WAIT_S + DISCONNECT_MARGIN_S
+        finally:
+            await kernel.close()
+
+
+@pytest.mark.asyncio
+async def test_inbound_after_probe_queued_rescues_send_wait_miss() -> None:
+    """Same wedge, but the panel sends something after the probe is queued."""
+    with PanelSimulator() as panel:
+        kernel, drops = await _connect_wedged(panel)
+        try:
+            kernel.request_link_check()
+            await asyncio.sleep(SEND_WAIT_S / 2)
+            panel.send_unsolicited()
+            await asyncio.sleep(3 * SEND_WAIT_S + DISCONNECT_MARGIN_S)
+            assert drops == []
+            assert panel.probes == 0
+            assert kernel.keepalive_stats.misses == 0
+        finally:
             await kernel.close()
