@@ -259,10 +259,13 @@ If you are working on a Home Assistant integration:
   (`area_get_status`, `zone_get_status`, `zone_get_all_zones_status`) and arm or
   bypass writes whose reply already includes confirmed status wait until the
   reply is reflected in `get_snapshot()`. When that publication wait fails,
-  including when the command deadline passes before publication (#147),
   `async_execute` returns `Result(ok=False, error=Elke27DisconnectedError)` or
   `Result(ok=False, error=Elke27SnapshotPublicationError)`; it does not raise those
-  types. (b) Ack-only `area_set_arm_state` or `zone_set_status` issues a follow-up
+  types. If the command deadline passes before publication (#147), a direct read
+  returns `Result(ok=False, error=Elke27SnapshotPublicationError)`, while a
+  confirmed-status write (the panel accepted it) is a failed refresh as in (b):
+  `Result(ok=True, status_refresh_ok=False)`, a WARNING, and the area or zone
+  marked stale. (b) Ack-only `area_set_arm_state` or `zone_set_status` issues a follow-up
   `area_get_status` or `zone_get_status` on the write path. Any failure of that
   nested read (including its publication wait) is a failed refresh on the write:
   `Result(ok=True, status_refresh_ok=False)`, a WARNING, and the area or zone

@@ -9,17 +9,18 @@ reply out of ``get_snapshot()`` past the command deadline, as a busy loop would.
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Callable
 from typing import Any
 
 import pytest
 
-from elke27_lib import ArmMode, Elke27SnapshotPublicationError
+from elke27_lib import ArmMode, Elke27CommandOutcomeUnknownError, Elke27SnapshotPublicationError
 from elke27_lib.client import Elke27Client
 from elke27_lib.const import E27ErrorCode
 from elke27_lib.kernel_loop import E27Kernel
 from test.helpers.fake_session import FakePanelSession, connect_with_fake_panel
-from test.helpers.panel_command_driver import seed_area_disarmed
+from test.helpers.panel_command_driver import seed_application_firmware, seed_area_disarmed
 
 COMMAND_TIMEOUT_S = 0.5
 
@@ -44,8 +45,16 @@ class _HeldPublication:
             fn(*args)
 
 
-async def _connect(monkeypatch: pytest.MonkeyPatch) -> tuple[Elke27Client, FakePanelSession]:
-    client = Elke27Client(kernel=E27Kernel(skip_connect_bootstrap=True, request_max_retries=0))
+async def _connect(
+    monkeypatch: pytest.MonkeyPatch, kernel: E27Kernel | None = None
+) -> tuple[Elke27Client, FakePanelSession]:
+    if kernel is None:
+        kernel = E27Kernel(
+            skip_connect_bootstrap=True,
+            request_max_retries=0,
+            request_timeout_s=COMMAND_TIMEOUT_S,
+        )
+    client = Elke27Client(kernel=kernel)
     panel = await connect_with_fake_panel(monkeypatch, client)
     await seed_area_disarmed(panel)
     await asyncio.sleep(0)
@@ -136,3 +145,179 @@ async def test_ack_only_write_reports_failed_refresh_when_publication_times_out(
     assert result.ok is True
     assert result.status_refresh_ok is False
     assert 1 in client.get_snapshot().stale_area_ids
+
+
+def _set_arm_reply(seq: object, arm_state: str) -> dict[str, Any]:
+    return {
+        "seq": seq,
+        "area": {
+            "set_arm_state": {
+                "area_id": 1,
+                "arm_state": arm_state,
+                "error_code": E27ErrorCode.ELKERR_NONE,
+            }
+        },
+    }
+
+
+async def _hold_and_reply(
+    client: Elke27Client,
+    panel: FakePanelSession,
+    monkeypatch: pytest.MonkeyPatch,
+    call: Any,
+    reply_for: Callable[[object], dict[str, Any]],
+) -> asyncio.Task[Any]:
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(loop, "call_soon_threadsafe", _HeldPublication(client, loop))
+    sent_before = len(panel.sent)
+    task = asyncio.ensure_future(call)
+    sent = await _next_sent(panel, sent_before + 1)
+    await panel.deliver(reply_for(sent["seq"]))
+    return task
+
+
+@pytest.mark.asyncio
+async def test_confirmed_disarm_publication_timeout_is_accepted_with_failed_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, panel = await _connect(monkeypatch)
+    await panel.deliver(_armed_away_status(0))
+    await asyncio.sleep(0)
+    assert client.get_snapshot().areas[1].arm_mode is ArmMode.ARMED_AWAY
+
+    task = await _hold_and_reply(
+        client,
+        panel,
+        monkeypatch,
+        client.async_disarm_area(1, pin=1234, return_result=True),
+        lambda seq: _set_arm_reply(seq, "DISARMED"),
+    )
+    async with asyncio.timeout(COMMAND_TIMEOUT_S + 2.0):
+        result = await task
+
+    assert result.status_refresh_ok is False
+    assert client.get_snapshot().areas[1].arm_mode is ArmMode.ARMED_AWAY
+    assert 1 in client.get_snapshot().stale_area_ids
+
+
+@pytest.mark.asyncio
+async def test_confirmed_bypass_publication_timeout_is_accepted_with_failed_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``async_set_zone_bypass`` fixes its timeout at 15 s, so the transport budget
+    is shortened to keep the publication deadline at ``COMMAND_TIMEOUT_S``."""
+    kernel = E27Kernel(skip_connect_bootstrap=True, request_max_retries=0)
+    client, panel = await _connect(monkeypatch, kernel)
+    monkeypatch.setattr(kernel, "command_transport_wait_budget_s", lambda _: COMMAND_TIMEOUT_S)
+    await panel.deliver(
+        {
+            "seq": 0,
+            "zone": {
+                "get_status": {
+                    "zone_id": 1,
+                    "BYPASSED": False,
+                    "error_code": E27ErrorCode.ELKERR_NONE,
+                }
+            },
+        }
+    )
+    await asyncio.sleep(0)
+    assert client.get_snapshot().zones[1].bypassed is False
+
+    task = await _hold_and_reply(
+        client,
+        panel,
+        monkeypatch,
+        client.async_set_zone_bypass(1, bypassed=True, pin=1234, return_result=True),
+        lambda seq: {
+            "seq": seq,
+            "zone": {
+                "set_status": {
+                    "zone_id": 1,
+                    "BYPASSED": True,
+                    "error_code": E27ErrorCode.ELKERR_NONE,
+                }
+            },
+        },
+    )
+    async with asyncio.timeout(COMMAND_TIMEOUT_S + 2.0):
+        result = await task
+
+    assert result.status_refresh_ok is False
+    assert client.get_snapshot().zones[1].bypassed is False
+    assert 1 in client.get_snapshot().stale_zone_ids
+
+
+@pytest.mark.asyncio
+async def test_confirmed_night_arm_publication_timeout_raises_outcome_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, panel = await _connect(monkeypatch)
+    await seed_application_firmware(panel, 1317)
+    await asyncio.sleep(0)
+
+    task = await _hold_and_reply(
+        client,
+        panel,
+        monkeypatch,
+        client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin=1234),
+        lambda seq: _set_arm_reply(seq, "ARMED_STAY_INST"),
+    )
+    with pytest.raises(Elke27CommandOutcomeUnknownError):
+        async with asyncio.timeout(COMMAND_TIMEOUT_S + 2.0):
+            await task
+    assert 1 in client.get_snapshot().stale_area_ids
+
+
+@pytest.mark.asyncio
+async def test_ack_only_refresh_fails_from_publication_deadline_before_its_time_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The follow-up read's publication deadline (0.3 s) ends well before the
+    refresh's own time cap (about 1.8 s), so the failed refresh must come from the
+    publication wait, not from the cap.
+
+    ``command_transport_wait_budget_s`` keeps the 2.0 s write budget and gives any
+    shorter request (the follow-up read, sent at least 0.2 s later) 0.3 s.
+    """
+    kernel = E27Kernel(skip_connect_bootstrap=True, request_max_retries=0)
+    client, panel = await _connect(monkeypatch, kernel)
+    write_timeout_s = 2.0
+    nested_budget_s = 0.3
+    monkeypatch.setattr(
+        kernel,
+        "command_transport_wait_budget_s",
+        lambda timeout_s: timeout_s if timeout_s >= write_timeout_s - 0.05 else nested_budget_s,
+    )
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(loop, "call_soon_threadsafe", _HeldPublication(client, loop))
+    sent_before = len(panel.sent)
+
+    task = asyncio.create_task(
+        client.async_execute(
+            "area_set_arm_state",
+            area_id=1,
+            arm_state="ARMED_AWAY",
+            pin=1234,
+            timeout_s=write_timeout_s,
+        )
+    )
+    write = await _next_sent(panel, sent_before + 1)
+    await asyncio.sleep(0.2)
+    await panel.deliver(
+        {
+            "seq": write["seq"],
+            "area": {"set_arm_state": {"area_id": 1, "error_code": E27ErrorCode.ELKERR_NONE}},
+        }
+    )
+    refresh = await _next_sent(panel, sent_before + 2)
+    refresh_sent_at = time.monotonic()
+    await panel.deliver(_armed_away_status(refresh["seq"]))
+    async with asyncio.timeout(write_timeout_s + 2.0):
+        result = await task
+    finished_after_s = time.monotonic() - refresh_sent_at
+
+    assert result.ok is True
+    assert result.status_refresh_ok is False
+    assert 1 in client.get_snapshot().stale_area_ids
+    assert finished_after_s < 1.2

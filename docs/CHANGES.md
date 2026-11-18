@@ -1,18 +1,22 @@
   Unreleased
 
   - Publication-wait timeout (#147): when the reply to ``area_get_status``,
-    ``zone_get_status``, ``zone_get_all_zones_status``, or an arm or bypass write whose
-    reply includes confirmed status is not published into ``get_snapshot()`` before the
-    command deadline, ``async_execute`` now returns ``Result(ok=False,
-    error=Elke27SnapshotPublicationError)`` with the message "Timed out waiting for
-    snapshot publication." and still logs the WARNING. 0.6.0 returned ``ok=True`` there,
-    so ``get_snapshot()`` could be stale. A reply already published when the deadline
-    passes still returns ``ok=True``. On an ack-only ``area_set_arm_state`` or
-    ``zone_set_status``, a timed-out follow-up read is a failed refresh:
-    ``Result(ok=True, status_refresh_ok=False)``, a WARNING, and the area or zone marked
-    stale; ``async_arm_area`` with ``ArmMode.ARMED_NIGHT`` then raises
+    ``zone_get_status``, or ``zone_get_all_zones_status`` is not published into
+    ``get_snapshot()`` before the command deadline, ``async_execute`` now returns
+    ``Result(ok=False, error=Elke27SnapshotPublicationError)`` with the message "Timed
+    out waiting for snapshot publication." and still logs the WARNING. 0.6.0 returned
+    ``ok=True`` there, so ``get_snapshot()`` could be stale. A reply already published
+    when the deadline passes still returns ``ok=True``. For an arm or bypass write whose
+    reply includes confirmed status, the panel accepted the write, so the same timeout
+    is a failed refresh instead: ``Result(ok=True, status_refresh_ok=False)``, a
+    WARNING, and the area or zone marked stale (0.6.0 reported
+    ``status_refresh_ok=True``). On an ack-only ``area_set_arm_state`` or
+    ``zone_set_status``, a timed-out follow-up read is the same failed refresh. On
+    either write path, ``async_arm_area`` with ``ArmMode.ARMED_NIGHT`` then raises
     ``Elke27CommandOutcomeUnknownError`` instead of checking Stay Instant against a
-    stale snapshot. The publication wait is bounded by the command deadline: the
+    stale snapshot; ``async_arm_area`` with Away or Stay, ``async_disarm_area``, and
+    ``async_set_zone_bypass`` return without raising. A disconnect or failed
+    publication on a confirmed write still returns ``ok=False`` as in 0.6.0. The publication wait is bounded by the command deadline: the
     per-attempt request timeout (``ClientConfig.request_timeout_s``, 5 s by default, or
     the call's ``timeout_s``) times the number of transport attempts (3 by default),
     plus the backoff between attempts (0.5 s + 1 s by default), counted from just before
