@@ -11,7 +11,7 @@ import pytest
 
 import elke27_lib.kernel_loop as kernel_mod
 from elke27_lib.errors import E27Timeout
-from elke27_lib.kernel_loop import E27Kernel
+from elke27_lib.kernel_loop import E27Kernel, KeepaliveTestHooks
 from elke27_lib.outbound_loop import OutboundPriority
 from elke27_lib.session_thread import Session, SessionConfig, SessionProtocolError, SessionState
 
@@ -144,8 +144,8 @@ def test_client_request_link_check_delegates() -> None:
     assert kernel._keepalive_probe_requested is True
 
 
-def _probing_kernel() -> E27Kernel:
-    kernel = E27Kernel()
+def _probing_kernel(hooks: KeepaliveTestHooks | None = None) -> E27Kernel:
+    kernel = E27Kernel(keepalive_test_hooks=hooks)
     kernel._keepalive_enabled = True
     cast(Any, kernel)._session = _FakeSession()
     kernel.requests.register(("system", "r_u_alive"), lambda: {})
@@ -243,7 +243,7 @@ async def test_failed_probe_is_rescued_only_by_traffic_after_send(
     kernel._keepalive_interval_s = 0.0
 
     def _send(seq: int, *_a: Any, **_k: Any) -> int:
-        kernel._signal_sent_event(seq)
+        kernel._mark_request_sent(seq)
         if traffic:
             kernel._rx_thread_at = kernel.now() + 1000.0
         kernel._pending_responses.fail(seq, failure)
@@ -272,7 +272,7 @@ async def test_forced_probe_is_high_priority_while_command_queued() -> None:
 
     def _send(seq: int, *_a: Any, **kw: Any) -> int:
         seen["priority"] = kw.get("priority")
-        kernel._signal_sent_event(seq)
+        kernel._mark_request_sent(seq)
         kernel._pending_responses.resolve(seq, {"seq": seq, "system": {"r_u_alive": {}}})
         return seq
 
@@ -290,9 +290,8 @@ async def test_forced_probe_is_high_priority_while_command_queued() -> None:
 async def test_wedged_outbound_does_not_hang_forced_probe(traffic: bool) -> None:
     """A probe that never leaves the outbound queue gives up after the send wait;
     it counts as alive only when the receive thread saw traffic after queueing."""
-    kernel = _probing_kernel()
+    kernel = _probing_kernel(KeepaliveTestHooks(send_wait_s=0.05))
     kernel._loop = asyncio.get_running_loop()
-    kernel._keepalive_send_wait_s = 0.05
 
     def _send(seq: int, *_a: Any, **_k: Any) -> int:
         if traffic:
