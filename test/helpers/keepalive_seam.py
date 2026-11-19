@@ -114,7 +114,7 @@ def _install_probe_send(
     timeout_s = float(get_private(kernel, "_keepalive_timeout_s"))
 
     def _send(seq: int, *_a: Any, **kw: Any) -> int:
-        cast(Any, kernel)._signal_sent_event(seq)
+        cast(Any, kernel)._mark_request_sent(seq)
         _arm_probe_timeout(kernel, seq, float(kw.get("timeout_s", timeout_s)))
         if reply_delay_s is None:
             return seq
@@ -134,7 +134,7 @@ def _install_o14_late_rx_rescue_send(seam: KeepaliveSeam, kernel: E27Kernel) -> 
     timeout_s = float(get_private(kernel, "_keepalive_timeout_s"))
 
     def _send(seq: int, *_a: Any, **kw: Any) -> int:
-        cast(Any, kernel)._signal_sent_event(seq)
+        cast(Any, kernel)._mark_request_sent(seq)
         _arm_probe_timeout(kernel, seq, float(kw.get("timeout_s", timeout_s)))
 
         async def _deliver_after_send() -> None:

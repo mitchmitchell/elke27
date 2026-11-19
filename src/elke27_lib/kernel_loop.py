@@ -161,6 +161,7 @@ class _QueuedRequest:
     timeout_s: float
     attempt: int = 0
     deadline_at: float = 0.0
+    """Monotonic time after which the queued request is failed unsent; 0.0 means no deadline."""
 
 
 @dataclass(slots=True)
@@ -191,12 +192,16 @@ def _queued_request_is_keepalive(item: _QueuedRequest) -> bool:
 class KeepaliveTestHooks:
     """Optional hooks for offline keepalive/statechart tests (#79).
 
-    Production code leaves this unset. Tests may inject a controllable sleep and
-    a scheduler for keepalive reply timeouts so probes run without wall-clock waits.
+    Production code leaves this unset. Tests may inject a controllable sleep, a
+    scheduler for keepalive reply timeouts, and a shorter probe send wait so
+    probes run without wall-clock waits.
     """
 
     sleep: Callable[[float], Awaitable[None]] | None = None
     schedule_reply_timeout: Callable[[float, Callable[[], None]], None] | None = None
+    send_wait_s: float | None = None
+    """Seconds a probe may wait in the outbound queue before the transport is
+    treated as wedged (#151). ``None`` keeps the production value of 30 s."""
 
 
 def _queued_request_is_disarm(item: _QueuedRequest) -> bool:
@@ -308,6 +313,19 @@ def _panel_display_name(panel: discovery.E27System | Mapping[str, Any] | None) -
         return None
     name = name.strip()
     return name or None
+
+
+def _consume_future_outcome(future: asyncio.Future[Any]) -> None:
+    """Retrieve a future's result so asyncio does not log it as unretrieved."""
+
+    def _retrieve(done: asyncio.Future[Any]) -> None:
+        if not done.cancelled():
+            done.exception()
+
+    if future.done():
+        _retrieve(future)
+        return
+    future.add_done_callback(_retrieve)
 
 
 class E27Kernel:
@@ -490,9 +508,8 @@ class E27Kernel:
         self._keepalive_interval_s = 30.0
         self._keepalive_timeout_s = 5.0
         self._keepalive_max_missed = 2
-        # Max wait for a probe to leave the outbound queue (covers one in-flight
-        # command's reply timeout).
-        self._keepalive_send_wait_s = 30.0
+        hook_send_wait_s = keepalive_test_hooks.send_wait_s if keepalive_test_hooks else None
+        self._keepalive_send_wait_s = 30.0 if hook_send_wait_s is None else hook_send_wait_s
         self._keepalive_stats = KeepaliveStats()
         self._keepalive_missed = 0
         now = self.now()
@@ -972,12 +989,52 @@ class E27Kernel:
                 return
             self._keepalive_probe_requested = True
 
+    def _abandon_unsent_probe(self, seq: int) -> None:
+        """Forget a probe nobody will wait for, so a queued copy can never reach the panel later.
+
+        Drops its pending reply and removes it from the request queue. If it already
+        holds the in-flight slot and the transport has not started writing it, its
+        transport is cancelled so the slot frees and the stale probe is not sent. A
+        write the transport has already started cannot be recalled: the panel may
+        still receive that probe, but nothing waits for its reply and it is not
+        counted. Callers check ``was_request_sent`` first, so a probe confirmed
+        written in the same loop pass as the send-wait timeout is counted as sent
+        instead of abandoned.
+        """
+        self._pending_responses.drop(seq)
+        self._remove_queued_seq(seq)
+        self._sent_events.pop(seq, None)
+        if (
+            self._request_state is _RequestState.IN_FLIGHT
+            and self._active_seq == seq
+            and not self._active_released
+            and self._active_sent_at is None
+        ):
+            self.cancel_command_transport(
+                seq, E27Timeout(f"Keepalive probe abandoned: seq={seq}"), drop_pending_response=True
+            )
+
     def _probe_sent_at(self, seq: int) -> float | None:
         if self._active_seq != seq:
             return None
         return self._active_sent_at
 
     async def _send_keepalive_request(self, *, force: bool = False) -> bool:
+        """Send one ``system.r_u_alive`` probe and report whether the link is alive.
+
+        The reply deadline (``keepalive_timeout_s``) starts when the probe is
+        written to the socket, so a probe still waiting in the outbound queue is
+        not a miss (#151). One documented exception: if the probe has not been
+        written to the socket within ``_keepalive_send_wait_s`` (30 s, or
+        ``KeepaliveTestHooks.send_wait_s`` in tests, timed on the bound loop from
+        when it was queued), the transport is treated as wedged and the check
+        fails, unless inbound traffic arrived after the probe was queued. With
+        the default ``keepalive_max_missed`` of 2 and the immediate follow-up
+        probe, a wedged transport is disconnected about 60 s after the first
+        probe is queued (two 30 s send waits back to back). The probe waiter is
+        consumed on every exit, including a disconnect or send failure that
+        fails it before send, so asyncio does not log an unretrieved exception.
+        """
         self._set_loop_if_needed()
         if self._loop is None:
             return False
@@ -994,6 +1051,7 @@ class E27Kernel:
         ):
             return True
         self._keepalive_inflight = True
+        future: asyncio.Future[Mapping[str, Any]] | None = None
         try:
             builder = self.requests.require(("system", "r_u_alive"))
             payload = builder()
@@ -1019,7 +1077,7 @@ class E27Kernel:
                     timeout_s=self._keepalive_timeout_s,
                 )
             except Exception:  # noqa: BLE001 -- preserve broad except handling intentionally
-                self._pending_responses.drop(seq)
+                self._abandon_unsent_probe(seq)
                 return False
             probe_sent_at = self._probe_sent_at(seq)
             queued_at = self.now()
@@ -1029,13 +1087,26 @@ class E27Kernel:
                 # outbound queue.
                 await asyncio.wait_for(sent_event.wait(), timeout=self._keepalive_send_wait_s)
             except TimeoutError:
-                self._pending_responses.drop(seq)
-                self._log.info(
-                    "E27 keepalive probe could not be sent within %.1fs: seq=%s",
+                if not self.was_request_sent(seq):
+                    self._abandon_unsent_probe(seq)
+                    self._log.info(
+                        "E27 keepalive probe could not be sent within %.1fs: seq=%s",
+                        self._keepalive_send_wait_s,
+                        seq,
+                    )
+                    return self._rx_thread_at > queued_at
+                self._log.debug(
+                    "E27 keepalive probe write confirmed as its %.1fs send wait ended: "
+                    "seq=%s waited=%.3fs",
                     self._keepalive_send_wait_s,
                     seq,
+                    self.now() - queued_at,
                 )
-                return self._rx_thread_at > queued_at
+            if not self.was_request_sent(seq):
+                self._abandon_unsent_probe(seq)
+                self._log.debug("E27 keepalive probe failed before it was sent: seq=%s", seq)
+                return False
+            self.forget_request_sent(seq)
             if probe_sent_at is None:
                 probe_sent_at = self._probe_sent_at(seq)
             sent_at = probe_sent_at if probe_sent_at is not None else self.now()
@@ -1082,6 +1153,8 @@ class E27Kernel:
             return True
         finally:
             self._keepalive_inflight = False
+            if future is not None:
+                _consume_future_outcome(future)
 
     # -------------------------
     # Feature loading
@@ -2246,7 +2319,7 @@ class E27Kernel:
         ):
             effective_priority = OutboundPriority.HIGH
         if domain == "system" and name == "r_u_alive":
-            deadline_at = self.now() + timeout_value
+            deadline_at = 0.0
         else:
             budget_s = self.command_transport_wait_budget_s(timeout_value)
             deadline_at = self.now() + budget_s

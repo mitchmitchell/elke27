@@ -24,6 +24,23 @@
     is empty. A refused HELLO carries it too. The client's
     ``Panel connection lost`` WARNING now ends with ``err_msg=...`` instead of
     leaving only ``reason=None error_type=...``.
+  - Keepalive probe deadline (#151): a probe's reply deadline now starts when
+    the probe is sent, not when it is queued. A probe waiting behind an
+    unanswered command no longer expires unsent and counts as a miss; misses
+    are counted only for probes the panel was sent. One documented exception:
+    a probe that is not written to the socket within 30 s of being queued
+    means the transport is wedged, and that check counts as a miss unless
+    inbound traffic arrived after the probe was queued. With the default miss
+    budget of 2, a wedged transport is disconnected about 60 s after the first
+    probe is queued.
+  - Public ``KeepaliveStats`` (#151): a probe that misses its send wait, or that
+    fails or is cancelled before it is written, is dropped from the outbound
+    queue and never sent later. ``probes_sent`` now counts only probes whose write
+    the transport confirmed, including one confirmed in the same loop pass as its
+    send-wait timeout; it no longer counts probes that were queued but never
+    written, so it matches what the panel was sent. A probe failed by a
+    disconnect or send error before it is written now consumes its waiter, so
+    asyncio does not log "Future exception was never retrieved".
 
   Area Delay, Arm Night Stay Instant, Status Read Publication (0.6.0, 2026-11-17)
 
