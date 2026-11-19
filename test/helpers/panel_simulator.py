@@ -10,6 +10,7 @@ empty success body. Dummy keys only.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import socket
@@ -61,6 +62,7 @@ class PanelSimulator:
         self.on_command: Callable[[], None] | None = None
         self.hello_error_code: int | None = None
         self.probe_times: list[float] = []
+        self.probe_seqs: list[int | None] = []
         self._session_key = os.urandom(16)
         self._hmac_key = os.urandom(32)
         self._listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -106,6 +108,14 @@ class PanelSimulator:
     def send_unsolicited(self) -> None:
         """Push one unsolicited (``seq=0``) system message, as the panel does."""
         self._send({"seq": 0, "session_id": SESSION_ID, "system": {"r_u_alive": {}}})
+
+    def drop_connection(self) -> None:
+        """Hang up on the client, as a panel reboot or network drop would."""
+        conn = self._conn
+        if conn is None:
+            return
+        with contextlib.suppress(OSError):
+            conn.shutdown(socket.SHUT_RDWR)
 
     def _send(self, obj: dict[str, Any]) -> None:
         conn = self._conn
@@ -203,6 +213,7 @@ class PanelSimulator:
             self._maybe_answer_command(msg)
             return
         self.probe_times.append(time.monotonic())
+        self.probe_seqs.append(msg.get("seq"))
         hook = self.on_probe
         if hook is not None:
             hook()

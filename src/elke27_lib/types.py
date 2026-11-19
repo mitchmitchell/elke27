@@ -412,11 +412,13 @@ Snapshot = PanelSnapshot
 class CommandResult:
     """Outcome of a successful arm, disarm or zone-bypass command.
 
-    ``status_refresh_ok`` is ``True`` when the panel's new status was confirmed
-    (either in the command reply or by a follow-up status read), ``False`` when
-    the panel accepted the command but the follow-up read failed (the entity is
-    marked stale), and ``None`` when no refresh applied. Failures still raise
-    the public ``Elke27*`` exceptions; this is only returned on success.
+    ``status_refresh_ok`` is ``True`` when a follow-up status read succeeded, or
+    when the reply already carried confirmed state and was published into
+    ``get_snapshot()`` before the command deadline; ``False`` when the panel
+    accepted the command but the follow-up read failed or the confirmed reply
+    missed the publication deadline (the entity is marked stale); and ``None``
+    when no refresh applied. See ``docs/CLIENT_CONTRACT.md``. Failures still
+    raise the public ``Elke27*`` exceptions; this is only returned on success.
     """
 
     route: str

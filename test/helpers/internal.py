@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gc
+import logging
 from typing import Any
 
 
@@ -30,3 +32,8 @@ def reply_publication_seq_active(client: object, seq: int) -> bool:
 def reply_publication_pending(client: object, seq: int) -> bool:
     fut = get_private(client, "_reply_publication_by_seq").get(seq)
     return fut is not None and not fut.done()
+
+
+def unretrieved_future_errors(records: list[logging.LogRecord]) -> list[str]:
+    gc.collect()
+    return [r.getMessage() for r in records if "never retrieved" in r.getMessage()]

@@ -24,6 +24,19 @@ class PendingResponse:
     loop: asyncio.AbstractEventLoop
 
 
+def _retrieve_outcome(future: asyncio.Future[Any]) -> None:
+    if not future.cancelled():
+        future.exception()
+
+
+def consume_outcome(future: asyncio.Future[Any]) -> None:
+    """Mark ``future``'s outcome retrieved now, or as soon as it settles."""
+    if future.done():
+        _retrieve_outcome(future)
+    else:
+        future.add_done_callback(_retrieve_outcome)
+
+
 class PendingResponseManager:
     _now: Callable[[], float]
     _pending: dict[int, PendingResponse]
