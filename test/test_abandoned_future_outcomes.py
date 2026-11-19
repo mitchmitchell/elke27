@@ -9,8 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
-from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -18,7 +16,6 @@ import pytest
 from elke27_lib.client import Elke27Client
 from elke27_lib.const import E27ErrorCode
 from elke27_lib.errors import E27Timeout
-from elke27_lib.events import ConnectionStateChanged, Event
 from elke27_lib.kernel_loop import E27Kernel, KeepaliveTestHooks
 from test.helpers.fake_session import FakePanelSession, connect_with_fake_panel
 from test.helpers.internal import unretrieved_future_errors
@@ -34,15 +31,6 @@ WEDGED_COMMAND_TIMEOUT_S = 100.0
 async def _settle() -> None:
     for _ in range(3):
         await asyncio.sleep(0)
-
-
-async def _wait_for(cond: Callable[[], bool], *, timeout_s: float) -> None:
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        if cond():
-            return
-        await asyncio.sleep(0.005)
-    raise AssertionError("condition not met in time")
 
 
 async def _next_sent(panel: FakePanelSession, count: int) -> dict[str, Any]:
@@ -89,13 +77,6 @@ async def test_keepalive_probe_failed_by_close_is_retrieved(
             request_max_retries=0,
             keepalive_test_hooks=KeepaliveTestHooks(send_wait_s=SEND_WAIT_S),
         )
-        drops: list[tuple[float, int]] = []
-
-        def _on_event(evt: Event) -> None:
-            if isinstance(evt, ConnectionStateChanged) and not evt.connected:
-                drops.append((time.monotonic(), panel.probes))
-
-        kernel.subscribe(_on_event, kinds=[ConnectionStateChanged.KIND])
         await kernel.connect(
             LINK_KEYS,
             client_identity=IDENTITY,
