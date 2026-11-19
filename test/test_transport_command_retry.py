@@ -472,7 +472,7 @@ async def test_kernel_connection_lost_fails_queued_without_resend() -> None:
         expected_route=("zone", "get_status"),
         loop=asyncio.get_running_loop(),
     )
-    kernel.pending_responses.create(
+    future1 = kernel.pending_responses.create(
         seq1,
         command_key="a",
         expected_route=("zone", "get_status"),
@@ -505,6 +505,8 @@ async def test_kernel_connection_lost_fails_queued_without_resend() -> None:
     assert len(session.sent) == 1
     with pytest.raises(ConnectionLost):
         await asyncio.wait_for(future2, timeout=0.2)
+    with pytest.raises(ConnectionLost):
+        await asyncio.wait_for(future1, timeout=0.2)
     assert not cast(Any, kernel)._request_queue_high
     assert not cast(Any, kernel)._request_queue_normal
 
@@ -884,13 +886,16 @@ async def test_async_execute_timeout_cancels_kernel_transport_retry(
 
 
 def _make_client(session: _FakeSession, *, max_retries: int = 2) -> Elke27Client:
-    client = Elke27Client()
+    loop = asyncio.get_running_loop()
+    client = Elke27Client(
+        kernel=E27Kernel(request_max_retries=max_retries, request_max_backoff_s=0.0)
+    )
     kernel = get_kernel(client)
+    kernel.load_features_blocking()
     cast(Any, kernel)._session = session
     kernel.state.panel.session_id = 1
-    cast(Any, kernel)._request_max_retries = max_retries
-    cast(Any, kernel)._request_max_backoff_s = 0.0
-    cast(Any, kernel)._loop = asyncio.get_running_loop()
+    cast(Any, kernel)._loop = loop
+    set_private(client, "_event_loop", loop)
     return client
 
 
@@ -1134,7 +1139,7 @@ async def test_reply_snapshot_publication_release_paths(
     async with asyncio.timeout(2.0):
         result = await task
     assert result.ok is True
-    assert any(publication_timeout in rec.message for rec in caplog.records)
+    assert not any(publication_timeout in rec.message for rec in caplog.records)
     assert not reply_publication_seq_active(client, spent_seq)
     assert kernel.dispatcher.match_pending(spent_seq, pop=False) is None
 

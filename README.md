@@ -258,20 +258,26 @@ If you are working on a Home Assistant integration:
 - **Status publication (#144), two cases.** (a) Direct reads
   (`area_get_status`, `zone_get_status`, `zone_get_all_zones_status`) and arm or
   bypass writes whose reply already includes confirmed status wait until the
-  reply is reflected in `get_snapshot()`. When that publication wait fails,
-  `async_execute` returns `Result(ok=False, error=Elke27DisconnectedError)` or
-  `Result(ok=False, error=Elke27SnapshotPublicationError)`; it does not raise those
-  types. (b) Ack-only `area_set_arm_state` or `zone_set_status` issues a follow-up
+  reply is reflected in `get_snapshot()`. If the link drops or publication fails
+  during that wait, `async_execute` returns `Result(ok=False,
+  error=Elke27DisconnectedError)` or `Result(ok=False,
+  error=Elke27SnapshotPublicationError)`; it does not raise those types. If the
+  command deadline passes before publication (#147), a direct read returns
+  `Result(ok=False, error=Elke27SnapshotPublicationError)` with a WARNING, a reply
+  already published by then still returns `ok=True`, and a confirmed-status write
+  (the panel accepted it) is a failed refresh as in (b). (b) Ack-only
+  `area_set_arm_state` or `zone_set_status` issues a follow-up
   `area_get_status` or `zone_get_status` on the write path. Any failure of that
-  nested read (including its publication wait) is a failed refresh on the write:
-  `Result(ok=True, status_refresh_ok=False)`, a WARNING, and the area or zone
-  marked stale—not `ok=False` on the outer write. On that refresh-failed path,
+  nested read (including its publication wait) is a failed refresh on the write,
+  as defined for `status_refresh_ok` in `docs/CLIENT_CONTRACT.md`—not `ok=False`
+  on the outer write. On that refresh-failed path,
   only `async_arm_area` with `ArmMode.ARMED_NIGHT` raises
-  `Elke27CommandOutcomeUnknownError` (failed follow-up or area missing after
-  refresh); `async_arm_area` with Away or Stay, `async_disarm_area`, and
-  `async_set_zone_bypass` return without raising. When `async_execute` returns
-  `ok=False` (including `Elke27CommandOutcomeUnknownError` after a confirmed send
-  with no reply), typed write helpers raise via their normal `result.ok` check.
+  `Elke27CommandOutcomeUnknownError` (status could not be confirmed, or the
+  area is missing after refresh); `async_arm_area` with Away or Stay,
+  `async_disarm_area`, and `async_set_zone_bypass` return without raising. When
+  `async_execute` returns `ok=False` (including `Elke27CommandOutcomeUnknownError`
+  after a confirmed send with no reply), typed write helpers raise via their
+  normal `result.ok` check.
 
 ---
 

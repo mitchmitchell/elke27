@@ -80,7 +80,7 @@ from .events import (
 )
 from .handlers.area import clear_all_area_exit_delay_pending
 from .outbound_loop import OutboundPriority
-from .pending_loop import PendingResponseManager
+from .pending_loop import PendingResponseManager, consume_outcome
 from .redact import redact_for_diagnostics
 from .states import PanelState
 
@@ -313,19 +313,6 @@ def _panel_display_name(panel: discovery.E27System | Mapping[str, Any] | None) -
         return None
     name = name.strip()
     return name or None
-
-
-def _consume_future_outcome(future: asyncio.Future[Any]) -> None:
-    """Retrieve a future's result so asyncio does not log it as unretrieved."""
-
-    def _retrieve(done: asyncio.Future[Any]) -> None:
-        if not done.cancelled():
-            done.exception()
-
-    if future.done():
-        _retrieve(future)
-        return
-    future.add_done_callback(_retrieve)
 
 
 class E27Kernel:
@@ -1154,7 +1141,7 @@ class E27Kernel:
         finally:
             self._keepalive_inflight = False
             if future is not None:
-                _consume_future_outcome(future)
+                consume_outcome(future)
 
     # -------------------------
     # Feature loading

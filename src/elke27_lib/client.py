@@ -178,6 +178,7 @@ from .kernel_loop import (
 )
 from .linking_thread import E27Identity, E27LinkKeys
 from .outbound_loop import OutboundPriority
+from .pending_loop import consume_outcome
 from .permissions import (
     PermissionLevel,
     canonical_generator_key,
@@ -1049,8 +1050,7 @@ class Elke27Client:
         finally:
             self._kernel.forget_request_sent(seq)
             _consume_done_publication_future()
-            if future.done():
-                future.exception()
+            consume_outcome(future)
 
         return _ok(cast(Mapping[str, Any], msg))
 
@@ -1706,14 +1706,7 @@ class Elke27Client:
             command_key,
             type(err).__name__ if err is not None else "unknown",
         )
-        if command_key == "area_set_arm_state":
-            area_id = params.get("area_id")
-            if isinstance(area_id, int) and area_id > 0:
-                self._mark_area_stale(area_id)
-        elif command_key == "zone_set_status":
-            zone_id = params.get("zone_id")
-            if isinstance(zone_id, int) and zone_id > 0:
-                self._mark_zone_stale(zone_id)
+        self._mark_write_target_stale(command_key, params)
         return False
 
     _REPLY_PUBLICATION_COMMANDS = frozenset(REPLY_PUBLICATION_COMMAND_KEYS)
@@ -1791,8 +1784,9 @@ class Elke27Client:
 
     def _release_reply_publication_command(self, reply_seq: int) -> None:
         fut = self._reply_publication_by_seq.pop(reply_seq, None)
-        if fut is not None and not fut.done():
+        if fut is not None:
             fut.cancel()
+            consume_outcome(fut)
         self._kernel.drop_dispatch_correlation(reply_seq)
 
     def _complete_reply_publication(self, reply_seq: int) -> None:
@@ -1819,28 +1813,41 @@ class Elke27Client:
             return self._command_reply_includes_confirmed_status(command_key, response_payload)
         return True
 
-    async def _await_reply_snapshot_publication(self, reply_seq: int, *, deadline: float) -> None:
-        loop = asyncio.get_running_loop()
-        remaining = deadline - loop.time()
-        if remaining <= 0:
-            self._log.warning(
-                "Timed out waiting for reply seq=%s snapshot publication",
-                reply_seq,
-            )
-            return
-        fut = self._reply_publication_by_seq.get(reply_seq)
-        if fut is None:
-            return
+    async def _await_reply_snapshot_publication(self, reply_seq: int, *, deadline: float) -> bool:
+        """Wait until the reply for ``reply_seq`` is published into ``get_snapshot()``.
+
+        Returns ``True`` once published and ``False`` (after a WARNING) if the
+        command deadline passes first (#147). A failed publication still raises
+        ``Elke27DisconnectedError`` or ``Elke27SnapshotPublicationError``.
+        """
+        fut = self._reply_publication_by_seq[reply_seq]
         if fut.done():
             fut.result()
-            return
-        try:
-            await asyncio.wait_for(fut, timeout=remaining)
-        except TimeoutError:
-            self._log.warning(
-                "Timed out waiting for reply seq=%s snapshot publication",
-                reply_seq,
-            )
+            return True
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining > 0:
+            try:
+                await asyncio.wait_for(fut, timeout=remaining)
+            except TimeoutError:
+                pass
+            else:
+                return True
+        self._log.warning(
+            "Timed out waiting for reply seq=%s snapshot publication",
+            reply_seq,
+        )
+        return False
+
+    def _mark_write_target_stale(self, command_key: str, params: Mapping[str, Any]) -> None:
+        """Mark the area or zone a write targeted as stale until a confirmed status lands."""
+        if command_key == "area_set_arm_state":
+            area_id = params.get("area_id")
+            if isinstance(area_id, int) and area_id > 0:
+                self._mark_area_stale(area_id)
+        elif command_key == "zone_set_status":
+            zone_id = params.get("zone_id")
+            if isinstance(zone_id, int) and zone_id > 0:
+                self._mark_zone_stale(zone_id)
 
     def _record_local_zone_bypass(self, zone_id: int) -> None:
         zone = self._kernel.state.zones.get(zone_id)
@@ -2890,8 +2897,8 @@ class Elke27Client:
             if result.status_refresh_ok is False:
                 raise Elke27CommandOutcomeUnknownError(
                     ("area", "set_arm_state"),
-                    "The panel acknowledged area.set_arm_state but the follow-up status "
-                    "refresh failed; the resulting arm state is unknown.",
+                    "The panel acknowledged area.set_arm_state but the status "
+                    "could not be confirmed; the resulting arm state is unknown.",
                 )
             self._raise_if_night_arm_ignored(area_id)
         if return_result:
@@ -3574,7 +3581,7 @@ class Elke27Client:
                     )
                     if self._command_needs_reply_publication_wait(command_key, response_payload):
                         try:
-                            await self._await_reply_snapshot_publication(
+                            published = await self._await_reply_snapshot_publication(
                                 seq, deadline=command_deadline
                             )
                         except (
@@ -3582,6 +3589,15 @@ class Elke27Client:
                             Elke27SnapshotPublicationError,
                         ) as publication_failed:
                             return _err(publication_failed)
+                        if not published:
+                            if command_key not in {"area_set_arm_state", "zone_set_status"}:
+                                return _err(
+                                    Elke27SnapshotPublicationError(
+                                        "Timed out waiting for snapshot publication."
+                                    )
+                                )
+                            self._mark_write_target_stale(command_key, params)
+                            status_refresh_ok = False
                     return _ok(response_payload, status_refresh_ok=status_refresh_ok)
                 finally:
                     if publication_owner is not None:

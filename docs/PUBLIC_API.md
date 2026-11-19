@@ -88,7 +88,7 @@ async def main():
         area_id=1, mode=ArmMode.ARMED_AWAY, pin="1234", return_result=True
     )
     if result.status_refresh_ok is False:
-        ...  # panel accepted, but status read failed; area is marked stale
+        ...  # panel accepted, but refresh failed; see docs/CLIENT_CONTRACT.md
 
     # cleanup
     unsubscribe()
