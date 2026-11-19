@@ -472,7 +472,7 @@ async def test_kernel_connection_lost_fails_queued_without_resend() -> None:
         expected_route=("zone", "get_status"),
         loop=asyncio.get_running_loop(),
     )
-    kernel.pending_responses.create(
+    future1 = kernel.pending_responses.create(
         seq1,
         command_key="a",
         expected_route=("zone", "get_status"),
@@ -505,6 +505,8 @@ async def test_kernel_connection_lost_fails_queued_without_resend() -> None:
     assert len(session.sent) == 1
     with pytest.raises(ConnectionLost):
         await asyncio.wait_for(future2, timeout=0.2)
+    with pytest.raises(ConnectionLost):
+        await asyncio.wait_for(future1, timeout=0.2)
     assert not cast(Any, kernel)._request_queue_high
     assert not cast(Any, kernel)._request_queue_normal
 

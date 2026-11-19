@@ -80,7 +80,7 @@ from .events import (
 )
 from .handlers.area import clear_all_area_exit_delay_pending
 from .outbound_loop import OutboundPriority
-from .pending_loop import PendingResponseManager
+from .pending_loop import PendingResponseManager, consume_outcome
 from .redact import redact_for_diagnostics
 from .states import PanelState
 
@@ -994,6 +994,7 @@ class E27Kernel:
         ):
             return True
         self._keepalive_inflight = True
+        future: asyncio.Future[Mapping[str, Any]] | None = None
         try:
             builder = self.requests.require(("system", "r_u_alive"))
             payload = builder()
@@ -1082,6 +1083,8 @@ class E27Kernel:
             return True
         finally:
             self._keepalive_inflight = False
+            if future is not None:
+                consume_outcome(future)
 
     # -------------------------
     # Feature loading

@@ -178,6 +178,7 @@ from .kernel_loop import (
 )
 from .linking_thread import E27Identity, E27LinkKeys
 from .outbound_loop import OutboundPriority
+from .pending_loop import consume_outcome
 from .permissions import (
     PermissionLevel,
     canonical_generator_key,
@@ -1049,8 +1050,7 @@ class Elke27Client:
         finally:
             self._kernel.forget_request_sent(seq)
             _consume_done_publication_future()
-            if future.done():
-                future.exception()
+            consume_outcome(future)
 
         return _ok(cast(Mapping[str, Any], msg))
 
@@ -1784,8 +1784,9 @@ class Elke27Client:
 
     def _release_reply_publication_command(self, reply_seq: int) -> None:
         fut = self._reply_publication_by_seq.pop(reply_seq, None)
-        if fut is not None and not fut.done():
+        if fut is not None:
             fut.cancel()
+            consume_outcome(fut)
         self._kernel.drop_dispatch_correlation(reply_seq)
 
     def _complete_reply_publication(self, reply_seq: int) -> None:
