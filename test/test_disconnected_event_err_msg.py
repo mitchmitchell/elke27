@@ -49,5 +49,5 @@ async def test_disconnected_event_without_error_has_no_reason_text(
 ) -> None:
     data = await _disconnected_after_drop(monkeypatch, None)
     assert data["connected"] is False
-    assert not data["err_msg"]
+    assert data["err_msg"] is None
     assert data["error_type"] is None
