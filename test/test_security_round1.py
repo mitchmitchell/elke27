@@ -14,7 +14,7 @@ import json
 import logging
 import socket
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
 import pytest
@@ -543,25 +543,44 @@ async def test_opt_in_reauth_fires_on_every_reconnect(panel: _FakePanel, outage_
     await client.async_disconnect()
 
 
+_UnexpectedSendCall = Callable[[Elke27Client], Awaitable[object]]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("command_key", "params", "domain"),
+    ("domain", "call"),
     [
-        ("control_authenticate", {"pin": DUMMY_PIN}, "authenticate"),
-        ("system_get_trouble", {}, "system"),
-        ("area_get_status", {"area_id": 1}, "area"),
+        pytest.param(
+            "authenticate",
+            lambda c: c.async_execute("control_authenticate", pin=DUMMY_PIN),
+            id="authenticate",
+        ),
+        pytest.param("system", lambda c: c.async_execute("system_get_trouble"), id="execute"),
+        pytest.param(
+            "area",
+            lambda c: c.async_execute("area_get_status", area_id=1),
+            id="execute-publication",
+        ),
+        pytest.param("area", lambda c: c.async_execute("area_get_configured"), id="paged"),
+        pytest.param(
+            "system",
+            lambda c: c.async_raw_request({"system": {"get_trouble": {}}}, allow_installer=True),
+            id="raw",
+        ),
     ],
 )
 async def test_unexpected_send_error_leaves_no_unretrieved_future_after_close(
     panel: _FakePanel,
     monkeypatch: pytest.MonkeyPatch,
-    command_key: str,
-    params: dict[str, Any],
     domain: str,
+    call: _UnexpectedSendCall,
 ) -> None:
     kernel = E27Kernel()
     kernel.state.areas[1] = AreaState(area_id=1, arm_state="DISARMED")
-    client, _ = await _connected(kernel=kernel)
+    client = Elke27Client(
+        ClientConfig(request_timeout_s=5.0), kernel=kernel, enable_raw_passthrough=True
+    )
+    await client.async_connect(HOST, 2101, KEYS)
     assert await client.wait_ready(2.0)
     await _settle()
     real_send = kernel.send_request_with_seq
@@ -577,7 +596,7 @@ async def test_unexpected_send_error_leaves_no_unretrieved_future_after_close(
     loop.set_exception_handler(lambda _loop, context: contexts.append(context))
     try:
         with pytest.raises(_Bug):
-            await client.async_execute(command_key, **params)
+            await call(client)
         await client.async_disconnect()
         await _settle()
         gc.collect()
