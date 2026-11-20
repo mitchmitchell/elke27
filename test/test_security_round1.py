@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import gc
 import json
 import logging
 import socket
@@ -540,6 +541,51 @@ async def test_opt_in_reauth_fires_on_every_reconnect(panel: _FakePanel, outage_
     await _settle()
     assert len(_pin_messages(panel.wire())) == 2
     await client.async_disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command_key", "params", "domain"),
+    [
+        ("control_authenticate", {"pin": DUMMY_PIN}, "authenticate"),
+        ("system_get_trouble", {}, "system"),
+        ("area_get_status", {"area_id": 1}, "area"),
+    ],
+)
+async def test_unexpected_send_error_leaves_no_unretrieved_future_after_close(
+    panel: _FakePanel,
+    monkeypatch: pytest.MonkeyPatch,
+    command_key: str,
+    params: dict[str, Any],
+    domain: str,
+) -> None:
+    kernel = E27Kernel()
+    kernel.state.areas[1] = AreaState(area_id=1, arm_state="DISARMED")
+    client, _ = await _connected(kernel=kernel)
+    assert await client.wait_ready(2.0)
+    await _settle()
+    real_send = kernel.send_request_with_seq
+
+    def _send(seq: int, send_domain: str, name: str, *args: Any, **kwargs: Any) -> Any:
+        if send_domain == domain:
+            raise _Bug("unexpected")
+        return real_send(seq, send_domain, name, *args, **kwargs)
+
+    monkeypatch.setattr(kernel, "send_request_with_seq", _send)
+    loop = asyncio.get_running_loop()
+    contexts: list[dict[str, Any]] = []
+    loop.set_exception_handler(lambda _loop, context: contexts.append(context))
+    try:
+        with pytest.raises(_Bug):
+            await client.async_execute(command_key, **params)
+        await client.async_disconnect()
+        await _settle()
+        gc.collect()
+        await _settle()
+        gc.collect()
+    finally:
+        loop.set_exception_handler(None)
+    assert [str(c.get("message")) for c in contexts] == []
 
 
 @pytest.mark.asyncio
