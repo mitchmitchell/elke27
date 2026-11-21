@@ -236,6 +236,7 @@ from .types import (
 from .util import is_ascii_digit_string, parse_pin_digits
 
 T = TypeVar("T")
+_LoopHopT = TypeVar("_LoopHopT")
 
 # Upper bound on a paged reply's block_count; a larger value is a protocol error.
 MAX_PAGED_BLOCK_COUNT = 256
@@ -2422,35 +2423,42 @@ class Elke27Client:
     def _disconnected_loop_hop_error(self) -> Result[Any]:
         return _err(Elke27DisconnectedError("Connection lost during the command."))
 
-    def _run_on_client_event_loop(self, fn: Callable[[], Any], *, timeout_s: float) -> Any:
+    def _run_on_client_event_loop(
+        self, fn: Callable[[], _LoopHopT], *, timeout_s: float
+    ) -> _LoopHopT:
         loop = self._event_loop
         if loop is None or not loop.is_running() or self._kernel.current_thread_runs_bound_loop():
             return fn()
 
         hop: concurrent.futures.Future[None] = concurrent.futures.Future()
         finished = threading.Event()
-        outcome: list[Any] = []
+        outcome: list[_LoopHopT] = []
+        hop_error: list[BaseException] = []
 
         def _invoke() -> None:
             if not hop.set_running_or_notify_cancel():
                 return
             try:
                 outcome.append(fn())
+            except Exception as exc:  # noqa: BLE001 -- preserve broad except handling intentionally
+                hop_error.append(exc)
             finally:
                 finished.set()
 
         try:
             loop.call_soon_threadsafe(_invoke)
         except RuntimeError:
-            return self._disconnected_loop_hop_error()
+            return cast(_LoopHopT, self._disconnected_loop_hop_error())
 
         if not finished.wait(timeout=timeout_s):
             hop.cancel()
             if not hop.cancel():
                 finished.wait(timeout=timeout_s)
-            return self._disconnected_loop_hop_error()
+            return cast(_LoopHopT, self._disconnected_loop_hop_error())
+        if hop_error:
+            raise hop_error[0]
         if not outcome:
-            return self._disconnected_loop_hop_error()
+            return cast(_LoopHopT, self._disconnected_loop_hop_error())
         return outcome[0]
 
     def _cancel_reauth(self) -> bool:

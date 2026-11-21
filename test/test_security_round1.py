@@ -52,6 +52,21 @@ HOST = "198.51.100.1"
 KEYS = LinkKeys("aa", "bb", "cc")
 
 
+def _outbound_is_authenticate(msg: dict[str, Any]) -> bool:
+    if "authenticate" in msg:
+        return True
+    control = msg.get("control")
+    return isinstance(control, dict) and "authenticate" in control
+
+
+def _panel_auth_reply(msg: dict[str, Any], *, error_code: int) -> dict[str, Any]:
+    seq = msg["seq"]
+    control = msg.get("control")
+    if isinstance(control, dict) and "authenticate" in control:
+        return {"seq": seq, "control": {"authenticate": {"error_code": error_code}}}
+    return {"seq": seq, "authenticate": {"error_code": error_code}}
+
+
 # ---------------------------------------------------------------- fake transport
 
 
@@ -90,23 +105,17 @@ class _FakePanel:
 
     def reply(self, session: _FakeSession, msg: dict[str, Any]) -> None:
         loop = asyncio.get_running_loop()
-        seq = msg["seq"]
-        control = msg.get("control")
-        is_auth = "authenticate" in msg or (isinstance(control, dict) and "authenticate" in control)
-        if is_auth:
+        if _outbound_is_authenticate(msg):
             if self.auth == "silent":
                 return
             code = 11008 if self.auth == "refuse" else 0
-            reply = (
-                {"seq": seq, "control": {"authenticate": {"error_code": code}}}
-                if isinstance(control, dict) and "authenticate" in control
-                else {"seq": seq, "authenticate": {"error_code": code}}
-            )
+            reply = _panel_auth_reply(msg, error_code=code)
             if self.auth == "hold":
                 self.held.append((session, reply))
                 return
             loop.call_soon(session.on_message, reply)
             return
+        seq = msg["seq"]
         domain = next(k for k in msg if k not in ("seq", "session_id"))
         name = next(iter(msg[domain]))
         build = self.overrides.get((domain, name))
@@ -200,21 +209,6 @@ async def _settle() -> None:
 
 def _pin_messages(wire: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [m for m in wire if str(DUMMY_PIN) in json.dumps(m)]
-
-
-def _outbound_is_authenticate(msg: dict[str, Any]) -> bool:
-    if "authenticate" in msg:
-        return True
-    control = msg.get("control")
-    return isinstance(control, dict) and "authenticate" in control
-
-
-def _panel_auth_reply(msg: dict[str, Any], *, error_code: int) -> dict[str, Any]:
-    seq = msg["seq"]
-    control = msg.get("control")
-    if isinstance(control, dict) and "authenticate" in control:
-        return {"seq": seq, "control": {"authenticate": {"error_code": error_code}}}
-    return {"seq": seq, "authenticate": {"error_code": error_code}}
 
 
 # ---------------------------------------------------------------- D2
@@ -710,9 +704,7 @@ async def test_async_stale_auth_failure_leaves_new_session_pin(
 
 
 @pytest.mark.asyncio
-async def test_sync_stale_auth_failure_leaves_new_session_pin(
-    panel: _FakePanel, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_sync_stale_auth_failure_leaves_new_session_pin(panel: _FakePanel) -> None:
     client, clock = await _connected(reauth=True)
     panel.auth = "silent"
     waiter: concurrent.futures.Future[dict[str, object]] = concurrent.futures.Future()
