@@ -630,21 +630,48 @@ async def _reconnect_expecting_no_authenticate(
     await _until(lambda: panel.auth_requests() == [])
 
 
-def _spawn_cancel_lost_after_fn_running(
-    fn_running: threading.Event,
+class _LoopHopRunSpies:
+    __slots__ = ("waiting_after_loss", "post_loss_timeouts")
+
+    def __init__(self) -> None:
+        self.waiting_after_loss = threading.Event()
+        self.post_loss_timeouts: list[float | None] = []
+
+
+def _install_loop_hop_run_spies(
+    monkeypatch: pytest.MonkeyPatch,
     cancel_lost: threading.Event,
-    hop_timeout_s: float,
-) -> None:
-    def _mark() -> None:
-        fn_running.wait()
-        threading.Event().wait(timeout=hop_timeout_s)
-        cancel_lost.set()
+) -> _LoopHopRunSpies:
+    spies = _LoopHopRunSpies()
+    real_future = loop_bridge_mod.concurrent.futures.Future
+    real_event = loop_bridge_mod.threading.Event
 
-    threading.Thread(target=_mark, daemon=True).start()
+    def _claim_factory() -> concurrent.futures.Future[Any]:
+        claim = real_future()
+        orig_cancel = claim.cancel
 
+        def _cancel(*args: Any, **kwargs: Any) -> bool:
+            cancelled = orig_cancel(*args, **kwargs)
+            if not cancelled:
+                cancel_lost.set()
+            return cancelled
 
-def _wait_one_hop_timeout(hop_timeout_s: float) -> None:
-    threading.Event().wait(timeout=hop_timeout_s)
+        claim.cancel = _cancel
+        return claim
+
+    class _FinishedEvent(real_event):
+        def wait(self, timeout: float | None = None) -> bool:
+            if cancel_lost.is_set():
+                spies.waiting_after_loss.set()
+                spies.post_loss_timeouts.append(timeout)
+            return super().wait(timeout)
+
+    def _finished_factory() -> threading.Event:
+        return _FinishedEvent()
+
+    monkeypatch.setattr(loop_bridge_mod, "_new_claim", _claim_factory)
+    monkeypatch.setattr(loop_bridge_mod, "_new_finished", _finished_factory)
+    return spies
 
 
 def _bounded_run_on_loop(
@@ -1057,6 +1084,7 @@ async def test_sync_authenticate_loop_hop_finalize_wins_race(
     hop_returned = threading.Event()
     held_invoke: list[Callable[[], None]] = []
     client_loop = kernel_loop
+    hop_spies = _install_loop_hop_run_spies(monkeypatch, cancel_lost)
 
     def _hold_schedule(callback: Callable[[], None]) -> None:
         if held_invoke:
@@ -1091,7 +1119,6 @@ async def test_sync_authenticate_loop_hop_finalize_wins_race(
 
     monkeypatch.setattr(loop_bridge_mod, "run_on_loop", _slow_run)
     monkeypatch.setattr(client_mod, "run_on_loop", _slow_run)
-    monkeypatch.setattr("elke27_lib.client.run_on_loop", _slow_run)
 
     def _sync_auth() -> Any:
         return client.request(
@@ -1100,7 +1127,6 @@ async def test_sync_authenticate_loop_hop_finalize_wins_race(
             opaque=waiter,
         )
 
-    _spawn_cancel_lost_after_fn_running(fn_started, cancel_lost, hop_timeout_s)
     task = asyncio.create_task(asyncio.to_thread(_sync_auth))
     try:
         await _until(lambda: any(_outbound_is_authenticate(m) for m in panel.wire()), timeout_s=5.0)
@@ -1109,9 +1135,8 @@ async def test_sync_authenticate_loop_hop_finalize_wins_race(
         client_loop.call_soon_threadsafe(held_invoke.pop())
         assert await asyncio.to_thread(fn_started.wait, 5.0)
         assert await asyncio.to_thread(cancel_lost.wait, 5.0)
-        assert not hop_returned.is_set()
-        assert not task.done()
-        await asyncio.to_thread(_wait_one_hop_timeout, hop_timeout_s)
+        assert await asyncio.to_thread(hop_spies.waiting_after_loss.wait, 5.0)
+        assert hop_spies.post_loss_timeouts == [None]
         assert not hop_returned.is_set()
         assert not task.done()
         await asyncio.to_thread(fn_release.set)
@@ -1939,7 +1964,7 @@ def test_run_on_loop_forwards_runtime_error_from_fn() -> None:
         loop.close()
 
 
-def test_run_on_loop_finalize_wins_race() -> None:
+def test_run_on_loop_finalize_wins_race(monkeypatch: pytest.MonkeyPatch) -> None:
     loop = asyncio.new_event_loop()
     runner = threading.Thread(target=loop.run_forever, daemon=True)
     runner.start()
@@ -1948,6 +1973,7 @@ def test_run_on_loop_finalize_wins_race() -> None:
     cancel_lost = threading.Event()
     fn_release = threading.Event()
     hop_returned = threading.Event()
+    hop_spies = _install_loop_hop_run_spies(monkeypatch, cancel_lost)
 
     def _fn() -> int:
         fn_started.set()
@@ -1962,16 +1988,13 @@ def test_run_on_loop_finalize_wins_race() -> None:
         finally:
             hop_returned.set()
 
-    _spawn_cancel_lost_after_fn_running(fn_started, cancel_lost, hop_timeout_s)
     worker = threading.Thread(target=_worker, daemon=True)
     try:
         worker.start()
         assert fn_started.wait(timeout=5.0)
         assert cancel_lost.wait(timeout=5.0)
-        assert worker.is_alive()
-        assert not hop_returned.is_set()
-        assert not worker_result
-        _wait_one_hop_timeout(hop_timeout_s)
+        assert hop_spies.waiting_after_loss.wait(timeout=5.0)
+        assert hop_spies.post_loss_timeouts == [None]
         assert worker.is_alive()
         assert not hop_returned.is_set()
         assert not worker_result
@@ -1990,7 +2013,7 @@ def test_run_on_loop_finalize_wins_race() -> None:
             loop.close()
 
 
-def test_run_on_loop_waits_for_fn_after_cancel_loses() -> None:
+def test_run_on_loop_waits_for_fn_after_cancel_loses(monkeypatch: pytest.MonkeyPatch) -> None:
     loop = asyncio.new_event_loop()
     runner = threading.Thread(target=loop.run_forever, daemon=True)
     runner.start()
@@ -1999,6 +2022,7 @@ def test_run_on_loop_waits_for_fn_after_cancel_loses() -> None:
     fn_claimed = threading.Event()
     cancel_lost = threading.Event()
     hop_returned = threading.Event()
+    hop_spies = _install_loop_hop_run_spies(monkeypatch, cancel_lost)
 
     def _fn() -> int:
         fn_claimed.set()
@@ -2013,16 +2037,13 @@ def test_run_on_loop_waits_for_fn_after_cancel_loses() -> None:
         finally:
             hop_returned.set()
 
-    _spawn_cancel_lost_after_fn_running(fn_claimed, cancel_lost, hop_timeout_s)
     worker = threading.Thread(target=_worker, daemon=True)
     try:
         worker.start()
         assert fn_claimed.wait(timeout=5.0)
         assert cancel_lost.wait(timeout=5.0)
-        assert worker.is_alive()
-        assert not hop_returned.is_set()
-        assert not worker_result
-        _wait_one_hop_timeout(hop_timeout_s)
+        assert hop_spies.waiting_after_loss.wait(timeout=5.0)
+        assert hop_spies.post_loss_timeouts == [None]
         assert worker.is_alive()
         assert not hop_returned.is_set()
         assert not worker_result

@@ -19,6 +19,14 @@ class LoopHopClosed(Exception):
     """Raised when the event loop could not accept a thread-safe callback submission."""
 
 
+def _new_claim() -> concurrent.futures.Future[None]:
+    return concurrent.futures.Future()
+
+
+def _new_finished() -> threading.Event:
+    return threading.Event()
+
+
 def run_on_loop(
     loop: asyncio.AbstractEventLoop,
     fn: Callable[[], T],
@@ -27,8 +35,8 @@ def run_on_loop(
     schedule: Callable[[Callable[[], None]], None] | None = None,
 ) -> T:
     """Return fn()'s result when it ran; raise LoopHopTimeout when fn() did not run."""
-    claim = concurrent.futures.Future()
-    finished = threading.Event()
+    claim = _new_claim()
+    finished = _new_finished()
     outcome: list[T] = []
     errors: list[BaseException] = []
 
