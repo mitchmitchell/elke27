@@ -769,12 +769,20 @@ async def test_sync_authenticate_loop_hop_timeout_does_not_cache_pin(
     client, clock = await _connected(reauth=True, request_timeout_s=0.05)
     panel.auth = "silent"
     waiter: concurrent.futures.Future[dict[str, object]] = concurrent.futures.Future()
-    held_hops: list[tuple[Any, asyncio.AbstractEventLoop]] = []
+    hop_gate = asyncio.Event()
+    hop_armed = asyncio.Event()
+    held_hops: list[concurrent.futures.Future[Any]] = []
     real_rcts = asyncio.run_coroutine_threadsafe
 
     def _hold_hop(coro: Any, loop: asyncio.AbstractEventLoop, /, **kwargs: Any) -> Any:
-        held_hops.append((coro, loop))
-        return concurrent.futures.Future()
+        async def _gated() -> Any:
+            hop_armed.set()
+            await hop_gate.wait()
+            return await coro
+
+        fut = real_rcts(_gated(), loop)
+        held_hops.append(fut)
+        return fut
 
     def _sync_auth() -> Any:
         return client.request(
@@ -787,14 +795,17 @@ async def test_sync_authenticate_loop_hop_timeout_does_not_cache_pin(
     await _until(lambda: any(_outbound_is_authenticate(m) for m in panel.wire()))
     monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", _hold_hop)
     waiter.set_result({"success": True, "error_code": 0})
-    result = await asyncio.wait_for(task, timeout=2.0)
-    assert held_hops, "hop must be scheduled via run_coroutine_threadsafe"
-    assert not result.ok
-    assert isinstance(result.error, Elke27DisconnectedError)
-    assert client.authenticated is False
-    for coro, hop_loop in held_hops:
-        real_rcts(coro, hop_loop)
-    await _reconnect_expecting_no_authenticate(client, panel, clock)
+    try:
+        result = await asyncio.wait_for(task, timeout=5.0)
+        assert held_hops
+        assert hop_armed.is_set()
+        assert held_hops[0].cancelled()
+        assert not result.ok
+        assert isinstance(result.error, Elke27DisconnectedError)
+        assert client.authenticated is False
+        await _reconnect_expecting_no_authenticate(client, panel, clock)
+    finally:
+        hop_gate.set()
     await client.async_disconnect()
 
 
