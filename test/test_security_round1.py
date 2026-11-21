@@ -780,30 +780,39 @@ def _bounded_run_on_loop(
 
 
 class _BoundedSyncCaller:
-    __slots__ = ("_executor", "_future")
+    __slots__ = ("_errors", "_results", "_thread")
 
-    def __init__(
-        self,
-        future: concurrent.futures.Future[Any],
-        executor: concurrent.futures.ThreadPoolExecutor,
-    ) -> None:
-        self._future = future
-        self._executor = executor
+    def __init__(self, fn: Callable[[], Any]) -> None:
+        self._results: list[Any] = []
+        self._errors: list[BaseException] = []
+        self._thread = threading.Thread(target=self._run, args=(fn,), daemon=True)
+
+    def _run(self, fn: Callable[[], Any]) -> None:
+        try:
+            self._results.append(fn())
+        except BaseException as exc:
+            self._errors.append(exc)
+            raise
+
+    def start(self) -> None:
+        self._thread.start()
 
     def is_alive(self) -> bool:
-        return not self._future.done()
+        return self._thread.is_alive()
 
     def wait_result(self, timeout_s: float) -> Any:
-        return self._future.result(timeout=timeout_s)
-
-    def shutdown_executor(self) -> None:
-        self._executor.shutdown(wait=False, cancel_futures=True)
+        self._thread.join(timeout=timeout_s)
+        if self._thread.is_alive():
+            pytest.fail("sync caller did not finish")
+        if self._errors:
+            raise self._errors[0]
+        return self._results[0]
 
 
 def _start_bounded_sync_caller(fn: Callable[[], Any]) -> _BoundedSyncCaller:
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="sync_auth")
-    future = executor.submit(fn)
-    return _BoundedSyncCaller(future, executor)
+    caller = _BoundedSyncCaller(fn)
+    caller.start()
+    return caller
 
 
 async def _join_bounded_sync_caller(
@@ -811,12 +820,7 @@ async def _join_bounded_sync_caller(
     *,
     join_timeout_s: float = 5.0,
 ) -> Any:
-    try:
-        return await asyncio.to_thread(caller.wait_result, join_timeout_s)
-    except concurrent.futures.TimeoutError:
-        pytest.fail("sync caller did not finish")
-    finally:
-        caller.shutdown_executor()
+    return await asyncio.to_thread(caller.wait_result, join_timeout_s)
 
 
 async def _release_held_loop_hop_invoke(
@@ -827,12 +831,7 @@ async def _release_held_loop_hop_invoke(
     if held_invoke:
         loop.call_soon_threadsafe(held_invoke[0])
     if sync_caller.is_alive():
-        try:
-            await asyncio.to_thread(sync_caller.wait_result, 5.0)
-        except concurrent.futures.TimeoutError:
-            pytest.fail("sync caller did not finish during loop-hop release")
-        finally:
-            sync_caller.shutdown_executor()
+        await asyncio.to_thread(sync_caller.wait_result, 5.0)
 
 
 class _AuthOpaqueWaiter:
@@ -890,21 +889,17 @@ async def test_sync_authenticate_epoch_guard_on_stale_success(
         )
 
     sync_caller = _start_bounded_sync_caller(_sync_auth)
-    try:
-        await _until(lambda: any(_outbound_is_authenticate(m) for m in panel.wire()))
-        loop.call_soon(panel.drop_link)
-        await _until(
-            lambda: any(
-                "Panel connection lost" in r.getMessage()
-                for r in caplog.records
-                if r.levelno >= logging.WARNING
-            )
+    await _until(lambda: any(_outbound_is_authenticate(m) for m in panel.wire()))
+    loop.call_soon(panel.drop_link)
+    await _until(
+        lambda: any(
+            "Panel connection lost" in r.getMessage()
+            for r in caplog.records
+            if r.levelno >= logging.WARNING
         )
-        waiter.set_result({"success": True, "error_code": 0})
-        result = await _join_bounded_sync_caller(sync_caller)
-    finally:
-        if sync_caller.is_alive():
-            sync_caller.shutdown_executor()
+    )
+    waiter.set_result({"success": True, "error_code": 0})
+    result = await _join_bounded_sync_caller(sync_caller)
     assert not result.ok
     assert isinstance(result.error, Elke27DisconnectedError)
     assert client.authenticated is False
@@ -952,17 +947,13 @@ async def test_sync_stale_auth_failure_leaves_new_session_pin(panel: _FakePanel)
         )
 
     sync_caller = _start_bounded_sync_caller(_sync_auth)
-    try:
-        await _until(lambda: any(_outbound_is_authenticate(m) for m in panel.wire()))
-        await _drop_and_reconnect(client, panel, clock)
-        assert await client.wait_ready(2.0)
-        panel.auth = "accept"
-        assert await _authenticate(client) is True
-        waiter.set_result({"success": False, "error_code": 11008})
-        stale_result = await _join_bounded_sync_caller(sync_caller)
-    finally:
-        if sync_caller.is_alive():
-            sync_caller.shutdown_executor()
+    await _until(lambda: any(_outbound_is_authenticate(m) for m in panel.wire()))
+    await _drop_and_reconnect(client, panel, clock)
+    assert await client.wait_ready(2.0)
+    panel.auth = "accept"
+    assert await _authenticate(client) is True
+    waiter.set_result({"success": False, "error_code": 11008})
+    stale_result = await _join_bounded_sync_caller(sync_caller)
     assert not stale_result.ok
     assert isinstance(stale_result.error, Elke27DisconnectedError)
     assert client.authenticated is True
@@ -1102,8 +1093,6 @@ async def test_client_event_loop_hop_skips_when_event_loop_not_running(
         assert result.ok
         assert client.authenticated is True
     finally:
-        if sync_caller.is_alive():
-            sync_caller.shutdown_executor()
         if not kernel_loop.is_closed():
             if not kernel_loop.is_running():
                 kernel_runner = threading.Thread(target=kernel_loop.run_forever, daemon=True)
@@ -1133,15 +1122,11 @@ async def test_sync_authenticate_auth_wait_uses_request_timeout_s(panel: _FakePa
         )
 
     sync_caller = _start_bounded_sync_caller(_sync_auth)
-    try:
-        await _until(lambda: any(_outbound_is_authenticate(m) for m in panel.wire()))
-        auth_waiter.set_result({"success": True, "error_code": 0})
-        result = await _join_bounded_sync_caller(sync_caller)
-        assert result.ok
-        assert auth_waiter.timeouts == [wait_timeout_s]
-    finally:
-        if sync_caller.is_alive():
-            sync_caller.shutdown_executor()
+    await _until(lambda: any(_outbound_is_authenticate(m) for m in panel.wire()))
+    auth_waiter.set_result({"success": True, "error_code": 0})
+    result = await _join_bounded_sync_caller(sync_caller)
+    assert result.ok
+    assert auth_waiter.timeouts == [wait_timeout_s]
     await client.async_disconnect()
 
 
