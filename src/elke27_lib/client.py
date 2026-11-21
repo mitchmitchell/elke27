@@ -177,7 +177,7 @@ from .kernel_loop import (
     KernelNotLinkedError,
 )
 from .linking_thread import E27Identity, E27LinkKeys
-from .loop_bridge_thread import LoopHopTimeout, run_coroutine_on_loop
+from .loop_bridge_thread import LoopHopClosed, LoopHopTimeout, run_coroutine_on_loop
 from .outbound_loop import OutboundPriority
 from .pending_loop import consume_outcome
 from .permissions import (
@@ -2431,16 +2431,24 @@ class Elke27Client:
         if loop is None or not loop.is_running() or self._kernel.current_thread_runs_bound_loop():
             return fn()
 
-        async def _hop() -> _LoopHopT:
+        started = threading.Event()
+        abandoned = threading.Event()
+
+        async def _claimed() -> _LoopHopT:
+            started.set()
+            if abandoned.is_set():
+                raise asyncio.CancelledError()
             return fn()
 
         try:
-            return run_coroutine_on_loop(loop, _hop(), timeout_s=timeout_s)
-        except LoopHopTimeout:
-            return cast(_LoopHopT, self._disconnected_loop_hop_error())
-        except RuntimeError:
-            return cast(_LoopHopT, self._disconnected_loop_hop_error())
-        except concurrent.futures.CancelledError:
+            return run_coroutine_on_loop(
+                loop,
+                _claimed(),
+                timeout_s=timeout_s,
+                started=started,
+                abandoned=abandoned,
+            )
+        except (LoopHopTimeout, LoopHopClosed):
             return cast(_LoopHopT, self._disconnected_loop_hop_error())
 
     def _cancel_reauth(self) -> bool:

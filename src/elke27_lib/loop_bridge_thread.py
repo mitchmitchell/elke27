@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
+import threading
 from collections.abc import Coroutine
 from typing import Any, TypeVar
 
@@ -11,7 +11,11 @@ T = TypeVar("T")
 
 
 class LoopHopTimeout(Exception):
-    """The wait ended and the hop was cancelled before the coroutine could start."""
+    """Raised when the hop deadline passed before the coroutine was abandoned and cancelled."""
+
+
+class LoopHopClosed(Exception):
+    """Raised when the event loop could not accept a thread-safe coroutine submission."""
 
 
 def run_coroutine_on_loop(
@@ -19,13 +23,23 @@ def run_coroutine_on_loop(
     coro: Coroutine[Any, Any, T],
     *,
     timeout_s: float,
+    started: threading.Event,
+    abandoned: threading.Event,
 ) -> T:
-    hop = asyncio.run_coroutine_threadsafe(coro, loop)
+    """On timeout, abandon and cancel only if the coroutine never claimed the hop; else wait for its result."""
+    try:
+        hop = asyncio.run_coroutine_threadsafe(coro, loop)
+    except RuntimeError as exc:
+        raise LoopHopClosed from exc
+
     try:
         return hop.result(timeout=timeout_s)
-    except concurrent.futures.CancelledError:
-        raise
-    except (TimeoutError, concurrent.futures.TimeoutError):
+    except TimeoutError:
+        abandoned.set()
+        if started.is_set():
+            return hop.result()
         if hop.cancel():
             raise LoopHopTimeout from None
-        return hop.result()
+        if started.is_set():
+            return hop.result()
+        raise LoopHopTimeout from None

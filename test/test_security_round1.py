@@ -743,6 +743,9 @@ async def test_sync_authenticate_loop_hop_closed_returns_result(
     closed_errors: list[RuntimeError] = []
 
     def _closed_hop(coro: Any, loop: asyncio.AbstractEventLoop, /, **kwargs: Any) -> Any:
+        close = getattr(coro, "close", None)
+        if callable(close):
+            close()
         err = RuntimeError("Event loop is closed")
         closed_errors.append(err)
         raise err
