@@ -1782,6 +1782,37 @@ class Elke27Client:
         self._reply_publication_by_seq[reply_seq] = loop.create_future()
         self._kernel.register_dispatch_correlation(reply_seq, expected_route)
 
+    def _send_tracked_request(
+        self,
+        future: asyncio.Future[Mapping[str, Any]],
+        seq: int,
+        domain: str,
+        name: str,
+        payload: Any,
+        *,
+        pending: bool,
+        opaque: Any,
+        expected_route: RouteKey | None,
+        priority: OutboundPriority = OutboundPriority.NORMAL,
+        timeout_s: float | None = None,
+    ) -> None:
+        try:
+            self._kernel.send_request_with_seq(
+                seq,
+                domain,
+                name,
+                payload,
+                pending=pending,
+                opaque=opaque,
+                expected_route=expected_route,
+                priority=priority,
+                timeout_s=timeout_s,
+            )
+        except BaseException:
+            self._kernel.pending_responses.drop(seq)
+            consume_outcome(future)
+            raise
+
     def _release_reply_publication_command(self, reply_seq: int) -> None:
         fut = self._reply_publication_by_seq.pop(reply_seq, None)
         if fut is not None:
@@ -3220,7 +3251,8 @@ class Elke27Client:
         sent_event = asyncio.Event()
         self._kernel.register_sent_event(seq, sent_event)
         try:
-            self._kernel.send_request_with_seq(
+            self._send_tracked_request(
+                future,
                 seq,
                 domain,
                 verb,
@@ -3231,7 +3263,6 @@ class Elke27Client:
                 timeout_s=timeout_value,
             )
         except _CLIENT_EXCEPTIONS as exc:
-            self._kernel.pending_responses.drop(seq)
             return _err(self._normalize_error(exc, phase="execute", detail=f"{label} seq={seq}"))
         # Raw messages are opaque, so any sent-but-unanswered one is outcome-unknown.
         wait_result = await self._await_kernel_command_response(
@@ -3512,7 +3543,8 @@ class Elke27Client:
                         publication_owner = seq
 
                     try:
-                        self._kernel.send_request_with_seq(
+                        self._send_tracked_request(
+                            future,
                             seq,
                             spec.domain,
                             spec.command,
@@ -3523,7 +3555,6 @@ class Elke27Client:
                             timeout_s=timeout_value,
                         )
                     except _CLIENT_EXCEPTIONS as exc:
-                        self._kernel.pending_responses.drop(seq)
                         detail = f"command_key={command_key} seq={seq}"
                         return _err(self._normalize_error(exc, phase="execute", detail=detail))
 
@@ -3654,7 +3685,8 @@ class Elke27Client:
                 sent_event = asyncio.Event()
                 self._kernel.register_sent_event(seq, sent_event)
                 try:
-                    self._kernel.send_request_with_seq(
+                    self._send_tracked_request(
+                        future,
                         seq,
                         spec.domain,
                         spec.command,
@@ -3665,7 +3697,6 @@ class Elke27Client:
                         timeout_s=timeout_value,
                     )
                 except _CLIENT_EXCEPTIONS as exc:
-                    self._kernel.pending_responses.drop(seq)
                     detail = f"command_key={command_key} seq={seq}"
                     return _err(self._normalize_error(exc, phase="execute", detail=detail))
 
@@ -3832,7 +3863,8 @@ class Elke27Client:
 
         try:
             timeout_value = timeout_s if timeout_s is not None else self._kernel.request_timeout_s
-            self._kernel.send_request_with_seq(
+            self._send_tracked_request(
+                future,
                 seq,
                 "authenticate",
                 "__root__",
@@ -3844,7 +3876,6 @@ class Elke27Client:
                 timeout_s=timeout_value,
             )
         except _CLIENT_EXCEPTIONS as exc:
-            self._kernel.pending_responses.drop(seq)
             detail = "route=authenticate.__root__"
             return _err(self._normalize_error(exc, phase="request", detail=detail))
 
