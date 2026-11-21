@@ -711,8 +711,8 @@ def _wait_lost_cancel_before_return(
     bound_s: float = 5.0,
 ) -> None:
     def _watch_hop_returned() -> None:
-        hop_returned.wait()
-        hop_spies.progress.set()
+        if hop_returned.wait(timeout=bound_s):
+            hop_spies.progress.set()
 
     threading.Thread(target=_watch_hop_returned, daemon=True).start()
     if not hop_spies.progress.wait(timeout=bound_s):
@@ -976,23 +976,36 @@ def test_run_on_loop_first_wait_records_timeout_s() -> None:
             return
         held_invoke.append(callback)
 
+    fn_ran = threading.Event()
+    outcomes: list[int | LoopHopTimeout] = []
+
+    def _fn() -> int:
+        fn_ran.set()
+        return 1
+
     def _worker() -> None:
         try:
-            loop_bridge_mod.run_on_loop(
-                loop,
-                lambda: 1,
-                timeout_s=hop_timeout_s,
-                schedule=_hold_schedule,
-                new_finished=hop_spies.new_finished,
+            outcomes.append(
+                loop_bridge_mod.run_on_loop(
+                    loop,
+                    _fn,
+                    timeout_s=hop_timeout_s,
+                    schedule=_hold_schedule,
+                    new_finished=hop_spies.new_finished,
+                )
             )
-        except LoopHopTimeout:
-            pass
+        except LoopHopTimeout as exc:
+            outcomes.append(exc)
 
     worker = threading.Thread(target=_worker, daemon=True)
     try:
         worker.start()
         _assert_recorded_hop_wait_timeout_s(hop_spies, hop_timeout_s)
         worker.join(timeout=5.0)
+        assert not worker.is_alive()
+        assert len(outcomes) == 1
+        assert isinstance(outcomes[0], LoopHopTimeout)
+        assert not fn_ran.is_set()
     finally:
         if worker.is_alive():
             worker.join(timeout=1.0)
@@ -1100,8 +1113,7 @@ async def test_client_event_loop_hop_skips_when_event_loop_not_running(
             disconnect_future = asyncio.run_coroutine_threadsafe(
                 client.async_disconnect(), kernel_loop
             )
-            with contextlib.suppress(Exception):
-                disconnect_future.result(timeout=5.0)
+            disconnect_future.result(timeout=5.0)
             kernel_loop.call_soon_threadsafe(kernel_loop.stop)
             kernel_runner.join(timeout=5.0)
             kernel_loop.close()
@@ -1511,8 +1523,8 @@ async def test_sync_authenticate_loop_hop_finalize_wins_race(
         assert result.ok is client.authenticated
         assert client.authenticated is True
     finally:
-        await _release_held_loop_hop_invoke(client_loop, held_invoke, sync_caller)
         fn_release.set()
+        await _release_held_loop_hop_invoke(client_loop, held_invoke, sync_caller)
     disconnect_future = asyncio.run_coroutine_threadsafe(client.async_disconnect(), kernel_loop)
     disconnect_future.result(timeout=5.0)
     kernel_loop.call_soon_threadsafe(kernel_loop.stop)
