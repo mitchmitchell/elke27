@@ -1790,3 +1790,20 @@ def test_session_wire_log_debug_redaction_mutation_would_leak_hex(
     s = _connected_session(monkeypatch, [frame], wire_log=True)
     s.recv_json(timeout_s=1)
     assert frame.hex() in caplog.text
+
+
+def test_run_on_loop_forwards_fn_error() -> None:
+    loop = asyncio.new_event_loop()
+    runner = threading.Thread(target=loop.run_forever, daemon=True)
+    runner.start()
+
+    def _boom() -> int:
+        raise ValueError("boom")
+
+    try:
+        with pytest.raises(ValueError, match="boom"):
+            loop_bridge_mod.run_on_loop(loop, _boom, timeout_s=5.0)
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        runner.join(timeout=5.0)
+        loop.close()
