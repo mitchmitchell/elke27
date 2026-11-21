@@ -2323,3 +2323,49 @@ def test_run_on_loop_forwards_runtime_error_from_fn() -> None:
         loop.call_soon_threadsafe(loop.stop)
         runner.join(timeout=5.0)
         loop.close()
+
+
+@pytest.mark.asyncio
+async def test_sync_authenticate_loop_hop_uses_request_timeout_s(
+    panel: _FakePanel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hop_timeout_s = 1.75
+    kernel_loop = asyncio.new_event_loop()
+    kernel_runner = threading.Thread(target=kernel_loop.run_forever, daemon=True)
+    kernel_runner.start()
+    connect_future = asyncio.run_coroutine_threadsafe(
+        _connected(reauth=True, request_timeout_s=hop_timeout_s), kernel_loop
+    )
+    client, _ = connect_future.result(timeout=5.0)
+    panel.auth = "silent"
+    waiter: concurrent.futures.Future[dict[str, object]] = concurrent.futures.Future()
+    hop_timeouts: list[float] = []
+    real_hop = loop_bridge_mod.run_on_loop
+
+    def _watch_hop(
+        hop_loop: asyncio.AbstractEventLoop,
+        fn: Callable[[], Any],
+        /,
+        **kwargs: Any,
+    ) -> Any:
+        hop_timeouts.append(kwargs["timeout_s"])
+        return real_hop(hop_loop, fn, **kwargs)
+
+    monkeypatch.setattr(client_mod, "run_on_loop", _watch_hop)
+
+    def _sync_auth() -> Any:
+        return client.request(("control", "authenticate"), pin=DUMMY_PIN, opaque=waiter)
+
+    sync_caller = _start_bounded_sync_caller(_sync_auth)
+    try:
+        await _until(lambda: any(_outbound_is_authenticate(m) for m in panel.wire()), timeout_s=5.0)
+        waiter.set_result({"success": True, "error_code": 0})
+        result = await _join_bounded_sync_caller(sync_caller)
+        assert result.ok
+        assert hop_timeouts == [hop_timeout_s]
+    finally:
+        disconnect_future = asyncio.run_coroutine_threadsafe(client.async_disconnect(), kernel_loop)
+        disconnect_future.result(timeout=5.0)
+        kernel_loop.call_soon_threadsafe(kernel_loop.stop)
+        kernel_runner.join(timeout=5.0)
+        kernel_loop.close()
