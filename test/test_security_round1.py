@@ -40,7 +40,7 @@ from elke27_lib.framing_loop import frame_build
 from elke27_lib.hello_thread import SessionKeys
 from elke27_lib.kernel_loop import DEFAULT_EVENT_QUEUE_MAXLEN, E27Kernel
 from elke27_lib.linking_thread import E27LinkKeys
-from elke27_lib.loop_bridge_thread import LoopHopTimeout
+from elke27_lib.loop_bridge_thread import LoopHopClosed, LoopHopTimeout
 from elke27_lib.presentation_loop import encrypt_schema0_envelope
 from elke27_lib.provisioning import Credentials
 from elke27_lib.session_thread import Session, SessionConfig, SessionInfo
@@ -630,6 +630,34 @@ async def _reconnect_expecting_no_authenticate(
     await _until(lambda: panel.auth_requests() == [])
 
 
+def _bounded_run_on_loop(
+    loop: asyncio.AbstractEventLoop,
+    fn: Callable[[], Any],
+    *,
+    timeout_s: float,
+    real_run: Callable[..., Any],
+    join_timeout_s: float = 2.0,
+    schedule: Callable[[Callable[[], None]], None] | None = None,
+) -> Any:
+    hop_out: list[Any] = []
+    hop_err: list[LoopHopTimeout | LoopHopClosed] = []
+
+    def _hop_worker() -> None:
+        try:
+            hop_out.append(real_run(loop, fn, timeout_s=timeout_s, schedule=schedule))
+        except (LoopHopTimeout, LoopHopClosed) as exc:
+            hop_err.append(exc)
+
+    worker = threading.Thread(target=_hop_worker, daemon=True)
+    worker.start()
+    worker.join(timeout=join_timeout_s)
+    if hop_err:
+        raise hop_err[0]
+    if hop_out:
+        return hop_out[0]
+    raise LoopHopTimeout from None
+
+
 async def _release_held_loop_hop_invoke(
     task: asyncio.Task[Any],
     loop: asyncio.AbstractEventLoop,
@@ -995,13 +1023,31 @@ async def test_sync_authenticate_loop_hop_caller_cancel_fn_never_runs(
 async def test_sync_authenticate_loop_hop_finalize_wins_race(
     panel: _FakePanel, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    client, _ = await _connected(reauth=True, request_timeout_s=1.0)
+    kernel_loop = asyncio.new_event_loop()
+    kernel_runner = threading.Thread(target=kernel_loop.run_forever, daemon=True)
+    kernel_runner.start()
+    connect_future = asyncio.run_coroutine_threadsafe(
+        _connected(reauth=True, request_timeout_s=1.0), kernel_loop
+    )
+    client, _ = connect_future.result(timeout=5.0)
     panel.auth = "silent"
     waiter: concurrent.futures.Future[dict[str, object]] = concurrent.futures.Future()
-    real_run = loop_bridge_mod.run_on_loop
+    real_prod = loop_bridge_mod.run_on_loop
     hop_timeout_s = 0.05
+    hop_arm_s = 0.5
     fn_started = threading.Event()
-    loop = asyncio.get_running_loop()
+    cancel_lost = threading.Event()
+    fn_release = threading.Event()
+    held_invoke: list[Callable[[], None]] = []
+    client_loop = kernel_loop
+    arm_loop = asyncio.new_event_loop()
+    arm_runner = threading.Thread(target=arm_loop.run_forever, daemon=True)
+    arm_runner.start()
+
+    def _hold_schedule(callback: Callable[[], None]) -> None:
+        if held_invoke:
+            return
+        held_invoke.append(callback)
 
     def _slow_run(
         loop: asyncio.AbstractEventLoop,
@@ -1011,17 +1057,25 @@ async def test_sync_authenticate_loop_hop_finalize_wins_race(
         timeout_s: float,
         schedule: Callable[[Callable[[], None]], None] | None = None,
     ) -> Any:
-        del schedule
+        del schedule, timeout_s
 
         def _blocked() -> Any:
             fn_started.set()
-            time.sleep(hop_timeout_s + 0.05)
+            cancel_lost.wait()
+            fn_release.wait()
             return fn()
 
-        return real_run(loop, _blocked, timeout_s=hop_timeout_s)
+        return _bounded_run_on_loop(
+            loop,
+            _blocked,
+            timeout_s=hop_arm_s,
+            real_run=real_prod,
+            schedule=_hold_schedule,
+        )
 
     monkeypatch.setattr(loop_bridge_mod, "run_on_loop", _slow_run)
     monkeypatch.setattr(client_mod, "run_on_loop", _slow_run)
+    monkeypatch.setattr("elke27_lib.client.run_on_loop", _slow_run)
 
     def _sync_auth() -> Any:
         return client.request(
@@ -1032,15 +1086,38 @@ async def test_sync_authenticate_loop_hop_finalize_wins_race(
 
     task = asyncio.create_task(asyncio.to_thread(_sync_auth))
     try:
-        await _until(lambda: any(_outbound_is_authenticate(m) for m in panel.wire()))
+        await _until(lambda: any(_outbound_is_authenticate(m) for m in panel.wire()), timeout_s=5.0)
         waiter.set_result({"success": True, "error_code": 0})
+        await _until(lambda: bool(held_invoke), timeout_s=5.0)
+        client_loop.call_soon_threadsafe(held_invoke.pop())
+        armed = threading.Event()
+
+        def _arm_cancel_lost() -> None:
+            arm_loop.call_later(hop_timeout_s, cancel_lost.set)
+            armed.set()
+
+        arm_loop.call_soon_threadsafe(_arm_cancel_lost)
+        assert await asyncio.to_thread(armed.wait, 5.0)
         assert await asyncio.to_thread(fn_started.wait, 5.0)
+        assert await asyncio.to_thread(cancel_lost.wait, 5.0)
+        await asyncio.to_thread(fn_release.set)
         result = await asyncio.wait_for(task, timeout=5.0)
         assert result.ok is client.authenticated
         assert client.authenticated is True
     finally:
-        await _release_held_loop_hop_invoke(task, loop, [])
-    await client.async_disconnect()
+        cancel_lost.set()
+        fn_release.set()
+        await _release_held_loop_hop_invoke(task, client_loop, held_invoke)
+        arm_loop.call_soon_threadsafe(arm_loop.stop)
+        arm_runner.join(timeout=2.0)
+        with contextlib.suppress(RuntimeError):
+            arm_loop.close()
+    disconnect_future = asyncio.run_coroutine_threadsafe(client.async_disconnect(), kernel_loop)
+    disconnect_future.result(timeout=5.0)
+    kernel_loop.call_soon_threadsafe(kernel_loop.stop)
+    kernel_runner.join(timeout=2.0)
+    with contextlib.suppress(RuntimeError):
+        kernel_loop.close()
 
 
 @pytest.mark.asyncio
@@ -1855,49 +1932,67 @@ def test_run_on_loop_finalize_wins_race() -> None:
     loop = asyncio.new_event_loop()
     runner = threading.Thread(target=loop.run_forever, daemon=True)
     runner.start()
+    arm_loop = asyncio.new_event_loop()
+    arm_runner = threading.Thread(target=arm_loop.run_forever, daemon=True)
+    arm_runner.start()
     hop_timeout_s = 0.05
     fn_started = threading.Event()
+    cancel_lost = threading.Event()
     fn_release = threading.Event()
 
     def _fn() -> int:
         fn_started.set()
+        cancel_lost.wait()
         fn_release.wait()
         return 11
 
     worker_result: list[int] = []
 
     def _worker() -> None:
-        worker_result.append(
-            loop_bridge_mod.run_on_loop(
-                loop,
-                _fn,
-                timeout_s=hop_timeout_s,
-            )
-        )
+        worker_result.append(loop_bridge_mod.run_on_loop(loop, _fn, timeout_s=hop_timeout_s))
+
+    armed = threading.Event()
+
+    def _arm_cancel_lost() -> None:
+        arm_loop.call_later(hop_timeout_s, cancel_lost.set)
+        armed.set()
 
     worker = threading.Thread(target=_worker, daemon=True)
     try:
+        arm_loop.call_soon_threadsafe(_arm_cancel_lost)
+        assert armed.wait(timeout=5.0)
         worker.start()
         assert fn_started.wait(timeout=5.0)
+        assert cancel_lost.wait(timeout=5.0)
         fn_release.set()
         worker.join(timeout=5.0)
         assert worker_result == [11]
     finally:
+        cancel_lost.set()
         fn_release.set()
         if worker.is_alive():
             worker.join(timeout=1.0)
         loop.call_soon_threadsafe(loop.stop)
         runner.join(timeout=5.0)
-        loop.close()
+        with contextlib.suppress(RuntimeError):
+            loop.close()
+        arm_loop.call_soon_threadsafe(arm_loop.stop)
+        arm_runner.join(timeout=2.0)
+        with contextlib.suppress(RuntimeError):
+            arm_loop.close()
 
 
 def test_run_on_loop_waits_for_fn_after_cancel_loses() -> None:
     loop = asyncio.new_event_loop()
     runner = threading.Thread(target=loop.run_forever, daemon=True)
     runner.start()
+    arm_loop = asyncio.new_event_loop()
+    arm_runner = threading.Thread(target=arm_loop.run_forever, daemon=True)
+    arm_runner.start()
     hop_timeout_s = 0.05
     fn_block = threading.Event()
     fn_claimed = threading.Event()
+    cancel_lost = threading.Event()
 
     def _fn() -> int:
         fn_claimed.set()
@@ -1907,27 +2002,35 @@ def test_run_on_loop_waits_for_fn_after_cancel_loses() -> None:
     worker_result: list[int] = []
 
     def _worker() -> None:
-        worker_result.append(
-            loop_bridge_mod.run_on_loop(
-                loop,
-                _fn,
-                timeout_s=hop_timeout_s,
-            )
-        )
+        worker_result.append(loop_bridge_mod.run_on_loop(loop, _fn, timeout_s=hop_timeout_s))
+
+    armed = threading.Event()
+
+    def _arm_cancel_lost() -> None:
+        arm_loop.call_later(hop_timeout_s, cancel_lost.set)
+        armed.set()
 
     worker = threading.Thread(target=_worker, daemon=True)
     try:
+        arm_loop.call_soon_threadsafe(_arm_cancel_lost)
+        assert armed.wait(timeout=5.0)
         worker.start()
         assert fn_claimed.wait(timeout=5.0)
-        time.sleep(hop_timeout_s * 4)
+        assert cancel_lost.wait(timeout=5.0)
         assert worker.is_alive()
         fn_block.set()
         worker.join(timeout=5.0)
         assert worker_result == [7]
     finally:
         fn_block.set()
+        cancel_lost.set()
         if worker.is_alive():
             worker.join(timeout=1.0)
         loop.call_soon_threadsafe(loop.stop)
         runner.join(timeout=5.0)
-        loop.close()
+        with contextlib.suppress(RuntimeError):
+            loop.close()
+        arm_loop.call_soon_threadsafe(arm_loop.stop)
+        arm_runner.join(timeout=2.0)
+        with contextlib.suppress(RuntimeError):
+            arm_loop.close()
