@@ -25,13 +25,11 @@ def run_on_loop(
     *,
     timeout_s: float,
     schedule: Callable[[Callable[[], None]], None] | None = None,
-    new_claim: Callable[[], concurrent.futures.Future[None]] | None = None,
     new_finished: Callable[[], threading.Event] | None = None,
 ) -> T:
     """Return fn()'s result when it ran; raise LoopHopTimeout when fn() did not run."""
-    claim_factory = new_claim if new_claim is not None else concurrent.futures.Future
     finished_factory = new_finished if new_finished is not None else threading.Event
-    claim = claim_factory()
+    claim = concurrent.futures.Future()
     finished = finished_factory()
     outcome: list[T] = []
     errors: list[BaseException] = []
