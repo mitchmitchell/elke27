@@ -1799,10 +1799,23 @@ def test_run_on_loop_forwards_fn_error() -> None:
     def _boom() -> int:
         raise ValueError("boom")
 
-    try:
-        with pytest.raises(ValueError, match="boom"):
+    worker_errors: list[BaseException] = []
+
+    def _worker() -> None:
+        try:
             loop_bridge_mod.run_on_loop(loop, _boom, timeout_s=5.0)
+        except ValueError as exc:
+            worker_errors.append(exc)
+
+    worker = threading.Thread(target=_worker, daemon=True)
+    try:
+        worker.start()
+        worker.join(timeout=5.0)
+        assert worker_errors and isinstance(worker_errors[0], ValueError)
+        assert str(worker_errors[0]) == "boom"
     finally:
+        if worker.is_alive():
+            worker.join(timeout=1.0)
         loop.call_soon_threadsafe(loop.stop)
         runner.join(timeout=5.0)
         loop.close()
@@ -1816,10 +1829,63 @@ def test_run_on_loop_forwards_runtime_error_from_fn() -> None:
     def _fail() -> int:
         raise RuntimeError("kernel not linked")
 
-    try:
-        with pytest.raises(RuntimeError, match="kernel not linked"):
+    worker_errors: list[BaseException] = []
+
+    def _worker() -> None:
+        try:
             loop_bridge_mod.run_on_loop(loop, _fail, timeout_s=5.0)
+        except RuntimeError as exc:
+            worker_errors.append(exc)
+
+    worker = threading.Thread(target=_worker, daemon=True)
+    try:
+        worker.start()
+        worker.join(timeout=5.0)
+        assert worker_errors and isinstance(worker_errors[0], RuntimeError)
+        assert str(worker_errors[0]) == "kernel not linked"
     finally:
+        if worker.is_alive():
+            worker.join(timeout=1.0)
+        loop.call_soon_threadsafe(loop.stop)
+        runner.join(timeout=5.0)
+        loop.close()
+
+
+def test_run_on_loop_finalize_wins_race() -> None:
+    loop = asyncio.new_event_loop()
+    runner = threading.Thread(target=loop.run_forever, daemon=True)
+    runner.start()
+    hop_timeout_s = 0.05
+    fn_started = threading.Event()
+    fn_release = threading.Event()
+
+    def _fn() -> int:
+        fn_started.set()
+        fn_release.wait()
+        return 11
+
+    worker_result: list[int] = []
+
+    def _worker() -> None:
+        worker_result.append(
+            loop_bridge_mod.run_on_loop(
+                loop,
+                _fn,
+                timeout_s=hop_timeout_s,
+            )
+        )
+
+    worker = threading.Thread(target=_worker, daemon=True)
+    try:
+        worker.start()
+        assert fn_started.wait(timeout=5.0)
+        fn_release.set()
+        worker.join(timeout=5.0)
+        assert worker_result == [11]
+    finally:
+        fn_release.set()
+        if worker.is_alive():
+            worker.join(timeout=1.0)
         loop.call_soon_threadsafe(loop.stop)
         runner.join(timeout=5.0)
         loop.close()
