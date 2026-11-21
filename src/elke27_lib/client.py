@@ -2419,32 +2419,39 @@ class Elke27Client:
             return _err(InvalidPin(f"Authenticate failed with error_code={error_code}"))
         return _err(InvalidPin("Authenticate failed with unknown error."))
 
+    def _disconnected_loop_hop_error(self) -> Result[Any]:
+        return _err(Elke27DisconnectedError("Connection lost during the command."))
+
     def _run_on_client_event_loop(self, fn: Callable[[], Any], *, timeout_s: float) -> Any:
         loop = self._event_loop
-        if (
-            loop is not None
-            and loop.is_running()
-            and not self._kernel.current_thread_runs_bound_loop()
-        ):
-            finished = threading.Event()
-            outcome: list[Any] = []
-            error: list[Exception] = []
+        if loop is None or not loop.is_running() or self._kernel.current_thread_runs_bound_loop():
+            return fn()
 
-            def _invoke() -> None:
-                try:
-                    outcome.append(fn())
-                except _CLIENT_EXCEPTIONS as exc:
-                    error.append(exc)
-                finally:
-                    finished.set()
+        hop: concurrent.futures.Future[None] = concurrent.futures.Future()
+        finished = threading.Event()
+        outcome: list[Any] = []
 
+        def _invoke() -> None:
+            if not hop.set_running_or_notify_cancel():
+                return
+            try:
+                outcome.append(fn())
+            finally:
+                finished.set()
+
+        try:
             loop.call_soon_threadsafe(_invoke)
-            if not finished.wait(timeout=timeout_s):
-                raise TimeoutError
-            if error:
-                raise error[0]
-            return outcome[0]
-        return fn()
+        except RuntimeError:
+            return self._disconnected_loop_hop_error()
+
+        if not finished.wait(timeout=timeout_s):
+            hop.cancel()
+            if not hop.cancel():
+                finished.wait(timeout=timeout_s)
+            return self._disconnected_loop_hop_error()
+        if not outcome:
+            return self._disconnected_loop_hop_error()
+        return outcome[0]
 
     def _cancel_reauth(self) -> bool:
         """Cancel any in-flight re-auth; its outcome is ignored from now on.
@@ -3829,12 +3836,13 @@ class Elke27Client:
             detail = f"route={route[0]}.{route[1]}"
             return _err(self._normalize_error(exc, phase="request", detail=detail))
 
+        wait_timeout_s = self._kernel.request_timeout_s
         try:
             result_fn = getattr(auth_waiter, "result", None)
             if callable(result_fn):
-                result = result_fn(timeout=10.0)
+                result = result_fn(timeout=wait_timeout_s)
             else:
-                result = auth_waiter.get(timeout=10.0)
+                result = auth_waiter.get(timeout=wait_timeout_s)
         except (
             TimeoutError,
             concurrent.futures.TimeoutError,
@@ -3851,16 +3859,21 @@ class Elke27Client:
         result_payload = cast(dict[str, object], result)
         success = result_payload.get("success")
         error_code = result_payload.get("error_code")
-        return self._run_on_client_event_loop(
-            lambda: self._finish_sync_authenticate_on_loop(
-                auth_epoch,
-                success=success,
-                error_code=error_code,
-                accepted_pin=accepted_pin,
-                seq=seq,
-            ),
-            timeout_s=10.0,
-        )
+        try:
+            return self._run_on_client_event_loop(
+                lambda: self._finish_sync_authenticate_on_loop(
+                    auth_epoch,
+                    success=success,
+                    error_code=error_code,
+                    accepted_pin=accepted_pin,
+                    seq=seq,
+                ),
+                timeout_s=self._kernel.request_timeout_s,
+            )
+        except TimeoutError:
+            return self._disconnected_loop_hop_error()
+        except RuntimeError:
+            return self._disconnected_loop_hop_error()
 
     async def _async_authenticate(
         self, *, pin: int, timeout_s: float | None

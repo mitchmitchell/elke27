@@ -742,6 +742,73 @@ async def test_sync_stale_auth_failure_leaves_new_session_pin(
 
 
 @pytest.mark.asyncio
+async def test_sync_authenticate_loop_hop_closed_returns_result(
+    panel: _FakePanel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _ = await _connected(reauth=True, request_timeout_s=0.2)
+    waiter: concurrent.futures.Future[dict[str, object]] = concurrent.futures.Future()
+    panel.auth = "silent"
+    loop = asyncio.get_running_loop()
+    real_cst = loop.call_soon_threadsafe
+
+    def _closed_finalize_invoke(fn: Callable[..., None], /, *args: Any, **kwargs: Any) -> None:
+        if getattr(fn, "__name__", None) == "_invoke":
+            raise RuntimeError("Event loop is closed")
+        real_cst(fn, *args, **kwargs)
+
+    def _sync_auth() -> Any:
+        return client.request(("control", "authenticate"), pin=DUMMY_PIN, opaque=waiter)
+
+    monkeypatch.setattr(loop, "call_soon_threadsafe", _closed_finalize_invoke)
+    task = asyncio.create_task(asyncio.to_thread(_sync_auth))
+    await _until(lambda: any(_outbound_is_authenticate(m) for m in panel.wire()))
+    waiter.set_result({"success": True, "error_code": 0})
+    result = await asyncio.wait_for(task, timeout=1.0)
+    assert not result.ok
+    assert isinstance(result.error, Elke27DisconnectedError)
+    assert client.authenticated is False
+    await client.async_disconnect()
+
+
+@pytest.mark.asyncio
+async def test_sync_authenticate_loop_hop_timeout_does_not_cache_pin(
+    panel: _FakePanel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, clock = await _connected(reauth=True, request_timeout_s=0.05)
+    panel.auth = "silent"
+    loop = asyncio.get_running_loop()
+    waiter: concurrent.futures.Future[dict[str, object]] = concurrent.futures.Future()
+    held_invoke: list[Callable[[], None]] = []
+    real_cst = loop.call_soon_threadsafe
+
+    def _hold_finalize_invoke(fn: Callable[..., None], /, *args: Any, **kwargs: Any) -> None:
+        if getattr(fn, "__name__", None) == "_invoke":
+            held_invoke.append(fn)
+            return
+        real_cst(fn, *args, **kwargs)
+
+    def _sync_auth() -> Any:
+        return client.request(
+            ("control", "authenticate"),
+            pin=DUMMY_PIN,
+            opaque=waiter,
+        )
+
+    task = asyncio.create_task(asyncio.to_thread(_sync_auth))
+    await _until(lambda: any(_outbound_is_authenticate(m) for m in panel.wire()))
+    monkeypatch.setattr(loop, "call_soon_threadsafe", _hold_finalize_invoke)
+    waiter.set_result({"success": True, "error_code": 0})
+    result = await asyncio.wait_for(task, timeout=2.0)
+    assert not result.ok
+    assert isinstance(result.error, Elke27DisconnectedError)
+    assert client.authenticated is False
+    for invoke in held_invoke:
+        real_cst(invoke)
+    await _reconnect_expecting_no_authenticate(client, panel, clock)
+    await client.async_disconnect()
+
+
+@pytest.mark.asyncio
 async def test_deliberate_close_event_clears_pin_even_with_opt_in(panel: _FakePanel) -> None:
     client, _ = await _connected(reauth=True)
     assert await _authenticate(client) is True
