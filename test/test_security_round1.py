@@ -8,6 +8,7 @@ only the transport faked, and assert on public state, the wire and the logs.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextlib
 import json
 import logging
@@ -28,6 +29,7 @@ from elke27_lib.errors import (
     E27HelloTimeout,
     E27ProtocolError,
     E27ProvisioningTimeout,
+    Elke27DisconnectedError,
     ProtocolError,
 )
 from elke27_lib.events import ConnectionStateChanged
@@ -89,11 +91,17 @@ class _FakePanel:
     def reply(self, session: _FakeSession, msg: dict[str, Any]) -> None:
         loop = asyncio.get_running_loop()
         seq = msg["seq"]
-        if "authenticate" in msg:
+        control = msg.get("control")
+        is_auth = "authenticate" in msg or (isinstance(control, dict) and "authenticate" in control)
+        if is_auth:
             if self.auth == "silent":
                 return
             code = 11008 if self.auth == "refuse" else 0
-            reply = {"seq": seq, "authenticate": {"error_code": code}}
+            reply = (
+                {"seq": seq, "control": {"authenticate": {"error_code": code}}}
+                if isinstance(control, dict) and "authenticate" in control
+                else {"seq": seq, "authenticate": {"error_code": code}}
+            )
             if self.auth == "hold":
                 self.held.append((session, reply))
                 return
@@ -192,6 +200,21 @@ async def _settle() -> None:
 
 def _pin_messages(wire: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [m for m in wire if str(DUMMY_PIN) in json.dumps(m)]
+
+
+def _outbound_is_authenticate(msg: dict[str, Any]) -> bool:
+    if "authenticate" in msg:
+        return True
+    control = msg.get("control")
+    return isinstance(control, dict) and "authenticate" in control
+
+
+def _panel_auth_reply(msg: dict[str, Any], *, error_code: int) -> dict[str, Any]:
+    seq = msg["seq"]
+    control = msg.get("control")
+    if isinstance(control, dict) and "authenticate" in control:
+        return {"seq": seq, "control": {"authenticate": {"error_code": error_code}}}
+    return {"seq": seq, "authenticate": {"error_code": error_code}}
 
 
 # ---------------------------------------------------------------- D2
@@ -575,6 +598,146 @@ async def test_inflight_reauth_never_restores_pin(
     await _settle()
     assert panel.auth_requests() == []
     assert client.authenticated is False
+    await client.async_disconnect()
+
+
+def _auth_success_then_link_drop_reply(panel: _FakePanel, real_reply: Any) -> Any:
+    def _race_reply(session: _FakeSession, msg: dict[str, Any]) -> None:
+        if not _outbound_is_authenticate(msg):
+            real_reply(session, msg)
+            return
+        loop = asyncio.get_running_loop()
+        reply = _panel_auth_reply(msg, error_code=0)
+        loop.call_soon(session.on_message, reply)
+        loop.call_soon(panel.drop_link)
+
+    return _race_reply
+
+
+def _hold_authenticate_reply(panel: _FakePanel, real_reply: Any, *, error_code: int) -> Any:
+    def _hold_reply(session: _FakeSession, msg: dict[str, Any]) -> None:
+        if not _outbound_is_authenticate(msg):
+            real_reply(session, msg)
+            return
+        panel.held.append((session, _panel_auth_reply(msg, error_code=error_code)))
+
+    return _hold_reply
+
+
+async def _reconnect_expecting_no_authenticate(
+    client: Elke27Client, panel: _FakePanel, clock: _Clock
+) -> None:
+    await _drop_and_reconnect(client, panel, clock)
+    assert await client.wait_ready(2.0)
+    await _until(lambda: panel.auth_requests() == [])
+
+
+@pytest.mark.asyncio
+async def test_async_authenticate_epoch_guard_on_stale_success(
+    panel: _FakePanel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, clock = await _connected(reauth=True)
+    real_reply = panel.reply
+    monkeypatch.setattr(panel, "reply", _auth_success_then_link_drop_reply(panel, real_reply))
+    result = await client.async_execute("control_authenticate", pin=DUMMY_PIN)
+    assert not result.ok
+    assert isinstance(result.error, Elke27DisconnectedError)
+    assert client.authenticated is False
+    await _reconnect_expecting_no_authenticate(client, panel, clock)
+    await client.async_disconnect()
+
+
+@pytest.mark.asyncio
+async def test_sync_authenticate_epoch_guard_on_stale_success(
+    panel: _FakePanel, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    client, clock = await _connected(reauth=True)
+    panel.auth = "silent"
+    loop = asyncio.get_running_loop()
+    waiter: concurrent.futures.Future[dict[str, object]] = concurrent.futures.Future()
+    caplog.set_level(logging.WARNING)
+
+    def _sync_auth() -> Any:
+        return client.request(
+            ("control", "authenticate"),
+            pin=DUMMY_PIN,
+            opaque=waiter,
+        )
+
+    stale = asyncio.create_task(asyncio.to_thread(_sync_auth))
+    await _until(lambda: any(_outbound_is_authenticate(m) for m in panel.wire()))
+    loop.call_soon(panel.drop_link)
+    await _until(
+        lambda: any(
+            "Panel connection lost" in r.getMessage()
+            for r in caplog.records
+            if r.levelno >= logging.WARNING
+        )
+    )
+    waiter.set_result({"success": True, "error_code": 0})
+    result = await stale
+    assert not result.ok
+    assert isinstance(result.error, Elke27DisconnectedError)
+    assert client.authenticated is False
+    await _reconnect_expecting_no_authenticate(client, panel, clock)
+    await client.async_disconnect()
+
+
+@pytest.mark.asyncio
+async def test_async_stale_auth_failure_leaves_new_session_pin(
+    panel: _FakePanel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, clock = await _connected(reauth=True)
+    real_reply = panel.reply
+    monkeypatch.setattr(
+        panel, "reply", _hold_authenticate_reply(panel, real_reply, error_code=11008)
+    )
+    stale = asyncio.create_task(client.async_execute("control_authenticate", pin=DUMMY_PIN))
+    await _until(lambda: bool(panel.held))
+    monkeypatch.setattr(panel, "reply", real_reply)
+    await _drop_and_reconnect(client, panel, clock)
+    assert await client.wait_ready(2.0)
+    assert await _authenticate(client) is True
+    panel.release_held()
+    stale_result = await stale
+    assert not stale_result.ok
+    assert isinstance(stale_result.error, Elke27DisconnectedError)
+    assert client.authenticated is True
+    await _drop_and_reconnect(client, panel, clock)
+    await _until(lambda: client.authenticated)
+    assert len(panel.auth_requests()) == 1
+    await client.async_disconnect()
+
+
+@pytest.mark.asyncio
+async def test_sync_stale_auth_failure_leaves_new_session_pin(
+    panel: _FakePanel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, clock = await _connected(reauth=True)
+    panel.auth = "silent"
+    waiter: concurrent.futures.Future[dict[str, object]] = concurrent.futures.Future()
+
+    def _sync_auth() -> Any:
+        return client.request(
+            ("control", "authenticate"),
+            pin=DUMMY_PIN,
+            opaque=waiter,
+        )
+
+    stale = asyncio.create_task(asyncio.to_thread(_sync_auth))
+    await _until(lambda: any(_outbound_is_authenticate(m) for m in panel.wire()))
+    await _drop_and_reconnect(client, panel, clock)
+    assert await client.wait_ready(2.0)
+    panel.auth = "accept"
+    assert await _authenticate(client) is True
+    waiter.set_result({"success": False, "error_code": 11008})
+    stale_result = await stale
+    assert not stale_result.ok
+    assert isinstance(stale_result.error, Elke27DisconnectedError)
+    assert client.authenticated is True
+    await _drop_and_reconnect(client, panel, clock)
+    await _until(lambda: client.authenticated)
+    assert len(panel.auth_requests()) == 1
     await client.async_disconnect()
 
 

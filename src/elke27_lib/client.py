@@ -2399,6 +2399,53 @@ class Elke27Client:
         self._authenticated = False
         self._auth_role = None
 
+    def _finish_sync_authenticate_on_loop(
+        self,
+        auth_epoch: int,
+        *,
+        success: object,
+        error_code: object,
+        accepted_pin: int | None,
+        seq: int,
+    ) -> Result[int]:
+        if auth_epoch != self._reauth_epoch:
+            return _err(Elke27DisconnectedError("Connection lost during the command."))
+        if success is True:
+            if accepted_pin is not None:
+                self._remember_auth_pin(accepted_pin)
+            return _ok(seq)
+        self._mark_auth_failed()
+        if isinstance(error_code, int):
+            return _err(InvalidPin(f"Authenticate failed with error_code={error_code}"))
+        return _err(InvalidPin("Authenticate failed with unknown error."))
+
+    def _run_on_client_event_loop(self, fn: Callable[[], Any], *, timeout_s: float) -> Any:
+        loop = self._event_loop
+        if (
+            loop is not None
+            and loop.is_running()
+            and not self._kernel.current_thread_runs_bound_loop()
+        ):
+            finished = threading.Event()
+            outcome: list[Any] = []
+            error: list[Exception] = []
+
+            def _invoke() -> None:
+                try:
+                    outcome.append(fn())
+                except _CLIENT_EXCEPTIONS as exc:
+                    error.append(exc)
+                finally:
+                    finished.set()
+
+            loop.call_soon_threadsafe(_invoke)
+            if not finished.wait(timeout=timeout_s):
+                raise TimeoutError
+            if error:
+                raise error[0]
+            return outcome[0]
+        return fn()
+
     def _cancel_reauth(self) -> bool:
         """Cancel any in-flight re-auth; its outcome is ignored from now on.
 
@@ -3288,7 +3335,10 @@ class Elke27Client:
             else:
                 return _err(Elke27InvalidArgument("PIN must be a non-empty digit string."))
 
+            auth_epoch = self._reauth_epoch
             auth_result = await self._async_authenticate(pin=pin_int, timeout_s=timeout_s)
+            if auth_epoch != self._reauth_epoch:
+                return _err(Elke27DisconnectedError("Connection lost during the command."))
             if auth_result.ok:
                 self._remember_auth_pin(pin_int)
             else:
@@ -3772,6 +3822,7 @@ class Elke27Client:
             accepted_pin = int(pin_value)
         elif isinstance(pin_value, int) and not isinstance(pin_value, bool):
             accepted_pin = pin_value
+        auth_epoch = self._reauth_epoch
         try:
             seq = self._kernel.request(route, pending=pending, opaque=auth_waiter, **kwargs)
         except _CLIENT_EXCEPTIONS as exc:
@@ -3800,14 +3851,16 @@ class Elke27Client:
         result_payload = cast(dict[str, object], result)
         success = result_payload.get("success")
         error_code = result_payload.get("error_code")
-        if success is True:
-            if accepted_pin is not None:
-                self._remember_auth_pin(accepted_pin)
-            return _ok(seq)
-        self._mark_auth_failed()
-        if isinstance(error_code, int):
-            return _err(InvalidPin(f"Authenticate failed with error_code={error_code}"))
-        return _err(InvalidPin("Authenticate failed with unknown error."))
+        return self._run_on_client_event_loop(
+            lambda: self._finish_sync_authenticate_on_loop(
+                auth_epoch,
+                success=success,
+                error_code=error_code,
+                accepted_pin=accepted_pin,
+                seq=seq,
+            ),
+            timeout_s=10.0,
+        )
 
     async def _async_authenticate(
         self, *, pin: int, timeout_s: float | None
