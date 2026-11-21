@@ -631,20 +631,32 @@ async def _reconnect_expecting_no_authenticate(
 
 
 class _LoopHopRunSpies:
-    __slots__ = ("waiting_after_loss", "post_loss_timeouts")
+    __slots__ = (
+        "waiting_after_loss",
+        "post_loss_timeouts",
+        "new_claim",
+        "new_finished",
+    )
 
-    def __init__(self) -> None:
-        self.waiting_after_loss = threading.Event()
-        self.post_loss_timeouts: list[float | None] = []
+    def __init__(
+        self,
+        *,
+        waiting_after_loss: threading.Event,
+        post_loss_timeouts: list[float | None],
+        new_claim: Callable[[], concurrent.futures.Future[Any]],
+        new_finished: Callable[[], threading.Event],
+    ) -> None:
+        self.waiting_after_loss = waiting_after_loss
+        self.post_loss_timeouts = post_loss_timeouts
+        self.new_claim = new_claim
+        self.new_finished = new_finished
 
 
-def _install_loop_hop_run_spies(
-    monkeypatch: pytest.MonkeyPatch,
-    cancel_lost: threading.Event,
-) -> _LoopHopRunSpies:
-    spies = _LoopHopRunSpies()
+def _install_loop_hop_run_spies(cancel_lost: threading.Event) -> _LoopHopRunSpies:
     real_future = loop_bridge_mod.concurrent.futures.Future
     real_event = loop_bridge_mod.threading.Event
+    waiting_after_loss = threading.Event()
+    post_loss_timeouts: list[float | None] = []
 
     def _claim_factory() -> concurrent.futures.Future[Any]:
         claim = real_future()
@@ -662,16 +674,19 @@ def _install_loop_hop_run_spies(
     class _FinishedEvent(real_event):
         def wait(self, timeout: float | None = None) -> bool:
             if cancel_lost.is_set():
-                spies.waiting_after_loss.set()
-                spies.post_loss_timeouts.append(timeout)
+                waiting_after_loss.set()
+                post_loss_timeouts.append(timeout)
             return super().wait(timeout)
 
     def _finished_factory() -> threading.Event:
         return _FinishedEvent()
 
-    monkeypatch.setattr(loop_bridge_mod, "_new_claim", _claim_factory)
-    monkeypatch.setattr(loop_bridge_mod, "_new_finished", _finished_factory)
-    return spies
+    return _LoopHopRunSpies(
+        waiting_after_loss=waiting_after_loss,
+        post_loss_timeouts=post_loss_timeouts,
+        new_claim=_claim_factory,
+        new_finished=_finished_factory,
+    )
 
 
 def _bounded_run_on_loop(
@@ -682,13 +697,24 @@ def _bounded_run_on_loop(
     real_run: Callable[..., Any],
     join_timeout_s: float = 2.0,
     schedule: Callable[[Callable[[], None]], None] | None = None,
+    new_claim: Callable[[], concurrent.futures.Future[Any]] | None = None,
+    new_finished: Callable[[], threading.Event] | None = None,
 ) -> Any:
     hop_out: list[Any] = []
     hop_err: list[LoopHopTimeout | LoopHopClosed] = []
 
     def _hop_worker() -> None:
         try:
-            hop_out.append(real_run(loop, fn, timeout_s=timeout_s, schedule=schedule))
+            hop_out.append(
+                real_run(
+                    loop,
+                    fn,
+                    timeout_s=timeout_s,
+                    schedule=schedule,
+                    new_claim=new_claim,
+                    new_finished=new_finished,
+                )
+            )
         except (LoopHopTimeout, LoopHopClosed) as exc:
             hop_err.append(exc)
 
@@ -1084,7 +1110,7 @@ async def test_sync_authenticate_loop_hop_finalize_wins_race(
     hop_returned = threading.Event()
     held_invoke: list[Callable[[], None]] = []
     client_loop = kernel_loop
-    hop_spies = _install_loop_hop_run_spies(monkeypatch, cancel_lost)
+    hop_spies = _install_loop_hop_run_spies(cancel_lost)
 
     def _hold_schedule(callback: Callable[[], None]) -> None:
         if held_invoke:
@@ -1098,8 +1124,10 @@ async def test_sync_authenticate_loop_hop_finalize_wins_race(
         *,
         timeout_s: float,
         schedule: Callable[[Callable[[], None]], None] | None = None,
+        new_claim: Callable[[], concurrent.futures.Future[Any]] | None = None,
+        new_finished: Callable[[], threading.Event] | None = None,
     ) -> Any:
-        del schedule, timeout_s
+        del schedule, timeout_s, new_claim, new_finished
 
         def _blocked() -> Any:
             fn_started.set()
@@ -1113,6 +1141,8 @@ async def test_sync_authenticate_loop_hop_finalize_wins_race(
                 timeout_s=hop_timeout_s,
                 real_run=real_prod,
                 schedule=_hold_schedule,
+                new_claim=hop_spies.new_claim,
+                new_finished=hop_spies.new_finished,
             )
         finally:
             hop_returned.set()
@@ -1964,7 +1994,7 @@ def test_run_on_loop_forwards_runtime_error_from_fn() -> None:
         loop.close()
 
 
-def test_run_on_loop_finalize_wins_race(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_on_loop_finalize_wins_race() -> None:
     loop = asyncio.new_event_loop()
     runner = threading.Thread(target=loop.run_forever, daemon=True)
     runner.start()
@@ -1973,7 +2003,7 @@ def test_run_on_loop_finalize_wins_race(monkeypatch: pytest.MonkeyPatch) -> None
     cancel_lost = threading.Event()
     fn_release = threading.Event()
     hop_returned = threading.Event()
-    hop_spies = _install_loop_hop_run_spies(monkeypatch, cancel_lost)
+    hop_spies = _install_loop_hop_run_spies(cancel_lost)
 
     def _fn() -> int:
         fn_started.set()
@@ -1984,7 +2014,15 @@ def test_run_on_loop_finalize_wins_race(monkeypatch: pytest.MonkeyPatch) -> None
 
     def _worker() -> None:
         try:
-            worker_result.append(loop_bridge_mod.run_on_loop(loop, _fn, timeout_s=hop_timeout_s))
+            worker_result.append(
+                loop_bridge_mod.run_on_loop(
+                    loop,
+                    _fn,
+                    timeout_s=hop_timeout_s,
+                    new_claim=hop_spies.new_claim,
+                    new_finished=hop_spies.new_finished,
+                )
+            )
         finally:
             hop_returned.set()
 
@@ -2013,7 +2051,7 @@ def test_run_on_loop_finalize_wins_race(monkeypatch: pytest.MonkeyPatch) -> None
             loop.close()
 
 
-def test_run_on_loop_waits_for_fn_after_cancel_loses(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_on_loop_waits_for_fn_after_cancel_loses() -> None:
     loop = asyncio.new_event_loop()
     runner = threading.Thread(target=loop.run_forever, daemon=True)
     runner.start()
@@ -2022,7 +2060,7 @@ def test_run_on_loop_waits_for_fn_after_cancel_loses(monkeypatch: pytest.MonkeyP
     fn_claimed = threading.Event()
     cancel_lost = threading.Event()
     hop_returned = threading.Event()
-    hop_spies = _install_loop_hop_run_spies(monkeypatch, cancel_lost)
+    hop_spies = _install_loop_hop_run_spies(cancel_lost)
 
     def _fn() -> int:
         fn_claimed.set()
@@ -2033,7 +2071,15 @@ def test_run_on_loop_waits_for_fn_after_cancel_loses(monkeypatch: pytest.MonkeyP
 
     def _worker() -> None:
         try:
-            worker_result.append(loop_bridge_mod.run_on_loop(loop, _fn, timeout_s=hop_timeout_s))
+            worker_result.append(
+                loop_bridge_mod.run_on_loop(
+                    loop,
+                    _fn,
+                    timeout_s=hop_timeout_s,
+                    new_claim=hop_spies.new_claim,
+                    new_finished=hop_spies.new_finished,
+                )
+            )
         finally:
             hop_returned.set()
 
