@@ -813,6 +813,51 @@ async def test_sync_authenticate_loop_hop_timeout_does_not_cache_pin(
 
 
 @pytest.mark.asyncio
+async def test_sync_authenticate_loop_hop_abandon_after_started_disconnect(
+    panel: _FakePanel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, clock = await _connected(reauth=True, request_timeout_s=0.05)
+    panel.auth = "silent"
+    waiter: concurrent.futures.Future[dict[str, object]] = concurrent.futures.Future()
+    claim_yield = asyncio.Event()
+    hop_started = asyncio.Event()
+    real_sleep = asyncio.sleep
+
+    async def _sleep_at_claim(delay: float, /) -> None:
+        if delay == 0:
+            hop_started.set()
+            await claim_yield.wait()
+        await real_sleep(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", _sleep_at_claim)
+
+    def _sync_auth() -> Any:
+        return client.request(
+            ("control", "authenticate"),
+            pin=DUMMY_PIN,
+            opaque=waiter,
+        )
+
+    task = asyncio.create_task(asyncio.to_thread(_sync_auth))
+    await _until(lambda: any(_outbound_is_authenticate(m) for m in panel.wire()))
+    waiter.set_result({"success": True, "error_code": 0})
+    hop_deadline = asyncio.Event()
+    asyncio.get_running_loop().call_later(0.06, hop_deadline.set)
+    await hop_started.wait()
+    await hop_deadline.wait()
+    try:
+        claim_yield.set()
+        result = await asyncio.wait_for(task, timeout=5.0)
+        assert not result.ok
+        assert isinstance(result.error, Elke27DisconnectedError)
+        assert client.authenticated is False
+        await _reconnect_expecting_no_authenticate(client, panel, clock)
+    finally:
+        claim_yield.set()
+    await client.async_disconnect()
+
+
+@pytest.mark.asyncio
 async def test_deliberate_close_event_clears_pin_even_with_opt_in(panel: _FakePanel) -> None:
     client, _ = await _connected(reauth=True)
     assert await _authenticate(client) is True

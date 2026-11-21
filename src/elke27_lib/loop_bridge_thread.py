@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import threading
 from collections.abc import Coroutine
 from typing import Any, TypeVar
@@ -16,6 +17,13 @@ class LoopHopTimeout(Exception):
 
 class LoopHopClosed(Exception):
     """Raised when the event loop could not accept a thread-safe coroutine submission."""
+
+
+def _hop_result_after_abandon(hop: concurrent.futures.Future[T]) -> T:
+    try:
+        return hop.result()
+    except concurrent.futures.CancelledError:
+        raise LoopHopTimeout from None
 
 
 def run_coroutine_on_loop(
@@ -37,9 +45,9 @@ def run_coroutine_on_loop(
     except TimeoutError:
         abandoned.set()
         if started.is_set():
-            return hop.result()
+            return _hop_result_after_abandon(hop)
         if hop.cancel():
             raise LoopHopTimeout from None
         if started.is_set():
-            return hop.result()
+            return _hop_result_after_abandon(hop)
         raise LoopHopTimeout from None

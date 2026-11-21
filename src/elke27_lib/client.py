@@ -2436,6 +2436,7 @@ class Elke27Client:
 
         async def _claimed() -> _LoopHopT:
             started.set()
+            await asyncio.sleep(0)
             if abandoned.is_set():
                 raise asyncio.CancelledError()
             return fn()
