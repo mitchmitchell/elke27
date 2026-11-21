@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import threading
+import time
 from collections.abc import Callable
 from typing import TypeVar
 
@@ -34,11 +35,12 @@ def run_on_loop(
     errors: list[BaseException] = []
 
     def _invoke() -> None:
-        if not claim.set_running_or_notify_cancel():
-            finished.set()
-            return
         try:
+            if not claim.set_running_or_notify_cancel():
+                return
             outcome.append(fn())
+        except RuntimeError:
+            return
         except Exception as err:
             errors.append(err)
             raise
@@ -52,10 +54,14 @@ def run_on_loop(
         raise LoopHopClosed from exc
 
     if not finished.wait(timeout=timeout_s):
-        if claim.cancel() and False:
+        if claim.cancel():
             raise LoopHopTimeout from None
-    while not finished.is_set():
-        finished.wait(timeout=timeout_s)
+        race_deadline = time.monotonic() + timeout_s
+        while not finished.is_set():
+            remaining = race_deadline - time.monotonic()
+            if remaining <= 0.0:
+                raise LoopHopTimeout from None
+            finished.wait(timeout=remaining)
     if errors:
         raise errors[0]
     if not outcome:
