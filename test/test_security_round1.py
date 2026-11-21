@@ -630,6 +630,23 @@ async def _reconnect_expecting_no_authenticate(
     await _until(lambda: panel.auth_requests() == [])
 
 
+def _spawn_cancel_lost_after_fn_running(
+    fn_running: threading.Event,
+    cancel_lost: threading.Event,
+    hop_timeout_s: float,
+) -> None:
+    def _mark() -> None:
+        fn_running.wait()
+        threading.Event().wait(timeout=hop_timeout_s)
+        cancel_lost.set()
+
+    threading.Thread(target=_mark, daemon=True).start()
+
+
+def _wait_one_hop_timeout(hop_timeout_s: float) -> None:
+    threading.Event().wait(timeout=hop_timeout_s)
+
+
 def _bounded_run_on_loop(
     loop: asyncio.AbstractEventLoop,
     fn: Callable[[], Any],
@@ -1034,15 +1051,12 @@ async def test_sync_authenticate_loop_hop_finalize_wins_race(
     waiter: concurrent.futures.Future[dict[str, object]] = concurrent.futures.Future()
     real_prod = loop_bridge_mod.run_on_loop
     hop_timeout_s = 0.05
-    hop_arm_s = 0.5
     fn_started = threading.Event()
     cancel_lost = threading.Event()
     fn_release = threading.Event()
+    hop_returned = threading.Event()
     held_invoke: list[Callable[[], None]] = []
     client_loop = kernel_loop
-    arm_loop = asyncio.new_event_loop()
-    arm_runner = threading.Thread(target=arm_loop.run_forever, daemon=True)
-    arm_runner.start()
 
     def _hold_schedule(callback: Callable[[], None]) -> None:
         if held_invoke:
@@ -1061,17 +1075,19 @@ async def test_sync_authenticate_loop_hop_finalize_wins_race(
 
         def _blocked() -> Any:
             fn_started.set()
-            cancel_lost.wait()
             fn_release.wait()
             return fn()
 
-        return _bounded_run_on_loop(
-            loop,
-            _blocked,
-            timeout_s=hop_arm_s,
-            real_run=real_prod,
-            schedule=_hold_schedule,
-        )
+        try:
+            return _bounded_run_on_loop(
+                loop,
+                _blocked,
+                timeout_s=hop_timeout_s,
+                real_run=real_prod,
+                schedule=_hold_schedule,
+            )
+        finally:
+            hop_returned.set()
 
     monkeypatch.setattr(loop_bridge_mod, "run_on_loop", _slow_run)
     monkeypatch.setattr(client_mod, "run_on_loop", _slow_run)
@@ -1084,34 +1100,29 @@ async def test_sync_authenticate_loop_hop_finalize_wins_race(
             opaque=waiter,
         )
 
+    _spawn_cancel_lost_after_fn_running(fn_started, cancel_lost, hop_timeout_s)
     task = asyncio.create_task(asyncio.to_thread(_sync_auth))
     try:
         await _until(lambda: any(_outbound_is_authenticate(m) for m in panel.wire()), timeout_s=5.0)
         waiter.set_result({"success": True, "error_code": 0})
         await _until(lambda: bool(held_invoke), timeout_s=5.0)
         client_loop.call_soon_threadsafe(held_invoke.pop())
-        armed = threading.Event()
-
-        def _arm_cancel_lost() -> None:
-            arm_loop.call_later(hop_timeout_s, cancel_lost.set)
-            armed.set()
-
-        arm_loop.call_soon_threadsafe(_arm_cancel_lost)
-        assert await asyncio.to_thread(armed.wait, 5.0)
         assert await asyncio.to_thread(fn_started.wait, 5.0)
         assert await asyncio.to_thread(cancel_lost.wait, 5.0)
+        assert not hop_returned.is_set()
+        assert not task.done()
+        await asyncio.to_thread(_wait_one_hop_timeout, hop_timeout_s)
+        assert not hop_returned.is_set()
+        assert not task.done()
         await asyncio.to_thread(fn_release.set)
         result = await asyncio.wait_for(task, timeout=5.0)
+        assert hop_returned.is_set()
         assert result.ok is client.authenticated
         assert client.authenticated is True
     finally:
         cancel_lost.set()
         fn_release.set()
         await _release_held_loop_hop_invoke(task, client_loop, held_invoke)
-        arm_loop.call_soon_threadsafe(arm_loop.stop)
-        arm_runner.join(timeout=2.0)
-        with contextlib.suppress(RuntimeError):
-            arm_loop.close()
     disconnect_future = asyncio.run_coroutine_threadsafe(client.async_disconnect(), kernel_loop)
     disconnect_future.result(timeout=5.0)
     kernel_loop.call_soon_threadsafe(kernel_loop.stop)
@@ -1887,7 +1898,7 @@ def test_run_on_loop_forwards_fn_error() -> None:
     worker = threading.Thread(target=_worker, daemon=True)
     try:
         worker.start()
-        worker.join(timeout=5.0)
+        worker.join(timeout=2.0)
         assert worker_errors and isinstance(worker_errors[0], ValueError)
         assert str(worker_errors[0]) == "boom"
     finally:
@@ -1917,7 +1928,7 @@ def test_run_on_loop_forwards_runtime_error_from_fn() -> None:
     worker = threading.Thread(target=_worker, daemon=True)
     try:
         worker.start()
-        worker.join(timeout=5.0)
+        worker.join(timeout=2.0)
         assert worker_errors and isinstance(worker_errors[0], RuntimeError)
         assert str(worker_errors[0]) == "kernel not linked"
     finally:
@@ -1932,40 +1943,41 @@ def test_run_on_loop_finalize_wins_race() -> None:
     loop = asyncio.new_event_loop()
     runner = threading.Thread(target=loop.run_forever, daemon=True)
     runner.start()
-    arm_loop = asyncio.new_event_loop()
-    arm_runner = threading.Thread(target=arm_loop.run_forever, daemon=True)
-    arm_runner.start()
     hop_timeout_s = 0.05
     fn_started = threading.Event()
     cancel_lost = threading.Event()
     fn_release = threading.Event()
+    hop_returned = threading.Event()
 
     def _fn() -> int:
         fn_started.set()
-        cancel_lost.wait()
         fn_release.wait()
         return 11
 
     worker_result: list[int] = []
 
     def _worker() -> None:
-        worker_result.append(loop_bridge_mod.run_on_loop(loop, _fn, timeout_s=hop_timeout_s))
+        try:
+            worker_result.append(loop_bridge_mod.run_on_loop(loop, _fn, timeout_s=hop_timeout_s))
+        finally:
+            hop_returned.set()
 
-    armed = threading.Event()
-
-    def _arm_cancel_lost() -> None:
-        arm_loop.call_later(hop_timeout_s, cancel_lost.set)
-        armed.set()
-
+    _spawn_cancel_lost_after_fn_running(fn_started, cancel_lost, hop_timeout_s)
     worker = threading.Thread(target=_worker, daemon=True)
     try:
-        arm_loop.call_soon_threadsafe(_arm_cancel_lost)
-        assert armed.wait(timeout=5.0)
         worker.start()
         assert fn_started.wait(timeout=5.0)
         assert cancel_lost.wait(timeout=5.0)
+        assert worker.is_alive()
+        assert not hop_returned.is_set()
+        assert not worker_result
+        _wait_one_hop_timeout(hop_timeout_s)
+        assert worker.is_alive()
+        assert not hop_returned.is_set()
+        assert not worker_result
         fn_release.set()
-        worker.join(timeout=5.0)
+        worker.join(timeout=2.0)
+        assert hop_returned.is_set()
         assert worker_result == [11]
     finally:
         cancel_lost.set()
@@ -1976,23 +1988,17 @@ def test_run_on_loop_finalize_wins_race() -> None:
         runner.join(timeout=5.0)
         with contextlib.suppress(RuntimeError):
             loop.close()
-        arm_loop.call_soon_threadsafe(arm_loop.stop)
-        arm_runner.join(timeout=2.0)
-        with contextlib.suppress(RuntimeError):
-            arm_loop.close()
 
 
 def test_run_on_loop_waits_for_fn_after_cancel_loses() -> None:
     loop = asyncio.new_event_loop()
     runner = threading.Thread(target=loop.run_forever, daemon=True)
     runner.start()
-    arm_loop = asyncio.new_event_loop()
-    arm_runner = threading.Thread(target=arm_loop.run_forever, daemon=True)
-    arm_runner.start()
     hop_timeout_s = 0.05
     fn_block = threading.Event()
     fn_claimed = threading.Event()
     cancel_lost = threading.Event()
+    hop_returned = threading.Event()
 
     def _fn() -> int:
         fn_claimed.set()
@@ -2002,24 +2008,27 @@ def test_run_on_loop_waits_for_fn_after_cancel_loses() -> None:
     worker_result: list[int] = []
 
     def _worker() -> None:
-        worker_result.append(loop_bridge_mod.run_on_loop(loop, _fn, timeout_s=hop_timeout_s))
+        try:
+            worker_result.append(loop_bridge_mod.run_on_loop(loop, _fn, timeout_s=hop_timeout_s))
+        finally:
+            hop_returned.set()
 
-    armed = threading.Event()
-
-    def _arm_cancel_lost() -> None:
-        arm_loop.call_later(hop_timeout_s, cancel_lost.set)
-        armed.set()
-
+    _spawn_cancel_lost_after_fn_running(fn_claimed, cancel_lost, hop_timeout_s)
     worker = threading.Thread(target=_worker, daemon=True)
     try:
-        arm_loop.call_soon_threadsafe(_arm_cancel_lost)
-        assert armed.wait(timeout=5.0)
         worker.start()
         assert fn_claimed.wait(timeout=5.0)
         assert cancel_lost.wait(timeout=5.0)
         assert worker.is_alive()
+        assert not hop_returned.is_set()
+        assert not worker_result
+        _wait_one_hop_timeout(hop_timeout_s)
+        assert worker.is_alive()
+        assert not hop_returned.is_set()
+        assert not worker_result
         fn_block.set()
-        worker.join(timeout=5.0)
+        worker.join(timeout=2.0)
+        assert hop_returned.is_set()
         assert worker_result == [7]
     finally:
         fn_block.set()
@@ -2030,7 +2039,3 @@ def test_run_on_loop_waits_for_fn_after_cancel_loses() -> None:
         runner.join(timeout=5.0)
         with contextlib.suppress(RuntimeError):
             loop.close()
-        arm_loop.call_soon_threadsafe(arm_loop.stop)
-        arm_runner.join(timeout=2.0)
-        with contextlib.suppress(RuntimeError):
-            arm_loop.close()
