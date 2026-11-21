@@ -22,6 +22,11 @@ def test_app_field_decodes_hardware_capture() -> None:
     assert application_firmware_tuple_from_app_field(1540) == (0, 0, 6, 4)
 
 
+@pytest.mark.parametrize("app", [-1, True])
+def test_format_application_firmware_invalid_app_is_none(app: object) -> None:
+    assert format_application_firmware(cast(Any, app)) is None
+
+
 def test_night_minimum_app_field() -> None:
     assert pack_application_firmware(0, 0, 5, 37) == NIGHT_ARM_MIN_APP_FIELD == 1317
 

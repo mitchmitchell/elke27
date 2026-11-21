@@ -8,6 +8,7 @@ from typing import Any, cast
 
 import pytest
 
+import elke27_lib
 from elke27_lib import (
     Elke27CommandOutcomeUnknownError,
     Elke27InvalidArgument,
@@ -82,6 +83,31 @@ async def test_arm_night_rejected_when_application_firmware_too_old(
     assert err.actual == (0, 0, 5, 36)
     assert "requires panel application firmware 0.0.5.37 or later" in str(err)
     assert panel.sent[sent_before:] == []
+
+
+@pytest.mark.asyncio
+async def test_arm_night_too_old_reports_actual_application_firmware(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, panel = await connect_with_app_firmware(
+        monkeypatch, pack_application_firmware(0, 0, 4, 99)
+    )
+    sent_before = len(panel.sent)
+    with pytest.raises(Elke27NightArmFirmwareTooOldError) as exc_info:
+        await client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234")
+    assert exc_info.value.actual == (0, 0, 4, 99)
+    assert exc_info.value.required == NIGHT_ARM_MIN_FIRMWARE_TUPLE
+    assert panel.sent[sent_before:] == []
+
+
+def test_night_arm_firmware_errors_are_public() -> None:
+    assert elke27_lib.Elke27NightArmFirmwareTooOldError is Elke27NightArmFirmwareTooOldError
+    assert (
+        elke27_lib.Elke27PanelApplicationFirmwareUnknownError
+        is Elke27PanelApplicationFirmwareUnknownError
+    )
+    assert "Elke27NightArmFirmwareTooOldError" in elke27_lib.__all__
+    assert "Elke27PanelApplicationFirmwareUnknownError" in elke27_lib.__all__
 
 
 @pytest.mark.asyncio
@@ -209,6 +235,7 @@ async def test_arm_night_refresh_failure_raises_command_outcome_unknown(
 
     with pytest.raises(Elke27CommandOutcomeUnknownError) as exc_info:
         await client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234")
+    assert exc_info.value.route == ("area", "set_arm_state")
     msg = str(exc_info.value)
     assert "acknowledged" in msg
     assert "status could not be confirmed" in msg
@@ -498,6 +525,37 @@ async def test_arm_night_refresh_to_plain_stay_raises_stay_instant(
                 },
             },
         )
+
+
+@pytest.mark.asyncio
+async def test_arm_night_refresh_to_armed_away_raises_stay_instant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, panel = await connect_with_app_firmware(monkeypatch, NIGHT_ARM_MIN_APP_FIELD)
+    with pytest.raises(Elke27StayInstantRequiredError):
+        await drive_until_done(
+            client,
+            panel,
+            client.async_arm_area(1, mode=ArmMode.ARMED_NIGHT, pin="1234"),
+            custom_replies={
+                0: {
+                    "area": {
+                        "set_arm_state": {"area_id": 1, "error_code": E27ErrorCode.ELKERR_NONE}
+                    }
+                },
+                1: {
+                    "area": {
+                        "get_status": {
+                            "area_id": 1,
+                            "error_code": E27ErrorCode.ELKERR_NONE,
+                            "arm_state": "ARMED_AWAY",
+                            "arm_cmd_state": "ARMED_AWAY",
+                        }
+                    }
+                },
+            },
+        )
+    assert client.snapshot.areas[1].arm_mode is ArmMode.ARMED_AWAY
 
 
 @pytest.mark.asyncio
