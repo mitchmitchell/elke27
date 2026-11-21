@@ -177,6 +177,7 @@ from .kernel_loop import (
     KernelNotLinkedError,
 )
 from .linking_thread import E27Identity, E27LinkKeys
+from .loop_bridge_thread import LoopHopTimeout, run_coroutine_on_loop
 from .outbound_loop import OutboundPriority
 from .pending_loop import consume_outcome
 from .permissions import (
@@ -236,7 +237,7 @@ from .types import (
 from .util import is_ascii_digit_string, parse_pin_digits
 
 T = TypeVar("T")
-_LoopHopT = TypeVar("_LoopHopT")
+_LoopHopT = TypeVar("_LoopHopT", bound="Result[Any]")
 
 # Upper bound on a paged reply's block_count; a larger value is a protocol error.
 MAX_PAGED_BLOCK_COUNT = 256
@@ -2430,36 +2431,17 @@ class Elke27Client:
         if loop is None or not loop.is_running() or self._kernel.current_thread_runs_bound_loop():
             return fn()
 
-        hop: concurrent.futures.Future[None] = concurrent.futures.Future()
-        finished = threading.Event()
-        outcome: list[_LoopHopT] = []
-        hop_error: list[BaseException] = []
-
-        def _invoke() -> None:
-            if not hop.set_running_or_notify_cancel():
-                return
-            try:
-                outcome.append(fn())
-            except Exception as exc:  # noqa: BLE001 -- preserve broad except handling intentionally
-                hop_error.append(exc)
-            finally:
-                finished.set()
+        async def _hop() -> _LoopHopT:
+            return fn()
 
         try:
-            loop.call_soon_threadsafe(_invoke)
+            return run_coroutine_on_loop(loop, _hop(), timeout_s=timeout_s)
+        except LoopHopTimeout:
+            return cast(_LoopHopT, self._disconnected_loop_hop_error())
         except RuntimeError:
             return cast(_LoopHopT, self._disconnected_loop_hop_error())
-
-        if not finished.wait(timeout=timeout_s):
-            hop.cancel()
-            if not hop.cancel():
-                finished.wait(timeout=timeout_s)
+        except concurrent.futures.CancelledError:
             return cast(_LoopHopT, self._disconnected_loop_hop_error())
-        if hop_error:
-            raise hop_error[0]
-        if not outcome:
-            return cast(_LoopHopT, self._disconnected_loop_hop_error())
-        return outcome[0]
 
     def _cancel_reauth(self) -> bool:
         """Cancel any in-flight re-auth; its outcome is ignored from now on.
@@ -3867,21 +3849,16 @@ class Elke27Client:
         result_payload = cast(dict[str, object], result)
         success = result_payload.get("success")
         error_code = result_payload.get("error_code")
-        try:
-            return self._run_on_client_event_loop(
-                lambda: self._finish_sync_authenticate_on_loop(
-                    auth_epoch,
-                    success=success,
-                    error_code=error_code,
-                    accepted_pin=accepted_pin,
-                    seq=seq,
-                ),
-                timeout_s=self._kernel.request_timeout_s,
-            )
-        except TimeoutError:
-            return self._disconnected_loop_hop_error()
-        except RuntimeError:
-            return self._disconnected_loop_hop_error()
+        return self._run_on_client_event_loop(
+            lambda: self._finish_sync_authenticate_on_loop(
+                auth_epoch,
+                success=success,
+                error_code=error_code,
+                accepted_pin=accepted_pin,
+                seq=seq,
+            ),
+            timeout_s=self._kernel.request_timeout_s,
+        )
 
     async def _async_authenticate(
         self, *, pin: int, timeout_s: float | None
