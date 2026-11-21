@@ -24,6 +24,12 @@
     is empty. A refused HELLO carries it too. The client's
     ``Panel connection lost`` WARNING now ends with ``err_msg=...`` instead of
     leaving only ``reason=None error_type=...``.
+  - Raw disconnect event (#154, HACS-Elk-E27 #177
+    https://github.com/mitchmitchell/HACS-Elk-E27/issues/177): the raw
+    ``DISCONNECTED`` ``Elke27Event`` now carries ``error_type`` and ``err_msg`` in
+    ``data`` next to ``connected`` and ``reason``, with the same values as the
+    ``ConnectionStateChanged`` it comes from, so subscribers of the raw event
+    stream can show why the link dropped. Ships with #150 and #152.
   - Publication-wait timeout (#147): the reply-publication wait is bounded by the
     command deadline: the per-attempt request timeout (``ClientConfig.request_timeout_s``,
     5 s by default, or the call's ``timeout_s``) times the number of transport attempts

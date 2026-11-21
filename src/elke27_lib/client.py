@@ -2006,7 +2006,12 @@ class Elke27Client:
                 self._awaiting_reconnect_csm_check = False
                 disconnected_evt = Elke27Event(
                     event_type=EventType.DISCONNECTED,
-                    data={"connected": False, "reason": evt.reason},
+                    data={
+                        "connected": False,
+                        "reason": evt.reason,
+                        "error_type": evt.error_type,
+                        "err_msg": evt.err_msg,
+                    },
                     seq=seq,
                     timestamp=timestamp,
                     raw_type=evt.kind,

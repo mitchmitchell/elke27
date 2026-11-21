@@ -61,6 +61,16 @@ a breaking change.
     session, for example `Keepalive timed out` (#149), including a refused
     HELLO. It is `None` on connect, on a deliberate close, when no exception was
     reported, and when the exception's message is empty.
+- Raw `DISCONNECTED` event (`Elke27Event`, `event_type=EventType.DISCONNECTED`)
+  `data` keys (#154), with the same values as the `ConnectionStateChanged` it comes
+  from:
+  - `connected`: always `False`.
+  - `reason`: the drop reason, for example `closed` for a deliberate close; `None`
+    when the session ended without a stated reason.
+  - `error_type`: the class name of the exception that ended the session; `None`
+    when no exception was reported or on a deliberate close.
+  - `err_msg`: that exception's message; `None` when no exception was reported, on
+    a deliberate close, or when the message is empty.
 
 ## State Snapshots (read-only views)
 
