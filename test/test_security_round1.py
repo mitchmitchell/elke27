@@ -8,18 +8,22 @@ only the transport faked, and assert on public state, the wire and the logs.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextlib
 import gc
 import json
 import logging
 import socket
+import threading
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
 import pytest
 
+import elke27_lib.client as client_mod
 import elke27_lib.kernel_loop as kernel_mod
+import elke27_lib.loop_bridge_thread as loop_bridge_mod
 from elke27_lib import hello_thread as hello_mod
 from elke27_lib import linking_thread as linking
 from elke27_lib import session_thread as session_mod
@@ -29,6 +33,7 @@ from elke27_lib.errors import (
     E27HelloTimeout,
     E27ProtocolError,
     E27ProvisioningTimeout,
+    Elke27DisconnectedError,
     ProtocolError,
 )
 from elke27_lib.events import ConnectionStateChanged
@@ -36,6 +41,7 @@ from elke27_lib.framing_loop import frame_build
 from elke27_lib.hello_thread import SessionKeys
 from elke27_lib.kernel_loop import DEFAULT_EVENT_QUEUE_MAXLEN, E27Kernel
 from elke27_lib.linking_thread import E27LinkKeys
+from elke27_lib.loop_bridge_thread import LoopHopClosed, LoopHopTimeout
 from elke27_lib.presentation_loop import encrypt_schema0_envelope
 from elke27_lib.provisioning import Credentials
 from elke27_lib.session_thread import Session, SessionConfig, SessionInfo
@@ -49,6 +55,21 @@ DUMMY_C = "DUMMYSECRETCCCC3333"
 DUMMY_PIN = 424242
 HOST = "198.51.100.1"
 KEYS = LinkKeys("aa", "bb", "cc")
+
+
+def _outbound_is_authenticate(msg: dict[str, Any]) -> bool:
+    if "authenticate" in msg:
+        return True
+    control = msg.get("control")
+    return isinstance(control, dict) and "authenticate" in control
+
+
+def _panel_auth_reply(msg: dict[str, Any], *, error_code: int) -> dict[str, Any]:
+    seq = msg["seq"]
+    control = msg.get("control")
+    if isinstance(control, dict) and "authenticate" in control:
+        return {"seq": seq, "control": {"authenticate": {"error_code": error_code}}}
+    return {"seq": seq, "authenticate": {"error_code": error_code}}
 
 
 # ---------------------------------------------------------------- fake transport
@@ -89,17 +110,17 @@ class _FakePanel:
 
     def reply(self, session: _FakeSession, msg: dict[str, Any]) -> None:
         loop = asyncio.get_running_loop()
-        seq = msg["seq"]
-        if "authenticate" in msg:
+        if _outbound_is_authenticate(msg):
             if self.auth == "silent":
                 return
             code = 11008 if self.auth == "refuse" else 0
-            reply = {"seq": seq, "authenticate": {"error_code": code}}
+            reply = _panel_auth_reply(msg, error_code=code)
             if self.auth == "hold":
                 self.held.append((session, reply))
                 return
             loop.call_soon(session.on_message, reply)
             return
+        seq = msg["seq"]
         domain = next(k for k in msg if k not in ("seq", "session_id"))
         name = next(iter(msg[domain]))
         build = self.overrides.get((domain, name))
@@ -641,6 +662,940 @@ async def test_inflight_reauth_never_restores_pin(
     assert panel.auth_requests() == []
     assert client.authenticated is False
     await client.async_disconnect()
+
+
+def _auth_success_then_link_drop_reply(panel: _FakePanel, real_reply: Any) -> Any:
+    def _race_reply(session: _FakeSession, msg: dict[str, Any]) -> None:
+        if not _outbound_is_authenticate(msg):
+            real_reply(session, msg)
+            return
+        loop = asyncio.get_running_loop()
+        reply = _panel_auth_reply(msg, error_code=0)
+        loop.call_soon(session.on_message, reply)
+        loop.call_soon(panel.drop_link)
+
+    return _race_reply
+
+
+def _hold_authenticate_reply(panel: _FakePanel, real_reply: Any, *, error_code: int) -> Any:
+    def _hold_reply(session: _FakeSession, msg: dict[str, Any]) -> None:
+        if not _outbound_is_authenticate(msg):
+            real_reply(session, msg)
+            return
+        panel.held.append((session, _panel_auth_reply(msg, error_code=error_code)))
+
+    return _hold_reply
+
+
+async def _reconnect_expecting_no_authenticate(
+    client: Elke27Client, panel: _FakePanel, clock: _Clock
+) -> None:
+    await _drop_and_reconnect(client, panel, clock)
+    assert await client.wait_ready(2.0)
+    await _until(lambda: panel.auth_requests() == [])
+
+
+class _LoopHopRunSpies:
+    __slots__ = (
+        "wait_timeouts",
+        "lost_cancel",
+        "timed_wait_entered",
+        "first_wait",
+        "progress",
+        "new_finished",
+    )
+
+    def __init__(
+        self,
+        *,
+        wait_timeouts: list[float | None],
+        lost_cancel: threading.Event,
+        timed_wait_entered: threading.Event,
+        first_wait: threading.Event,
+        progress: threading.Event,
+        new_finished: Callable[[], threading.Event],
+    ) -> None:
+        self.wait_timeouts = wait_timeouts
+        self.lost_cancel = lost_cancel
+        self.timed_wait_entered = timed_wait_entered
+        self.first_wait = first_wait
+        self.progress = progress
+        self.new_finished = new_finished
+
+
+def _install_loop_hop_run_spies() -> _LoopHopRunSpies:
+    real_event = loop_bridge_mod.threading.Event
+    wait_timeouts: list[float | None] = []
+    lost_cancel = threading.Event()
+    timed_wait_entered = threading.Event()
+    first_wait = threading.Event()
+    progress = threading.Event()
+
+    class _FinishedEvent(real_event):
+        def wait(self, timeout: float | None = None) -> bool:
+            wait_timeouts.append(timeout)
+            if not first_wait.is_set():
+                first_wait.set()
+            if timeout is not None:
+                timed_wait_entered.set()
+            if len(wait_timeouts) >= 2 and timeout is None:
+                lost_cancel.set()
+                progress.set()
+            return super().wait(timeout)
+
+    def _finished_factory() -> threading.Event:
+        return _FinishedEvent()
+
+    return _LoopHopRunSpies(
+        wait_timeouts=wait_timeouts,
+        lost_cancel=lost_cancel,
+        timed_wait_entered=timed_wait_entered,
+        first_wait=first_wait,
+        progress=progress,
+        new_finished=_finished_factory,
+    )
+
+
+def _wait_timed_hop_wait_entered(hop_spies: _LoopHopRunSpies, *, bound_s: float = 5.0) -> None:
+    if not hop_spies.timed_wait_entered.wait(timeout=bound_s):
+        pytest.fail("timed finished.wait not entered")
+
+
+def _assert_recorded_hop_wait_timeout_s(
+    hop_spies: _LoopHopRunSpies, timeout_s: float, *, bound_s: float = 5.0
+) -> None:
+    if not hop_spies.first_wait.wait(timeout=bound_s):
+        pytest.fail("first finished.wait not entered")
+    assert hop_spies.wait_timeouts[0] == timeout_s
+
+
+def _wait_lost_cancel_before_return(
+    hop_spies: _LoopHopRunSpies,
+    hop_returned: threading.Event,
+    *,
+    bound_s: float = 5.0,
+) -> None:
+    def _watch_hop_returned() -> None:
+        if hop_returned.wait(timeout=bound_s):
+            hop_spies.progress.set()
+
+    threading.Thread(target=_watch_hop_returned, daemon=True).start()
+    if not hop_spies.progress.wait(timeout=bound_s):
+        pytest.fail("neither cancel-loss wait nor hop return observed")
+    if hop_returned.is_set() and not hop_spies.lost_cancel.is_set():
+        pytest.fail("hop returned before cancel-loss wait")
+    if not hop_spies.lost_cancel.is_set():
+        pytest.fail("cancel-loss wait not observed")
+
+
+async def _await_timed_hop_wait_entered(
+    hop_spies: _LoopHopRunSpies, *, bound_s: float = 5.0
+) -> None:
+    await asyncio.to_thread(lambda: _wait_timed_hop_wait_entered(hop_spies, bound_s=bound_s))
+
+
+async def _await_lost_cancel_before_return(
+    hop_spies: _LoopHopRunSpies,
+    hop_returned: threading.Event,
+    *,
+    bound_s: float = 5.0,
+) -> None:
+    await asyncio.to_thread(
+        lambda: _wait_lost_cancel_before_return(hop_spies, hop_returned, bound_s=bound_s)
+    )
+
+
+def _bounded_run_on_loop(
+    loop: asyncio.AbstractEventLoop,
+    fn: Callable[[], Any],
+    *,
+    timeout_s: float,
+    real_run: Callable[..., Any],
+    join_timeout_s: float = 5.0,
+    schedule: Callable[[Callable[[], None]], None] | None = None,
+    new_finished: Callable[[], threading.Event] | None = None,
+) -> Any:
+    hop_out: list[Any] = []
+    hop_err: list[LoopHopTimeout | LoopHopClosed | ValueError | RuntimeError] = []
+
+    def _hop_worker() -> None:
+        try:
+            hop_out.append(
+                real_run(
+                    loop,
+                    fn,
+                    timeout_s=timeout_s,
+                    schedule=schedule,
+                    new_finished=new_finished,
+                )
+            )
+        except (LoopHopTimeout, LoopHopClosed, ValueError, RuntimeError) as exc:
+            hop_err.append(exc)
+
+    worker = threading.Thread(target=_hop_worker, daemon=True)
+    worker.start()
+    worker.join(timeout=join_timeout_s)
+    if worker.is_alive():
+        pytest.fail("hop worker did not finish")
+    if hop_err:
+        raise hop_err[0]
+    if hop_out:
+        return hop_out[0]
+    pytest.fail("hop worker finished without result")
+
+
+class _BoundedSyncCaller:
+    __slots__ = ("_errors", "_results", "_thread")
+
+    def __init__(self, fn: Callable[[], Any]) -> None:
+        self._results: list[Any] = []
+        self._errors: list[BaseException] = []
+        self._thread = threading.Thread(target=self._run, args=(fn,), daemon=True)
+
+    def _run(self, fn: Callable[[], Any]) -> None:
+        try:
+            self._results.append(fn())
+        except BaseException as exc:
+            self._errors.append(exc)
+            raise
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def is_alive(self) -> bool:
+        return self._thread.is_alive()
+
+    def wait_result(self, timeout_s: float) -> Any:
+        self._thread.join(timeout=timeout_s)
+        if self._thread.is_alive():
+            pytest.fail("sync caller did not finish")
+        if self._errors:
+            raise self._errors[0]
+        return self._results[0]
+
+
+def _start_bounded_sync_caller(fn: Callable[[], Any]) -> _BoundedSyncCaller:
+    caller = _BoundedSyncCaller(fn)
+    caller.start()
+    return caller
+
+
+async def _join_bounded_sync_caller(
+    caller: _BoundedSyncCaller,
+    *,
+    join_timeout_s: float = 5.0,
+) -> Any:
+    return await asyncio.to_thread(caller.wait_result, join_timeout_s)
+
+
+async def _release_held_loop_hop_invoke(
+    loop: asyncio.AbstractEventLoop,
+    held_invoke: list[Callable[[], None]],
+    sync_caller: _BoundedSyncCaller,
+) -> None:
+    if held_invoke:
+        loop.call_soon_threadsafe(held_invoke[0])
+    if sync_caller.is_alive():
+        await asyncio.to_thread(sync_caller.wait_result, 5.0)
+
+
+class _AuthOpaqueWaiter:
+    __slots__ = ("timeouts", "_payload", "_ready")
+
+    def __init__(self) -> None:
+        self.timeouts: list[float] = []
+        self._payload: dict[str, object] | None = None
+        self._ready = threading.Event()
+
+    def set_result(self, payload: dict[str, object]) -> None:
+        self._payload = payload
+        self._ready.set()
+
+    def result(self, timeout: float | None = None) -> dict[str, object]:
+        if timeout is not None:
+            self.timeouts.append(timeout)
+        if not self._ready.wait(timeout=timeout):
+            raise concurrent.futures.TimeoutError()
+        if self._payload is None:
+            raise concurrent.futures.TimeoutError()
+        return self._payload
+
+
+@pytest.mark.asyncio
+async def test_async_authenticate_epoch_guard_on_stale_success(
+    panel: _FakePanel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, clock = await _connected(reauth=True)
+    real_reply = panel.reply
+    monkeypatch.setattr(panel, "reply", _auth_success_then_link_drop_reply(panel, real_reply))
+    result = await client.async_execute("control_authenticate", pin=DUMMY_PIN)
+    assert not result.ok
+    assert isinstance(result.error, Elke27DisconnectedError)
+    assert client.authenticated is False
+    await _reconnect_expecting_no_authenticate(client, panel, clock)
+    await client.async_disconnect()
+
+
+@pytest.mark.asyncio
+async def test_sync_authenticate_epoch_guard_on_stale_success(
+    panel: _FakePanel, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    client, clock = await _connected(reauth=True)
+    panel.auth = "silent"
+    loop = asyncio.get_running_loop()
+    waiter: concurrent.futures.Future[dict[str, object]] = concurrent.futures.Future()
+    caplog.set_level(logging.WARNING)
+
+    def _sync_auth() -> Any:
+        return client.request(
+            ("control", "authenticate"),
+            pin=DUMMY_PIN,
+            opaque=waiter,
+        )
+
+    sync_caller = _start_bounded_sync_caller(_sync_auth)
+    await _until(lambda: any(_outbound_is_authenticate(m) for m in panel.wire()))
+    loop.call_soon(panel.drop_link)
+    await _until(
+        lambda: any(
+            "Panel connection lost" in r.getMessage()
+            for r in caplog.records
+            if r.levelno >= logging.WARNING
+        )
+    )
+    waiter.set_result({"success": True, "error_code": 0})
+    result = await _join_bounded_sync_caller(sync_caller)
+    assert not result.ok
+    assert isinstance(result.error, Elke27DisconnectedError)
+    assert client.authenticated is False
+    await _reconnect_expecting_no_authenticate(client, panel, clock)
+    await client.async_disconnect()
+
+
+@pytest.mark.asyncio
+async def test_async_stale_auth_failure_leaves_new_session_pin(
+    panel: _FakePanel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, clock = await _connected(reauth=True)
+    assert await _authenticate(client) is True
+    real_reply = panel.reply
+    monkeypatch.setattr(
+        panel, "reply", _hold_authenticate_reply(panel, real_reply, error_code=11008)
+    )
+    stale = asyncio.create_task(client.async_execute("control_authenticate", pin=DUMMY_PIN))
+    await _until(lambda: bool(panel.held))
+    await _drop_and_reconnect(client, panel, clock)
+    monkeypatch.setattr(panel, "reply", real_reply)
+    stale_result = await asyncio.wait_for(stale, timeout=5.0)
+    assert not stale_result.ok
+    assert isinstance(stale_result.error, Elke27DisconnectedError)
+    assert await client.wait_ready(2.0)
+    await _until(lambda: client.authenticated)
+    assert len(panel.auth_requests()) == 1
+    await _drop_and_reconnect(client, panel, clock)
+    await _until(lambda: client.authenticated)
+    assert len(panel.auth_requests()) == 1
+    await client.async_disconnect()
+
+
+@pytest.mark.asyncio
+async def test_sync_stale_auth_failure_leaves_new_session_pin(panel: _FakePanel) -> None:
+    client, clock = await _connected(reauth=True)
+    panel.auth = "silent"
+    waiter: concurrent.futures.Future[dict[str, object]] = concurrent.futures.Future()
+
+    def _sync_auth() -> Any:
+        return client.request(
+            ("control", "authenticate"),
+            pin=DUMMY_PIN,
+            opaque=waiter,
+        )
+
+    sync_caller = _start_bounded_sync_caller(_sync_auth)
+    await _until(lambda: any(_outbound_is_authenticate(m) for m in panel.wire()))
+    await _drop_and_reconnect(client, panel, clock)
+    assert await client.wait_ready(2.0)
+    panel.auth = "accept"
+    assert await _authenticate(client) is True
+    waiter.set_result({"success": False, "error_code": 11008})
+    stale_result = await _join_bounded_sync_caller(sync_caller)
+    assert not stale_result.ok
+    assert isinstance(stale_result.error, Elke27DisconnectedError)
+    assert client.authenticated is True
+    await _drop_and_reconnect(client, panel, clock)
+    await _until(lambda: client.authenticated)
+    assert len(panel.auth_requests()) == 1
+    await client.async_disconnect()
+
+
+def test_run_on_loop_first_wait_records_timeout_s() -> None:
+    loop = asyncio.new_event_loop()
+    runner = threading.Thread(target=loop.run_forever, daemon=True)
+    runner.start()
+    hop_timeout_s = 0.05
+    hop_spies = _install_loop_hop_run_spies()
+    held_invoke: list[Callable[[], None]] = []
+
+    def _hold_schedule(callback: Callable[[], None]) -> None:
+        if held_invoke:
+            return
+        held_invoke.append(callback)
+
+    fn_ran = threading.Event()
+    outcomes: list[int | LoopHopTimeout] = []
+
+    def _fn() -> int:
+        fn_ran.set()
+        return 1
+
+    def _worker() -> None:
+        try:
+            outcomes.append(
+                loop_bridge_mod.run_on_loop(
+                    loop,
+                    _fn,
+                    timeout_s=hop_timeout_s,
+                    schedule=_hold_schedule,
+                    new_finished=hop_spies.new_finished,
+                )
+            )
+        except LoopHopTimeout as exc:
+            outcomes.append(exc)
+
+    worker = threading.Thread(target=_worker, daemon=True)
+    try:
+        worker.start()
+        _assert_recorded_hop_wait_timeout_s(hop_spies, hop_timeout_s)
+        worker.join(timeout=5.0)
+        assert not worker.is_alive()
+        assert len(outcomes) == 1
+        assert isinstance(outcomes[0], LoopHopTimeout)
+        assert not fn_ran.is_set()
+    finally:
+        if worker.is_alive():
+            worker.join(timeout=1.0)
+        if held_invoke:
+            loop.call_soon_threadsafe(held_invoke[0])
+        loop.call_soon_threadsafe(loop.stop)
+        runner.join(timeout=5.0)
+        with contextlib.suppress(RuntimeError):
+            loop.close()
+
+
+def test_run_on_loop_raises_loop_hop_closed_when_schedule_fails() -> None:
+    loop = asyncio.new_event_loop()
+    runner = threading.Thread(target=loop.run_forever, daemon=True)
+    runner.start()
+
+    def _closed_schedule(_callback: Callable[[], None]) -> None:
+        raise RuntimeError("Event loop is closed")
+
+    closed_errors: list[LoopHopClosed] = []
+
+    def _worker() -> None:
+        try:
+            loop_bridge_mod.run_on_loop(
+                loop,
+                lambda: 1,
+                timeout_s=0.05,
+                schedule=_closed_schedule,
+            )
+        except LoopHopClosed as exc:
+            closed_errors.append(exc)
+
+    worker = threading.Thread(target=_worker, daemon=True)
+    try:
+        worker.start()
+        worker.join(timeout=5.0)
+        assert len(closed_errors) == 1
+        assert type(closed_errors[0]) is LoopHopClosed
+    finally:
+        if worker.is_alive():
+            worker.join(timeout=1.0)
+        loop.call_soon_threadsafe(loop.stop)
+        runner.join(timeout=5.0)
+        with contextlib.suppress(RuntimeError):
+            loop.close()
+
+
+@pytest.mark.asyncio
+async def test_client_event_loop_hop_skips_when_event_loop_not_running(
+    panel: _FakePanel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kernel_loop = asyncio.new_event_loop()
+    kernel_runner = threading.Thread(target=kernel_loop.run_forever, daemon=True)
+    kernel_runner.start()
+    connect_future = asyncio.run_coroutine_threadsafe(
+        _connected(reauth=True, request_timeout_s=1.0), kernel_loop
+    )
+    client, _ = connect_future.result(timeout=5.0)
+    panel.auth = "silent"
+    waiter: concurrent.futures.Future[dict[str, object]] = concurrent.futures.Future()
+    hop_used = threading.Event()
+    real_hop = loop_bridge_mod.run_on_loop
+
+    def _watch_hop(
+        hop_loop: asyncio.AbstractEventLoop,
+        fn: Callable[[], Any],
+        /,
+        **kwargs: Any,
+    ) -> Any:
+        hop_used.set()
+        return real_hop(hop_loop, fn, **kwargs)
+
+    monkeypatch.setattr(loop_bridge_mod, "run_on_loop", _watch_hop)
+    monkeypatch.setattr(client_mod, "run_on_loop", _watch_hop)
+
+    def _sync_auth() -> Any:
+        return client.request(
+            ("control", "authenticate"),
+            pin=DUMMY_PIN,
+            opaque=waiter,
+        )
+
+    sync_caller = _start_bounded_sync_caller(_sync_auth)
+    try:
+        await _until(lambda: any(_outbound_is_authenticate(m) for m in panel.wire()), timeout_s=5.0)
+        stop_done = threading.Event()
+
+        def _stop_client_loop() -> None:
+            kernel_loop.stop()
+            stop_done.set()
+
+        kernel_loop.call_soon_threadsafe(_stop_client_loop)
+        assert await asyncio.to_thread(stop_done.wait, 5.0)
+        kernel_runner.join(timeout=5.0)
+        waiter.set_result({"success": True, "error_code": 0})
+        result = await _join_bounded_sync_caller(sync_caller)
+        assert not hop_used.is_set()
+        assert result.ok
+        assert client.authenticated is True
+    finally:
+        if not kernel_loop.is_closed():
+            if not kernel_loop.is_running():
+                kernel_runner = threading.Thread(target=kernel_loop.run_forever, daemon=True)
+                kernel_runner.start()
+            disconnect_future = asyncio.run_coroutine_threadsafe(
+                client.async_disconnect(), kernel_loop
+            )
+            disconnect_future.result(timeout=5.0)
+            kernel_loop.call_soon_threadsafe(kernel_loop.stop)
+            kernel_runner.join(timeout=5.0)
+            kernel_loop.close()
+
+
+@pytest.mark.asyncio
+async def test_sync_authenticate_auth_wait_uses_request_timeout_s(panel: _FakePanel) -> None:
+    wait_timeout_s = 2.25
+    client, _ = await _connected(reauth=True, request_timeout_s=wait_timeout_s)
+    panel.auth = "silent"
+    auth_waiter = _AuthOpaqueWaiter()
+
+    def _sync_auth() -> Any:
+        return client.request(
+            ("control", "authenticate"),
+            pin=DUMMY_PIN,
+            opaque=auth_waiter,
+        )
+
+    sync_caller = _start_bounded_sync_caller(_sync_auth)
+    await _until(lambda: any(_outbound_is_authenticate(m) for m in panel.wire()))
+    auth_waiter.set_result({"success": True, "error_code": 0})
+    result = await _join_bounded_sync_caller(sync_caller)
+    assert result.ok
+    assert auth_waiter.timeouts == [wait_timeout_s]
+    await client.async_disconnect()
+
+
+def test_run_on_loop_finalize_wins_race() -> None:
+    loop = asyncio.new_event_loop()
+    runner = threading.Thread(target=loop.run_forever, daemon=True)
+    runner.start()
+    hop_timeout_s = 0.05
+    fn_started = threading.Event()
+    fn_release = threading.Event()
+    hop_returned = threading.Event()
+    hop_spies = _install_loop_hop_run_spies()
+
+    def _fn() -> int:
+        fn_started.set()
+        fn_release.wait()
+        return 11
+
+    worker_result: list[int] = []
+
+    def _worker() -> None:
+        try:
+            worker_result.append(
+                loop_bridge_mod.run_on_loop(
+                    loop,
+                    _fn,
+                    timeout_s=hop_timeout_s,
+                    new_finished=hop_spies.new_finished,
+                )
+            )
+        finally:
+            hop_returned.set()
+
+    worker = threading.Thread(target=_worker, daemon=True)
+    try:
+        worker.start()
+        assert fn_started.wait(timeout=5.0)
+        _wait_timed_hop_wait_entered(hop_spies)
+        _assert_recorded_hop_wait_timeout_s(hop_spies, hop_timeout_s)
+        _wait_lost_cancel_before_return(hop_spies, hop_returned)
+        assert not hop_returned.is_set()
+        assert hop_spies.wait_timeouts[1] is None
+        assert worker.is_alive()
+        assert not worker_result
+        fn_release.set()
+        worker.join(timeout=5.0)
+        assert hop_returned.is_set()
+        assert worker_result == [11]
+    finally:
+        fn_release.set()
+        if worker.is_alive():
+            worker.join(timeout=1.0)
+        loop.call_soon_threadsafe(loop.stop)
+        runner.join(timeout=5.0)
+        with contextlib.suppress(RuntimeError):
+            loop.close()
+
+
+@pytest.mark.asyncio
+async def test_sync_authenticate_loop_hop_closed_returns_result(
+    panel: _FakePanel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _ = await _connected(reauth=True, request_timeout_s=0.2)
+    waiter: concurrent.futures.Future[dict[str, object]] = concurrent.futures.Future()
+    panel.auth = "silent"
+    closed_errors: list[RuntimeError] = []
+    real_hop = loop_bridge_mod.run_on_loop
+    loop = asyncio.get_running_loop()
+
+    def _closed_schedule(_callback: Callable[[], None]) -> None:
+        err = RuntimeError("Event loop is closed")
+        closed_errors.append(err)
+        raise err
+
+    def _closed_hop(
+        loop: asyncio.AbstractEventLoop,
+        fn: Callable[[], Any],
+        /,
+        *,
+        timeout_s: float,
+        schedule: Callable[[Callable[[], None]], None] | None = None,
+    ) -> Any:
+        del schedule
+        return real_hop(loop, fn, timeout_s=timeout_s, schedule=_closed_schedule)
+
+    monkeypatch.setattr(loop_bridge_mod, "run_on_loop", _closed_hop)
+    monkeypatch.setattr(client_mod, "run_on_loop", _closed_hop)
+
+    def _sync_auth() -> Any:
+        return client.request(("control", "authenticate"), pin=DUMMY_PIN, opaque=waiter)
+
+    sync_caller = _start_bounded_sync_caller(_sync_auth)
+    try:
+        await _until(lambda: any(_outbound_is_authenticate(m) for m in panel.wire()))
+        waiter.set_result({"success": True, "error_code": 0})
+        result = await _join_bounded_sync_caller(sync_caller)
+        assert closed_errors
+        assert not result.ok
+        assert isinstance(result.error, Elke27DisconnectedError)
+        assert client.authenticated is False
+    finally:
+        await _release_held_loop_hop_invoke(loop, [], sync_caller)
+    await client.async_disconnect()
+
+
+@pytest.mark.asyncio
+async def test_sync_authenticate_loop_hop_timeout_does_not_cache_pin(
+    panel: _FakePanel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, clock = await _connected(reauth=True, request_timeout_s=5.0)
+    panel.auth = "silent"
+    waiter: concurrent.futures.Future[dict[str, object]] = concurrent.futures.Future()
+    hop_armed = threading.Event()
+    hop_timeout_s = 0.05
+    real_hop = loop_bridge_mod.run_on_loop
+
+    loop = asyncio.get_running_loop()
+    held_invoke: list[Callable[[], None]] = []
+
+    def _hold_schedule(callback: Callable[[], None]) -> None:
+        if held_invoke:
+            return
+        hop_armed.set()
+        held_invoke.append(callback)
+
+    def _force_hop_with_hold(
+        loop: asyncio.AbstractEventLoop,
+        fn: Callable[[], Any],
+        /,
+        *,
+        timeout_s: float,
+        schedule: Callable[[Callable[[], None]], None] | None = None,
+    ) -> Any:
+        del schedule
+        return real_hop(loop, fn, timeout_s=hop_timeout_s, schedule=_hold_schedule)
+
+    monkeypatch.setattr(loop_bridge_mod, "run_on_loop", _force_hop_with_hold)
+    monkeypatch.setattr(client_mod, "run_on_loop", _force_hop_with_hold)
+
+    def _sync_auth() -> Any:
+        return client.request(
+            ("control", "authenticate"),
+            pin=DUMMY_PIN,
+            opaque=waiter,
+        )
+
+    sync_caller = _start_bounded_sync_caller(_sync_auth)
+    try:
+        await _until(lambda: any(_outbound_is_authenticate(m) for m in panel.wire()))
+        waiter.set_result({"success": True, "error_code": 0})
+        result = await _join_bounded_sync_caller(sync_caller)
+        assert len(held_invoke) == 1
+        assert hop_armed.is_set()
+        assert not result.ok
+        assert isinstance(result.error, Elke27DisconnectedError)
+        assert client.authenticated is False
+        await _reconnect_expecting_no_authenticate(client, panel, clock)
+    finally:
+        await _release_held_loop_hop_invoke(loop, held_invoke, sync_caller)
+    await client.async_disconnect()
+
+
+@pytest.mark.asyncio
+async def test_sync_authenticate_loop_hop_gate_cancel_before_fn(
+    panel: _FakePanel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, clock = await _connected(reauth=True, request_timeout_s=5.0)
+    panel.auth = "silent"
+    waiter: concurrent.futures.Future[dict[str, object]] = concurrent.futures.Future()
+    hop_abandoned = threading.Event()
+    hop_timeout_s = 0.05
+    real_run = loop_bridge_mod.run_on_loop
+    loop = asyncio.get_running_loop()
+    held_invoke: list[Callable[[], None]] = []
+
+    def _hold_schedule(callback: Callable[[], None]) -> None:
+        if held_invoke:
+            return
+        held_invoke.append(callback)
+
+    def _observed_hop(
+        loop: asyncio.AbstractEventLoop,
+        fn: Callable[[], Any],
+        /,
+        *,
+        timeout_s: float,
+        schedule: Callable[[Callable[[], None]], None] | None = None,
+    ) -> Any:
+        del schedule
+        try:
+            return real_run(
+                loop,
+                fn,
+                timeout_s=hop_timeout_s,
+                schedule=_hold_schedule,
+            )
+        except LoopHopTimeout:
+            hop_abandoned.set()
+            raise
+
+    monkeypatch.setattr(loop_bridge_mod, "run_on_loop", _observed_hop)
+    monkeypatch.setattr(client_mod, "run_on_loop", _observed_hop)
+
+    def _sync_auth() -> Any:
+        return client.request(
+            ("control", "authenticate"),
+            pin=DUMMY_PIN,
+            opaque=waiter,
+        )
+
+    sync_caller = _start_bounded_sync_caller(_sync_auth)
+    try:
+        await _until(lambda: any(_outbound_is_authenticate(m) for m in panel.wire()))
+        waiter.set_result({"success": True, "error_code": 0})
+        result = await _join_bounded_sync_caller(sync_caller)
+        assert held_invoke
+        assert hop_abandoned.is_set()
+        assert not result.ok
+        assert isinstance(result.error, Elke27DisconnectedError)
+        assert client.authenticated is False
+        await _reconnect_expecting_no_authenticate(client, panel, clock)
+    finally:
+        await _release_held_loop_hop_invoke(loop, held_invoke, sync_caller)
+    await client.async_disconnect()
+
+
+@pytest.mark.asyncio
+async def test_sync_authenticate_loop_hop_caller_cancel_fn_never_runs(
+    panel: _FakePanel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, clock = await _connected(reauth=True, request_timeout_s=5.0)
+    panel.auth = "silent"
+    waiter: concurrent.futures.Future[dict[str, object]] = concurrent.futures.Future()
+    hop_timeout_s = 0.05
+    fn_ran = threading.Event()
+    real_run = loop_bridge_mod.run_on_loop
+    loop = asyncio.get_running_loop()
+    held_invoke: list[Callable[[], None]] = []
+
+    def _hold_schedule(callback: Callable[[], None]) -> None:
+        if held_invoke:
+            return
+        held_invoke.append(callback)
+
+    def _tracked_run(
+        loop: asyncio.AbstractEventLoop,
+        fn: Callable[[], Any],
+        /,
+        *,
+        timeout_s: float,
+        schedule: Callable[[Callable[[], None]], None] | None = None,
+    ) -> Any:
+        del schedule
+
+        def _wrapped() -> Any:
+            fn_ran.set()
+            return fn()
+
+        return real_run(
+            loop,
+            _wrapped,
+            timeout_s=hop_timeout_s,
+            schedule=_hold_schedule,
+        )
+
+    monkeypatch.setattr(loop_bridge_mod, "run_on_loop", _tracked_run)
+    monkeypatch.setattr(client_mod, "run_on_loop", _tracked_run)
+
+    def _sync_auth() -> Any:
+        return client.request(
+            ("control", "authenticate"),
+            pin=DUMMY_PIN,
+            opaque=waiter,
+        )
+
+    sync_caller = _start_bounded_sync_caller(_sync_auth)
+    try:
+        await _until(lambda: any(_outbound_is_authenticate(m) for m in panel.wire()))
+        waiter.set_result({"success": True, "error_code": 0})
+        result = await _join_bounded_sync_caller(sync_caller)
+        assert held_invoke
+        assert not fn_ran.is_set()
+        assert not result.ok
+        assert isinstance(result.error, Elke27DisconnectedError)
+        assert client.authenticated is False
+        assert len(held_invoke) == 1
+        sentinel = threading.Event()
+        loop.call_soon_threadsafe(held_invoke.pop())
+        loop.call_soon_threadsafe(sentinel.set)
+        await asyncio.to_thread(sentinel.wait, 5.0)
+        assert not fn_ran.is_set()
+        await _reconnect_expecting_no_authenticate(client, panel, clock)
+    finally:
+        await _release_held_loop_hop_invoke(loop, held_invoke, sync_caller)
+    await client.async_disconnect()
+
+
+@pytest.mark.asyncio
+async def test_sync_authenticate_loop_hop_finalize_wins_race(
+    panel: _FakePanel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kernel_loop = asyncio.new_event_loop()
+    kernel_runner = threading.Thread(target=kernel_loop.run_forever, daemon=True)
+    kernel_runner.start()
+    connect_future = asyncio.run_coroutine_threadsafe(
+        _connected(reauth=True, request_timeout_s=1.0), kernel_loop
+    )
+    client, _ = connect_future.result(timeout=5.0)
+    panel.auth = "silent"
+    waiter: concurrent.futures.Future[dict[str, object]] = concurrent.futures.Future()
+    real_prod = loop_bridge_mod.run_on_loop
+    hop_timeout_s = 0.05
+    fn_started = threading.Event()
+    fn_release = threading.Event()
+    hop_returned = threading.Event()
+    held_invoke: list[Callable[[], None]] = []
+    client_loop = kernel_loop
+    hop_spies = _install_loop_hop_run_spies()
+
+    def _hold_schedule(callback: Callable[[], None]) -> None:
+        if held_invoke:
+            return
+        held_invoke.append(callback)
+
+    def _slow_run(
+        loop: asyncio.AbstractEventLoop,
+        fn: Callable[[], Any],
+        /,
+        *,
+        timeout_s: float,
+        schedule: Callable[[Callable[[], None]], None] | None = None,
+        new_finished: Callable[[], threading.Event] | None = None,
+    ) -> Any:
+        del schedule, timeout_s, new_finished
+
+        def _blocked() -> Any:
+            fn_started.set()
+            fn_release.wait()
+            return fn()
+
+        try:
+            return _bounded_run_on_loop(
+                loop,
+                _blocked,
+                timeout_s=hop_timeout_s,
+                real_run=real_prod,
+                join_timeout_s=5.0,
+                schedule=_hold_schedule,
+                new_finished=hop_spies.new_finished,
+            )
+        finally:
+            hop_returned.set()
+
+    monkeypatch.setattr(loop_bridge_mod, "run_on_loop", _slow_run)
+    monkeypatch.setattr(client_mod, "run_on_loop", _slow_run)
+
+    def _sync_auth() -> Any:
+        return client.request(
+            ("control", "authenticate"),
+            pin=DUMMY_PIN,
+            opaque=waiter,
+        )
+
+    sync_caller = _start_bounded_sync_caller(_sync_auth)
+    try:
+        await _until(lambda: any(_outbound_is_authenticate(m) for m in panel.wire()), timeout_s=5.0)
+        waiter.set_result({"success": True, "error_code": 0})
+        await _until(lambda: bool(held_invoke), timeout_s=5.0)
+        client_loop.call_soon_threadsafe(held_invoke.pop())
+        assert await asyncio.to_thread(fn_started.wait, 5.0)
+        await _await_timed_hop_wait_entered(hop_spies)
+        await asyncio.to_thread(
+            lambda: _assert_recorded_hop_wait_timeout_s(hop_spies, hop_timeout_s)
+        )
+        await _await_lost_cancel_before_return(hop_spies, hop_returned)
+        assert not hop_returned.is_set()
+        assert hop_spies.wait_timeouts[1] is None
+        assert sync_caller.is_alive()
+        await asyncio.to_thread(fn_release.set)
+        result = await _join_bounded_sync_caller(sync_caller)
+        assert hop_returned.is_set()
+        assert result.ok is client.authenticated
+        assert client.authenticated is True
+    finally:
+        fn_release.set()
+        await _release_held_loop_hop_invoke(client_loop, held_invoke, sync_caller)
+    disconnect_future = asyncio.run_coroutine_threadsafe(client.async_disconnect(), kernel_loop)
+    disconnect_future.result(timeout=5.0)
+    kernel_loop.call_soon_threadsafe(kernel_loop.stop)
+    kernel_runner.join(timeout=5.0)
+    with contextlib.suppress(RuntimeError):
+        kernel_loop.close()
 
 
 @pytest.mark.asyncio
@@ -1389,3 +2344,93 @@ def test_session_wire_log_debug_redaction_mutation_would_leak_hex(
     s = _connected_session(monkeypatch, [frame], wire_log=True)
     s.recv_json(timeout_s=1)
     assert frame.hex() in caplog.text
+
+
+def test_run_on_loop_forwards_fn_error() -> None:
+    loop = asyncio.new_event_loop()
+    runner = threading.Thread(target=loop.run_forever, daemon=True)
+    runner.start()
+
+    def _boom() -> int:
+        raise ValueError("boom")
+
+    try:
+        with pytest.raises(ValueError, match="boom"):
+            _bounded_run_on_loop(
+                loop,
+                _boom,
+                timeout_s=5.0,
+                real_run=loop_bridge_mod.run_on_loop,
+            )
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        runner.join(timeout=5.0)
+        loop.close()
+
+
+def test_run_on_loop_forwards_runtime_error_from_fn() -> None:
+    loop = asyncio.new_event_loop()
+    runner = threading.Thread(target=loop.run_forever, daemon=True)
+    runner.start()
+
+    def _fail() -> int:
+        raise RuntimeError("kernel not linked")
+
+    try:
+        with pytest.raises(RuntimeError, match="kernel not linked"):
+            _bounded_run_on_loop(
+                loop,
+                _fail,
+                timeout_s=5.0,
+                real_run=loop_bridge_mod.run_on_loop,
+            )
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        runner.join(timeout=5.0)
+        loop.close()
+
+
+@pytest.mark.asyncio
+async def test_sync_authenticate_loop_hop_uses_request_timeout_s(
+    panel: _FakePanel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hop_timeout_s = 1.75
+    kernel_loop = asyncio.new_event_loop()
+    kernel_runner = threading.Thread(target=kernel_loop.run_forever, daemon=True)
+    kernel_runner.start()
+    connect_future = asyncio.run_coroutine_threadsafe(
+        _connected(reauth=True, request_timeout_s=hop_timeout_s), kernel_loop
+    )
+    client, _ = connect_future.result(timeout=5.0)
+    panel.auth = "silent"
+    waiter: concurrent.futures.Future[dict[str, object]] = concurrent.futures.Future()
+    hop_timeouts: list[float] = []
+    real_hop = loop_bridge_mod.run_on_loop
+
+    def _watch_hop(
+        hop_loop: asyncio.AbstractEventLoop,
+        fn: Callable[[], Any],
+        /,
+        **kwargs: Any,
+    ) -> Any:
+        hop_timeouts.append(kwargs["timeout_s"])
+        return real_hop(hop_loop, fn, **kwargs)
+
+    monkeypatch.setattr(client_mod, "run_on_loop", _watch_hop)
+
+    def _sync_auth() -> Any:
+        return client.request(("control", "authenticate"), pin=DUMMY_PIN, opaque=waiter)
+
+    sync_caller = _start_bounded_sync_caller(_sync_auth)
+    try:
+        await _until(lambda: any(_outbound_is_authenticate(m) for m in panel.wire()), timeout_s=5.0)
+        waiter.set_result({"success": True, "error_code": 0})
+        result = await _join_bounded_sync_caller(sync_caller)
+        assert result.ok
+        assert hop_timeouts == [hop_timeout_s]
+    finally:
+        disconnect_future = asyncio.run_coroutine_threadsafe(client.async_disconnect(), kernel_loop)
+        disconnect_future.result(timeout=5.0)
+        kernel_loop.call_soon_threadsafe(kernel_loop.stop)
+        kernel_runner.join(timeout=5.0)
+        kernel_loop.close()
