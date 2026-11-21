@@ -1,53 +1,62 @@
-"""Block a sync caller until a coroutine finishes on a running event loop."""
+"""Block a sync caller until a synchronous callable finishes on a running event loop."""
 
 from __future__ import annotations
 
 import asyncio
 import concurrent.futures
 import threading
-from collections.abc import Coroutine
-from typing import Any, TypeVar
+from collections.abc import Callable
+from typing import TypeVar
 
 T = TypeVar("T")
 
 
 class LoopHopTimeout(Exception):
-    """Raised when the hop deadline passed before the coroutine was abandoned and cancelled."""
+    """Raised when the hop ended before fn() ran."""
 
 
 class LoopHopClosed(Exception):
     """Raised when the event loop could not accept a thread-safe coroutine submission."""
 
 
-def _hop_result_after_abandon(hop: concurrent.futures.Future[T]) -> T:
-    try:
-        return hop.result()
-    except concurrent.futures.CancelledError:
-        raise LoopHopTimeout from None
-
-
-def run_coroutine_on_loop(
+def run_on_loop(
     loop: asyncio.AbstractEventLoop,
-    coro: Coroutine[Any, Any, T],
+    fn: Callable[[], T],
     *,
     timeout_s: float,
-    started: threading.Event,
-    abandoned: threading.Event,
+    gate: concurrent.futures.Future[None] | None = None,
+    schedule: Callable[[Callable[[], None]], None] | None = None,
 ) -> T:
-    """On timeout, abandon and cancel only if the coroutine never claimed the hop; else wait for its result."""
+    """Return fn()'s result when it ran; raise LoopHopTimeout when fn() did not run."""
+    claim = gate if gate is not None else concurrent.futures.Future()
+    finished = threading.Event()
+    outcome: list[T] = []
+    errors: list[BaseException] = []
+
+    def _invoke() -> None:
+        if not claim.set_running_or_notify_cancel():
+            finished.set()
+            return
+        try:
+            outcome.append(fn())
+        except Exception as err:  # noqa: BLE001 -- forward any callback error to the caller
+            errors.append(err)
+        finally:
+            finished.set()
+
+    submit = schedule if schedule is not None else loop.call_soon_threadsafe
     try:
-        hop = asyncio.run_coroutine_threadsafe(coro, loop)
+        submit(_invoke)
     except RuntimeError as exc:
         raise LoopHopClosed from exc
 
-    try:
-        return hop.result(timeout=timeout_s)
-    except TimeoutError:
-        abandoned.set()
-        if started.is_set():
-            return _hop_result_after_abandon(hop)
-        if hop.cancel():
+    if not finished.wait(timeout=timeout_s):
+        if claim.cancel():
             raise LoopHopTimeout from None
-        if started.is_set():
-            return _hop_result_after_abandon(hop)
+    while not finished.is_set():
+        finished.wait(timeout=timeout_s)
+    if errors:
+        raise errors[0]
+    if not outcome:
         raise LoopHopTimeout from None
+    return outcome[0]

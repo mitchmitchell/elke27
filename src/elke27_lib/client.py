@@ -177,7 +177,7 @@ from .kernel_loop import (
     KernelNotLinkedError,
 )
 from .linking_thread import E27Identity, E27LinkKeys
-from .loop_bridge_thread import LoopHopClosed, LoopHopTimeout, run_coroutine_on_loop
+from .loop_bridge_thread import LoopHopClosed, LoopHopTimeout, run_on_loop
 from .outbound_loop import OutboundPriority
 from .pending_loop import consume_outcome
 from .permissions import (
@@ -2431,24 +2431,8 @@ class Elke27Client:
         if loop is None or not loop.is_running() or self._kernel.current_thread_runs_bound_loop():
             return fn()
 
-        started = threading.Event()
-        abandoned = threading.Event()
-
-        async def _claimed() -> _LoopHopT:
-            started.set()
-            await asyncio.sleep(0)
-            if abandoned.is_set():
-                raise asyncio.CancelledError()
-            return fn()
-
         try:
-            return run_coroutine_on_loop(
-                loop,
-                _claimed(),
-                timeout_s=timeout_s,
-                started=started,
-                abandoned=abandoned,
-            )
+            return run_on_loop(loop, fn, timeout_s=timeout_s)
         except (LoopHopTimeout, LoopHopClosed):
             return cast(_LoopHopT, self._disconnected_loop_hop_error())
 

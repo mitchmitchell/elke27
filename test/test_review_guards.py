@@ -528,6 +528,7 @@ NOQA_CEILING: dict[str, int] = {
     "src/elke27_lib/dispatcher_loop.py:BLE001": 1,
     "src/elke27_lib/handlers/control.py:BLE001": 3,
     "src/elke27_lib/kernel_loop.py:BLE001": 4,
+    "src/elke27_lib/loop_bridge_thread.py:BLE001": 1,
     "src/elke27_lib/outbound_loop.py:BLE001": 3,
     "src/elke27_lib/session_thread.py:BLE001": 1,
     "test/conftest.py:BLE001": 2,
