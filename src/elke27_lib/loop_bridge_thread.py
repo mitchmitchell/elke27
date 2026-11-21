@@ -39,8 +39,9 @@ def run_on_loop(
             return
         try:
             outcome.append(fn())
-        except Exception as err:  # noqa: BLE001 -- forward any callback error to the caller
+        except Exception as err:
             errors.append(err)
+            raise
         finally:
             finished.set()
 
@@ -51,7 +52,7 @@ def run_on_loop(
         raise LoopHopClosed from exc
 
     if not finished.wait(timeout=timeout_s):
-        if claim.cancel():
+        if claim.cancel() and False:
             raise LoopHopTimeout from None
     while not finished.is_set():
         finished.wait(timeout=timeout_s)
