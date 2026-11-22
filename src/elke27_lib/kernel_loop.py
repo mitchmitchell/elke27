@@ -476,7 +476,7 @@ class E27Kernel:
         self._closed_explicitly = False
         self._sent_events = {}
         self._confirmed_sent_seqs: set[int] = set()
-        self._keepalive_probe_sent_at_by_seq: dict[int, float] = {}
+        self._keepalive_probe_sent_at_by_seq: dict[int, float | None] = {}
         # Correlation-only pending entries for fire-and-forget sends (#40). Nothing
         # waits on them, so they are dropped on close and on every connect.
         self._fire_and_forget_pending_seqs: set[int] = set()
@@ -631,6 +631,7 @@ class E27Kernel:
         self._loop = asyncio.get_running_loop()
         self._loop_thread_id = threading.get_ident()
         loop = self._loop
+        self._reset_outbound_send_tracking()
         self._drop_fire_and_forget_pending()  # never carry correlation across sessions
         if session_config is None and panel is None:
             raise KernelMissingContextError(
@@ -1005,11 +1006,6 @@ class E27Kernel:
                 seq, E27Timeout(f"Keepalive probe abandoned: seq={seq}"), drop_pending_response=True
             )
 
-    def _probe_sent_at(self, seq: int) -> float | None:
-        if self._active_seq != seq:
-            return None
-        return self._active_sent_at
-
     async def _send_keepalive_request(self, *, force: bool = False) -> bool:
         """Send one ``system.r_u_alive`` probe and report whether the link is alive.
 
@@ -1044,10 +1040,13 @@ class E27Kernel:
         self._keepalive_inflight = True
         stats = self._keepalive_stats
         future: asyncio.Future[Mapping[str, Any]] | None = None
+        probe_seq: int | None = None
         try:
             builder = self.requests.require(("system", "r_u_alive"))
             payload = builder()
             seq = self._next_seq()
+            probe_seq = seq
+            self._keepalive_probe_sent_at_by_seq[seq] = None
             future = self._pending_responses.create(
                 seq,
                 command_key="system_r_u_alive",
@@ -1106,8 +1105,10 @@ class E27Kernel:
             self._log.debug("E27 keepalive probe sent")
             try:
                 await future
+            except asyncio.CancelledError:
+                future.cancel()
+                raise
             except E27Timeout:
-                self._keepalive_probe_sent_at_by_seq.pop(seq, None)
                 stats.probe_timeouts += 1
                 if self._log.isEnabledFor(logging.INFO):
                     self._log.info(
@@ -1121,7 +1122,6 @@ class E27Kernel:
                     self._log.debug("E27 keepalive reply missing; later traffic kept the link")
                 return rescued
             except Exception as exc:  # noqa: BLE001 -- keepalive probe must not crash the loop
-                self._keepalive_probe_sent_at_by_seq.pop(seq, None)
                 self._log.warning(
                     "E27 keepalive check failed: seq=%s session_id=%s error=%s",
                     seq,
@@ -1130,32 +1130,29 @@ class E27Kernel:
                     exc_info=True,
                 )
                 return sent_at is not None and self._rx_thread_at > sent_at
-            self._keepalive_probe_sent_at_by_seq.pop(seq, None)
             stats.replies += 1
+            rtt: float | None = None
             if sent_at is not None:
                 rtt = self.now() - sent_at
                 stats.last_round_trip_s = rtt
                 if stats.max_round_trip_s is None or rtt > stats.max_round_trip_s:
                     stats.max_round_trip_s = rtt
-            else:
-                rtt = None
-            if rtt is not None:
-                self._log.debug(
-                    "E27 keepalive round-trip ok in %.3fs (replies=%d, max=%.3fs, timeout=%.1fs)",
-                    rtt,
-                    stats.replies,
-                    stats.max_round_trip_s,
-                    self._keepalive_timeout_s,
-                )
-            else:
-                self._log.debug(
-                    "E27 keepalive reply ok without send timestamp (replies=%d, timeout=%.1fs)",
-                    stats.replies,
-                    self._keepalive_timeout_s,
-                )
+            rtt_display = f"{rtt:.3f}s" if rtt is not None else "n/a"
+            max_display = (
+                f"{stats.max_round_trip_s:.3f}s" if stats.max_round_trip_s is not None else "n/a"
+            )
+            self._log.debug(
+                "E27 keepalive reply ok in %s (replies=%d, max=%s, timeout=%.1fs)",
+                rtt_display,
+                stats.replies,
+                max_display,
+                self._keepalive_timeout_s,
+            )
             return True
         finally:
             self._keepalive_inflight = False
+            if probe_seq is not None:
+                self._keepalive_probe_sent_at_by_seq.pop(probe_seq, None)
             if future is not None:
                 consume_outcome(future)
 
@@ -1881,7 +1878,12 @@ class E27Kernel:
             self.dispatcher.drop_pending(seq)
         self._fire_and_forget_pending_seqs.clear()
 
+    def _reset_outbound_send_tracking(self) -> None:
+        self._confirmed_sent_seqs.clear()
+        self._keepalive_probe_sent_at_by_seq.clear()
+
     def _fail_all_pending_commands(self, exc: BaseException) -> None:
+        self._reset_outbound_send_tracking()
         self._drop_fire_and_forget_pending()
         queued_items: list[_QueuedRequest] = self._drain_transport_retry_waiters()
         for queue in (self._request_queue_high, self._request_queue_normal):
@@ -2141,12 +2143,7 @@ class E27Kernel:
         self._last_exchange_at = now
         if seq in self._sent_events:
             self._confirmed_sent_seqs.add(seq)
-        active = self._active_request
-        if seq in self._sent_events or (
-            active is not None
-            and isinstance(active, _QueuedRequest)
-            and _queued_request_is_keepalive(active)
-        ):
+        if seq in self._keepalive_probe_sent_at_by_seq:
             self._keepalive_probe_sent_at_by_seq[seq] = now
         self._signal_sent_event(seq)
 

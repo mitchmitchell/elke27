@@ -131,7 +131,7 @@ async def test_round_trips_log_debug_and_count(
     assert isinstance(stats.last_round_trip_s, float)
     assert stats.max_round_trip_s is not None
     assert stats.max_round_trip_s >= stats.last_round_trip_s
-    ok = [r for r in caplog.records if "keepalive round-trip ok" in r.getMessage()]
+    ok = [r for r in caplog.records if "keepalive reply ok" in r.getMessage()]
     sent = [r for r in caplog.records if "keepalive probe sent" in r.getMessage()]
     assert len(ok) >= 2 and len(sent) >= 2
     armed = [r for r in caplog.records if "keepalive armed" in r.getMessage()]
