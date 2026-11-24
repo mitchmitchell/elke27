@@ -8,12 +8,17 @@ table entry that was added or raised:
   files under ``test/`` and ``devtools/`` (dicts of counts, dicts of code lists,
   and sets, lists, tuples or ``frozenset``/``set`` calls of names);
 - every ruff suppression key (``ignore``, ``extend-ignore``, ``per-file-ignores``,
-  ``extend-per-file-ignores``, ``exclude``, ``extend-exclude``, ``external``, in the
-  ``lint`` section and the legacy top-level spelling) in ``pyproject.toml``,
-  ``ruff.toml`` and ``.ruff.toml``; a key absent at the base counts as empty;
-- ruff ``select``/``extend-select``, where dropping a rule is the growth;
-- every table of counts under ``[tool.elke27]`` whose key ends in ``ceiling`` and
-  every list whose key ends in ``exclude`` (for example the loopcheck tables).
+  ``extend-per-file-ignores``, ``exclude``, ``extend-exclude``, ``external``,
+  flake8-self ``ignore-names``/``extend-ignore-names``, in the ``lint`` section and
+  the legacy top-level spelling) in ``pyproject.toml``, ``ruff.toml`` and
+  ``.ruff.toml``; a key absent at the base counts as empty;
+- ruff ``select``/``extend-select``, where dropping a rule is the growth, and ruff
+  ``include``, where setting it or dropping an entry is the growth;
+- every table of counts under ``[tool.elke27]`` whose key ends in ``ceiling`` (a
+  value that is not an integer is a finding), every list whose key ends in
+  ``exclude``, and every list ending in ``_modules`` or ``_paths`` (what a check
+  covers; dropping an entry is the growth);
+- inline ``noqa`` directives naming ``SLF001`` in ``src/``, counted per file.
 
 Tables are matched by file and name, so a same-named table elsewhere cannot stand
 in for the real one. A table that disappears is reported too. Replacing a glob
@@ -70,7 +75,15 @@ RUFF_SUPPRESSIONS = (
     ("lint", "exclude"),
     ("lint", "external"),
     ("format", "exclude"),
+    ("flake8-self", "ignore-names"),
+    ("flake8-self", "extend-ignore-names"),
+    ("lint", "flake8-self", "ignore-names"),
+    ("lint", "flake8-self", "extend-ignore-names"),
 )
+RUFF_SCOPES = (("include",),)
+SRC = "src/"
+INLINE_NOQA = re.compile(r"#\s*noqa:[^#]*\bSLF001\b")
+INLINE_TABLE = "inline noqa: SLF001 per src file"
 RUFF_SELECTIONS = (
     ("select",),
     ("extend-select",),
@@ -395,13 +408,19 @@ def toml_tables(
     Every known ruff key yields a table, empty when the key is absent, so a key that
     first appears in a change is compared against nothing and any entry is growth.
     Selection tables are named ``...!select``: for them a removed entry is growth.
+    Scope tables (``include``) are named ``...!scope``: setting one where the base had
+    none, or removing an entry, narrows what ruff checks and is growth.
+    ``[tool.elke27]`` lists ending in ``_modules`` or ``_paths`` name what a check
+    covers and are selection tables too.
     """
     config = tomllib.loads(source)
     lines = source.splitlines()
     tables: list[Table] = []
-    for keys, suffix in [(k, "") for k in RUFF_SUPPRESSIONS] + [
-        (k, "!select") for k in RUFF_SELECTIONS
-    ]:
+    for keys, suffix in (
+        [(k, "") for k in RUFF_SUPPRESSIONS]
+        + [(k, "!select") for k in RUFF_SELECTIONS]
+        + [(k, "!scope") for k in RUFF_SCOPES]
+    ):
         full = (*prefix, *keys)
         entries = _entries(_lookup(config, full))
         found = {key: _toml_line(lines, full, key) for key in entries}
@@ -422,16 +441,23 @@ def _toml_ceilings(node: object, prefix: tuple[str, ...], lines: list[str]) -> l
             entries = _entries(value)
             found = {k: _toml_line(lines, keys, k) for k in entries}
             tables.append(Table(PYPROJECT, name, entries, found))
+        elif str(key).endswith(("_modules", "_paths")) and isinstance(value, list):
+            entries = _entries(value)
+            found = {k: _toml_line(lines, keys, k) for k in entries}
+            tables.append(Table(PYPROJECT, name + "!select", entries, found))
         elif not isinstance(value, dict):
             continue
         elif str(key).endswith("ceiling"):
-            counts: dict[str, Value] = {
-                str(k): v
-                for k, v in value.items()
-                if isinstance(v, int) and not isinstance(v, bool)
-            }
+            counts: dict[str, Value] = {}
+            problems: list[tuple[int, str]] = []
+            for k, v in value.items():
+                if isinstance(v, int) and not isinstance(v, bool):
+                    counts[str(k)] = v
+                else:
+                    line = _toml_line(lines, keys, str(k))
+                    problems.append((line, f"{k!r} is not an integer count"))
             found = {k: _toml_line(lines, keys, k) for k in counts}
-            tables.append(Table(PYPROJECT, name, counts, found))
+            tables.append(Table(PYPROJECT, name, counts, found, tuple(problems)))
         else:
             tables += _toml_ceilings(value, keys, lines)
     return tables
@@ -447,6 +473,20 @@ def tables(tree: Tree) -> dict[str, Table]:
         if source is not None:
             for table in python_tables(path, source):
                 found[f"{path}::{table.name}"] = table
+    inline: dict[str, Value] = {}
+    inline_lines: dict[str, int] = {}
+    for path in tree.paths():
+        if not (path.startswith(SRC) and path.endswith(".py")):
+            continue
+        hits = [
+            number
+            for number, text in enumerate((tree.read(path) or "").splitlines(), 1)
+            if INLINE_NOQA.search(text)
+        ]
+        if hits:
+            inline[path] = len(hits)
+            inline_lines[path] = hits[0]
+    found[f"{SRC}::{INLINE_TABLE}"] = Table(SRC, INLINE_TABLE, inline, inline_lines)
     for path, prefix in RUFF_FILES:
         source = tree.read(path)
         if source is not None and path != PYPROJECT:
@@ -498,6 +538,14 @@ def compare(base: dict[str, Table], head: dict[str, Table]) -> list[Finding]:
                 continue
             old = Table(new.path, new.name, {}, {})
         name = new.name
+        if name.endswith("!scope"):
+            if new.entries and not old.entries:
+                findings.append(
+                    Finding(new.path, 1, f"{name[:-6]} set; it narrows what ruff checks")
+                )
+            for entry in sorted(old.entries.keys() - new.entries.keys()):
+                findings.append(Finding(new.path, 1, f"{name[:-6]} dropped {entry!r}"))
+            continue
         if name.endswith("!select"):
             for entry in sorted(old.entries.keys() - new.entries.keys()):
                 findings.append(Finding(new.path, 1, f"{name[:-7]} dropped {entry!r}"))
