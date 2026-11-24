@@ -125,3 +125,5 @@ def test_new_inline_slf001_noqa_in_src_is_growth(tmp_path: Path) -> None:
         f"{ratchet.INLINE_TABLE}['src/pkg/a.py'] rose 1 -> 2"
     ]
     assert _messages(tmp_path, head, base) == []
+    found = ratchet.compare(_tables(tmp_path / "b2", base), _tables(tmp_path / "h2", head))
+    assert [(f.path, f.line) for f in found] == [("src/pkg/a.py", 2)]

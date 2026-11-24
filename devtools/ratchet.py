@@ -552,20 +552,19 @@ def compare(base: dict[str, Table], head: dict[str, Table]) -> list[Finding]:
             continue
         for entry, value in new.entries.items():
             line = new.lines.get(entry, 1)
+            path = entry if new.path == SRC else new.path
             if entry not in old.entries:
                 if not _narrows(entry, value, old):
-                    findings.append(Finding(new.path, line, f"{name} gained {entry!r}"))
+                    findings.append(Finding(path, line, f"{name} gained {entry!r}"))
                 continue
             before = old.entries[entry]
             if isinstance(value, int) and isinstance(before, int) and value > before:
-                findings.append(
-                    Finding(new.path, line, f"{name}[{entry!r}] rose {before} -> {value}")
-                )
+                findings.append(Finding(path, line, f"{name}[{entry!r}] rose {before} -> {value}"))
             elif isinstance(value, frozenset) and isinstance(before, frozenset):
                 if gained := sorted(value - before):
-                    findings.append(Finding(new.path, line, f"{name}[{entry!r}] gained {gained}"))
+                    findings.append(Finding(path, line, f"{name}[{entry!r}] gained {gained}"))
             elif type(value) is not type(before):
-                findings.append(Finding(new.path, line, f"{name}[{entry!r}] changed kind"))
+                findings.append(Finding(path, line, f"{name}[{entry!r}] changed kind"))
     return findings
 
 
