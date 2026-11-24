@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import ast
 import re
+import subprocess
+import sys
 import tokenize
 import tomllib
 from pathlib import Path
@@ -126,7 +128,7 @@ def test_private_access_only_in_legacy_test_files() -> None:
 # PRIVATE_ACCESS_CEILING (which carries each file's count). Adding a file, swapping
 # one for another, or adding a code such as BLE001 fails here.
 FROZEN_EXTRA_PER_FILE_IGNORES: dict[str, list[str]] = {
-    "test/helpers/*": ["SLF001", "BLE001"],
+    "test/helpers/keepalive_seam.py": ["SLF001"],
     "src/elke27_lib/*_thread.py": ["ASYNC"],
     "test/*": ["ASYNC"],
 }
@@ -163,6 +165,115 @@ def test_private_access_in_helpers_only_in_legacy_modules() -> None:
         "New test helpers must use the public API, not private members."
     )
     assert LEGACY_PRIVATE_HELPERS - found == set(), "Drop clean LEGACY_PRIVATE_HELPERS entries"
+
+
+HELPER_PRIVATE_ACCESS_CEILING: dict[str, int] = {
+    "test/helpers/internal.py": 5,
+    "test/helpers/keepalive_seam.py": 62,
+}
+
+
+def test_private_access_in_helpers_does_not_grow() -> None:
+    """Helper modules are counted like test files; the legacy ones only shrink."""
+    counts = {_rel(p): n for p in _helper_modules() if (n := _private_access_count(p))}
+    assert counts == {f: n for f, n in HELPER_PRIVATE_ACCESS_CEILING.items() if n}, (
+        "Private access in test/helpers changed (file: count). New helpers use the "
+        "public API; when a count drops, lower HELPER_PRIVATE_ACCESS_CEILING."
+    )
+
+
+_PATCHERS = {"setattr", "delattr", "patch"}
+_DUNDER_REFLECTION = {"__setattr__", "__getattribute__", "__delattr__"}
+
+
+def _library_names(tree: ast.Module) -> set[str]:
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("elke27_lib"):
+            names |= {a.asname or a.name for a in node.names}
+        elif isinstance(node, ast.Import):
+            names |= {
+                a.asname or a.name.split(".")[0]
+                for a in node.names
+                if a.name.startswith("elke27_lib")
+            }
+    return names
+
+
+def _root_name(node: ast.expr) -> str | None:
+    while isinstance(node, ast.Attribute):
+        node = node.value
+    return node.id if isinstance(node, ast.Name) else None
+
+
+def _hidden_private_access(path: Path) -> list[str]:
+    """Private reach the SLF001 counter misses: string patch targets, dunder
+    reflection, ``patch.object`` names and library subclasses overriding ``_`` methods."""
+    tree = _tree(path)
+    library = _library_names(tree)
+    hits: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            name = _call_name(node)
+            first = node.args[0] if node.args else None
+            if (
+                name in _PATCHERS
+                and isinstance(first, ast.Constant)
+                and isinstance(first.value, str)
+                and "." in first.value
+                and any(_is_private(part) for part in first.value.split("."))
+            ):
+                hits.append(f"{name}({first.value!r})")
+            elif name in _DUNDER_REFLECTION or (
+                name == "object"
+                and isinstance(node.func, ast.Attribute)
+                and _root_name(node.func.value) == "patch"
+            ):
+                literal = _literal_name(node)
+                if literal is not None and _is_private(literal):
+                    hits.append(f"{name}(..., {literal!r})")
+        elif isinstance(node, ast.ClassDef) and any(_root_name(b) in library for b in node.bases):
+            hits += [
+                f"{node.name}.{item.name} override"
+                for item in node.body
+                if isinstance(item, ast.FunctionDef | ast.AsyncFunctionDef)
+                and _is_private(item.name)
+            ]
+    return hits
+
+
+HIDDEN_PRIVATE_ACCESS_CEILING: dict[str, int] = {
+    "test/test_snapshot_after_arm_bypass.py": 1,
+}
+
+
+def test_hidden_private_access_does_not_grow() -> None:
+    """String patch targets, dunder reflection and private overrides only shrink."""
+    counts = {
+        _rel(p): n
+        for p in [*_test_modules(), *_helper_modules()]
+        if (n := len(_hidden_private_access(p)))
+    }
+    assert counts == HIDDEN_PRIVATE_ACCESS_CEILING, (
+        "Hidden private access changed (file: count). Patch or subclass through the "
+        "public API; when a count drops, lower HIDDEN_PRIVATE_ACCESS_CEILING."
+    )
+
+
+def test_review_tables_only_shrink_against_main() -> None:
+    """devtools/ratchet.py: no ceiling, allowlist or ignore table grew against main."""
+    result = subprocess.run(
+        [sys.executable, "devtools/ratchet.py"], cwd=ROOT, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_library_modules_do_not_import_private_names() -> None:
+    """devtools/privatecheck.py: no ``from .x import _name`` inside src."""
+    result = subprocess.run(
+        [sys.executable, "devtools/privatecheck.py"], cwd=ROOT, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 # Names ruff SLF001 ignores by default (namedtuple/enum API) and owner names it skips.

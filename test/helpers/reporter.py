@@ -16,7 +16,7 @@ def _safe_json_default(obj: Any) -> Any:
         return {"__bytes__": True, "len": len(obj), "sha256": None}
     try:
         return str(obj)
-    except Exception:
+    except (TypeError, ValueError, RecursionError):
         return repr(obj)
 
 
@@ -32,7 +32,7 @@ def _load_redactor():
         redact_record = getattr(module, "redact_record", None)
         if callable(redact_record):
             return redact_record
-    except Exception:
+    except ImportError:
         return None
     return None
 
@@ -107,8 +107,7 @@ class Reporter:
                 redacted = _REDACT(record)
                 if isinstance(redacted, dict):
                     return cast(dict[str, Any], redacted)
-            except Exception:
-                # If project redactor fails, fall back.
+            except (TypeError, ValueError, KeyError, AttributeError):
                 return _minimal_redact(record)
         return _minimal_redact(record)
 
@@ -192,7 +191,7 @@ class Reporter:
                     with self._yaml_path.open("w", encoding="utf-8") as f:
                         safe_dump(summary, f, sort_keys=False, default_flow_style=False)
                     return
-            except Exception:
+            except ImportError:
                 pass
             with self._yaml_path.open("w", encoding="utf-8") as f:
                 # Fallback: write JSON with .yaml extension (still readable, avoids hard dependency)
