@@ -70,3 +70,28 @@ async def test_reused_seq_not_stale_rtt_after_session_reset() -> None:
 @pytest.mark.asyncio
 async def test_write_confirmed_after_send_state_reset_measures_rtt() -> None:
     await keepalive_seam.run_write_confirmed_after_send_state_reset_measures_rtt()
+
+
+@pytest.mark.asyncio
+async def test_probe_send_raises_counts_failed_not_sent() -> None:
+    await keepalive_seam.run_probe_send_raises_counts_failed_not_sent()
+
+
+@pytest.mark.asyncio
+async def test_probe_timeout_does_not_count_failed() -> None:
+    await keepalive_seam.run_probe_timeout_does_not_count_failed()
+
+
+@pytest.mark.asyncio
+async def test_written_probe_other_error_counts_neither_failed_nor_timeout() -> None:
+    await keepalive_seam.run_written_probe_other_error_counts_neither_failed_nor_timeout()
+
+
+@pytest.mark.asyncio
+async def test_close_clears_confirmed_send_records() -> None:
+    await keepalive_seam.run_close_clears_confirmed_send_records()
+
+
+@pytest.mark.asyncio
+async def test_connect_clears_confirmed_send_records() -> None:
+    await keepalive_seam.run_connect_clears_confirmed_send_records()

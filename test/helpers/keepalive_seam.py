@@ -9,11 +9,13 @@ from typing import Any, cast
 
 import pytest
 
+from elke27_lib import linking_thread as linking
 from elke27_lib.kernel_loop import (
     E27Kernel,
     KeepaliveStats,
     KeepaliveTestHooks,
     KernelError,
+    KernelMissingContextError,
     _QueuedRequest,
     _RequestState,
 )
@@ -591,10 +593,11 @@ async def run_reused_seq_not_stale_rtt_after_session_reset() -> None:
     assert await asyncio.wait_for(task, timeout=2.0) is True
     reset_outbound_send_tracking(kernel)
     assert get_private(kernel, "_keepalive_probe_sent_at_by_seq") == {}
-    set_private(kernel, "_keepalive_probe_sent_at_by_seq", {seq: seam.clock.t - 500.0})
     set_private(kernel, "_seq", seq)
     task2 = asyncio.create_task(send_keepalive(kernel, force=True))
     await until_probe_sent(session, n=2)
+    assert int(session.sent[1][0]["seq"]) == seq
+    get_private(kernel, "_keepalive_probe_sent_at_by_seq")[seq] = seam.clock.t - 500.0
     confirm_probe_sent_and_maybe_reply(seam, session, 1, reply_after_s=0.1)
     assert await asyncio.wait_for(task2, timeout=2.0) is True
     stats = kernel.keepalive_stats
@@ -617,3 +620,67 @@ async def run_write_confirmed_after_send_state_reset_measures_rtt() -> None:
     assert stats.last_round_trip_s == pytest.approx(0.1)
     assert get_private(kernel, "_keepalive_probe_sent_at_by_seq") == {}
     assert_keepalive_invariants(stats)
+
+
+async def run_probe_send_raises_counts_failed_not_sent() -> None:
+    _, kernel, session = stats_probing_seam()
+
+    def _raise(*_a: Any, **_k: Any) -> None:
+        raise KernelError("send raised")
+
+    set_private(kernel, "_send_request_with_seq", _raise)
+    assert await asyncio.wait_for(send_keepalive(kernel, force=True), timeout=2.0) is False
+    stats = kernel.keepalive_stats
+    assert session.sent == []
+    assert stats.probes_sent == 0
+    assert stats.probes_failed == 1
+    assert get_private(kernel, "_keepalive_probe_sent_at_by_seq") == {}
+
+
+async def run_probe_timeout_does_not_count_failed() -> None:
+    seam, kernel, session = stats_probing_seam()
+    task = asyncio.create_task(send_keepalive(kernel, force=True))
+    await until_probe_sent(session)
+    confirm_probe_sent_and_maybe_reply(seam, session, 0, reply_after_s=None)
+    seam.advance(float(get_private(kernel, "_keepalive_timeout_s")) + 0.01)
+    assert await asyncio.wait_for(task, timeout=2.0) is False
+    stats = kernel.keepalive_stats
+    assert stats.probes_sent == 1
+    assert stats.probe_timeouts == 1
+    assert stats.probes_failed == 0
+
+
+async def run_written_probe_other_error_counts_neither_failed_nor_timeout() -> None:
+    seam, kernel, session = stats_probing_seam()
+    task = asyncio.create_task(send_keepalive(kernel, force=True))
+    await until_probe_sent(session)
+    seq = confirm_probe_sent_and_maybe_reply(seam, session, 0, reply_after_s=None)
+    await wait_until_probe(lambda: kernel.keepalive_stats.probes_sent == 1)
+    kernel.pending_responses.fail(seq, KernelError("post-write failure"))
+    assert await asyncio.wait_for(task, timeout=2.0) is False
+    stats = kernel.keepalive_stats
+    assert stats.probes_sent == 1
+    assert stats.probes_failed == 0
+    assert stats.probe_timeouts == 0
+    assert stats.replies == 0
+
+
+def _mark_confirmed(kernel: E27Kernel, seq: int) -> None:
+    get_private(kernel, "_register_sent_event")(seq, asyncio.Event())
+    get_private(kernel, "_mark_request_sent")(seq)
+    assert kernel.was_request_sent(seq)
+
+
+async def run_close_clears_confirmed_send_records() -> None:
+    kernel = E27Kernel()
+    _mark_confirmed(kernel, 7)
+    await kernel.close()
+    assert not kernel.was_request_sent(7)
+
+
+async def run_connect_clears_confirmed_send_records() -> None:
+    kernel = E27Kernel()
+    _mark_confirmed(kernel, 7)
+    with pytest.raises(KernelMissingContextError):
+        await kernel.connect(linking.E27LinkKeys("a", "b", "c"))
+    assert not kernel.was_request_sent(7)

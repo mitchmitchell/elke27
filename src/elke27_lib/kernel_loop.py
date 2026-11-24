@@ -476,7 +476,8 @@ class E27Kernel:
         self._closed_explicitly = False
         self._sent_events = {}
         self._confirmed_sent_seqs: set[int] = set()
-        self._keepalive_probe_sent_at_by_seq: dict[int, float | None] = {}
+        self._keepalive_probe_seqs: set[int] = set()
+        self._keepalive_probe_sent_at_by_seq: dict[int, float] = {}
         # Correlation-only pending entries for fire-and-forget sends (#40). Nothing
         # waits on them, so they are dropped on close and on every connect.
         self._fire_and_forget_pending_seqs: set[int] = set()
@@ -995,6 +996,7 @@ class E27Kernel:
         self._pending_responses.drop(seq)
         self._remove_queued_seq(seq)
         self._sent_events.pop(seq, None)
+        self._keepalive_probe_seqs.discard(seq)
         self._keepalive_probe_sent_at_by_seq.pop(seq, None)
         if (
             self._request_state is _RequestState.IN_FLIGHT
@@ -1046,7 +1048,7 @@ class E27Kernel:
             payload = builder()
             seq = self._next_seq()
             probe_seq = seq
-            self._keepalive_probe_sent_at_by_seq[seq] = None
+            self._keepalive_probe_seqs.add(seq)
             future = self._pending_responses.create(
                 seq,
                 command_key="system_r_u_alive",
@@ -1101,14 +1103,10 @@ class E27Kernel:
                 return False
             self.forget_request_sent(seq)
             sent_at = self._keepalive_probe_sent_at_by_seq[seq]
-            assert sent_at is not None
             stats.probes_sent += 1
             self._log.debug("E27 keepalive probe sent")
             try:
                 await future
-            except asyncio.CancelledError:
-                future.cancel()
-                raise
             except E27Timeout:
                 stats.probe_timeouts += 1
                 if self._log.isEnabledFor(logging.INFO):
@@ -1147,6 +1145,7 @@ class E27Kernel:
         finally:
             self._keepalive_inflight = False
             if probe_seq is not None:
+                self._keepalive_probe_seqs.discard(probe_seq)
                 self._keepalive_probe_sent_at_by_seq.pop(probe_seq, None)
             if future is not None:
                 consume_outcome(future)
@@ -2137,7 +2136,7 @@ class E27Kernel:
         self._last_exchange_at = now
         if seq in self._sent_events:
             self._confirmed_sent_seqs.add(seq)
-        if seq in self._keepalive_probe_sent_at_by_seq:
+        if seq in self._keepalive_probe_seqs:
             self._keepalive_probe_sent_at_by_seq[seq] = now
         self._signal_sent_event(seq)
 
