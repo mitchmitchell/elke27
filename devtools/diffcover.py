@@ -215,7 +215,7 @@ def exclusion_problem(
 
 def statement_starts(text: list[str], lines: set[int]) -> dict[int, int]:
     """Each line mapped to the first line of its statement, numbered as coverage does."""
-    from coverage.python import PythonParser
+    from coverage.parser import PythonParser
 
     parser = PythonParser(text="\n".join(text))
     parser.parse_source()

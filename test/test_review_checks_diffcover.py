@@ -157,7 +157,7 @@ def _coverage_report(source: str) -> dict[str, object]:
     test does not disturb the coverage run measuring the suite.
     """
     from coverage.config import DEFAULT_EXCLUDE
-    from coverage.python import PythonParser
+    from coverage.parser import PythonParser
 
     parser = PythonParser(text=source, exclude="|".join(f"(?:{p})" for p in DEFAULT_EXCLUDE))
     parser.parse_source()
