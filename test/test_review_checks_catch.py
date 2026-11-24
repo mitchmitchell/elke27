@@ -76,11 +76,26 @@ def f(loop):
         return
     with quiet(Exception):
         loop.close()
+    with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+        loop.close()
+    with suppress(*ERRORS):
+        loop.close()
 """
 
 
-def test_counts_broad_suppress_and_swallowing_excepts_only() -> None:
-    assert [line for line, _ in catchcheck.sites(SOURCE, TODAY)] == [7, 9, 15, 19, 24, 28, 39]
+def test_counts_every_suppress_and_swallowing_excepts_only() -> None:
+    found = catchcheck.sites(SOURCE, TODAY)
+    assert [line for line, _ in found] == [7, 9, 11, 15, 19, 24, 28, 39, 41, 43]
+    assert dict(found)[11] == "suppress(OSError) swallows the error"
+    assert dict(found)[41] == (
+        "contextlib.suppress(asyncio.CancelledError, TimeoutError) swallows the error"
+    )
+
+
+def test_sim105_rewrite_of_a_counted_except_is_still_counted() -> None:
+    before = "try:\n    f()\nexcept (CancelledError, TimeoutError):\n    pass\n"
+    after = "import contextlib\nwith contextlib.suppress(CancelledError, TimeoutError):\n    f()\n"
+    assert len(catchcheck.sites(before, TODAY)) == len(catchcheck.sites(after, TODAY)) == 1
 
 
 def test_exception_marker_drops_the_site_until_it_expires() -> None:

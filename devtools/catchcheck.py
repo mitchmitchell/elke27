@@ -2,7 +2,9 @@
 
 Counts two forms in ``src``, ``test`` and ``devtools``:
 
-- ``contextlib.suppress(Exception)`` or ``suppress(BaseException)``;
+- every ``contextlib.suppress(...)`` call, whatever it suppresses (a narrow
+  ``suppress(OSError)`` drops the error just like ``except OSError: pass``, which
+  ruff SIM105 rewrites into it), including aliased imports and starred arguments;
 - an ``except`` clause whose body only passes, returns nothing, continues or is
   ``...`` (the error is dropped without a trace).
 
@@ -40,25 +42,26 @@ SKIP = ("test/fixtures/",)
 BROAD = {"Exception", "BaseException"}
 
 CATCH_CEILING: dict[str, int] = {
-    "src/elke27_lib/client.py": 19,
+    "src/elke27_lib/client.py": 26,
     "src/elke27_lib/discovery.py": 1,
     "src/elke27_lib/dispatcher_loop.py": 1,
     "src/elke27_lib/handlers/area.py": 1,
     "src/elke27_lib/handlers/network_param.py": 1,
     "src/elke27_lib/handlers/zone.py": 1,
     "src/elke27_lib/hello_thread.py": 3,
-    "src/elke27_lib/kernel_loop.py": 10,
-    "src/elke27_lib/linking_thread.py": 3,
+    "src/elke27_lib/kernel_loop.py": 13,
+    "src/elke27_lib/linking_thread.py": 4,
     "src/elke27_lib/outbound_loop.py": 1,
-    "src/elke27_lib/session_thread.py": 8,
+    "src/elke27_lib/session_thread.py": 11,
     "test/conftest.py": 1,
-    "test/helpers/panel_simulator.py": 7,
+    "test/helpers/fake_kernel_dispatch.py": 1,
+    "test/helpers/panel_simulator.py": 8,
     "test/helpers/redaction.py": 1,
     "test/test_e27_link_raw_buffers.py": 1,
     "test/test_live_e27_home_assistant_contract.py": 1,
     "test/test_live_e27_system_status.py": 2,
-    "test/test_security_round1.py": 1,
-    "test/test_session_io_tstat_regression.py": 1,
+    "test/test_security_round1.py": 5,
+    "test/test_session_io_tstat_regression.py": 2,
 }
 
 
@@ -85,15 +88,15 @@ def _suppress_names(tree: ast.Module) -> set[str]:
     return names
 
 
-def _broad_suppress(call: ast.Call, names: set[str]) -> bool:
+def _suppress_call(call: ast.Call, names: set[str]) -> bool:
     func = call.func
     if isinstance(func, ast.Attribute):
-        name = func.attr
-    elif isinstance(func, ast.Name):
-        name = func.id
-    else:
-        return False
-    return name in names and any(
+        return func.attr == "suppress"
+    return isinstance(func, ast.Name) and func.id in names
+
+
+def _broad(call: ast.Call) -> bool:
+    return any(
         (isinstance(arg, ast.Name) and arg.id in BROAD)
         or (isinstance(arg, ast.Attribute) and arg.attr in BROAD)
         for arg in call.args
@@ -110,8 +113,9 @@ def sites(source: str, today: dt.date) -> list[tuple[int, str]]:
         if isinstance(node, ast.ExceptHandler) and _swallows(node.body):
             caught = ast.unparse(node.type) if node.type is not None else "everything"
             found.append((node.lineno, f"except {caught} swallows the error"))
-        elif isinstance(node, ast.Call) and _broad_suppress(node, suppress_names):
-            found.append((node.lineno, f"{ast.unparse(node)} hides every error"))
+        elif isinstance(node, ast.Call) and _suppress_call(node, suppress_names):
+            effect = "hides every error" if _broad(node) else "swallows the error"
+            found.append((node.lineno, f"{ast.unparse(node)} {effect}"))
     kept: list[tuple[int, str]] = []
     for line, text in sorted(found):
         skip, problem = allow.verdict(markers, line, CODE)
