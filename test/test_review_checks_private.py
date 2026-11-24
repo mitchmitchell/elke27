@@ -2,41 +2,24 @@
 
 from __future__ import annotations
 
+import ast
 import datetime as dt
-import importlib.util
 import subprocess
 import sys
 from pathlib import Path
-from types import ModuleType
 
 import pytest
+
+from test.helpers.devtools import load
 
 ROOT = Path(__file__).resolve().parent.parent
 DEVTOOLS = ROOT / "devtools"
 TODAY = dt.date(2026, 11, 24)
 
 
-def _load(name: str) -> ModuleType:
-    """Load a devtools script by path; sys.path and sys.modules are restored after."""
-    saved_path = list(sys.path)
-    saved_modules = set(sys.modules)
-    sys.path.insert(0, str(DEVTOOLS))
-    try:
-        spec = importlib.util.spec_from_file_location(f"devtools_{name}", DEVTOOLS / f"{name}.py")
-        assert spec is not None and spec.loader is not None
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
-        return module
-    finally:
-        sys.path[:] = saved_path
-        for added in set(sys.modules) - saved_modules:
-            del sys.modules[added]
-
-
-allow = _load("allow")
-ratchet = _load("ratchet")
-privatecheck = _load("privatecheck")
+allow = load("allow")
+ratchet = load("ratchet")
+privatecheck = load("privatecheck")
 
 BASE = """
 LEGACY_HELPERS = {"a.py", "b.py"}
@@ -339,7 +322,17 @@ def _git_repo(root: Path, files: dict[str, str]) -> None:
     for args in (
         ["init", "-q"],
         ["add", "."],
-        ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"],
+        [
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "base",
+        ],
     ):
         subprocess.run(["git", *args], cwd=root, check=True)
 
@@ -359,3 +352,43 @@ def test_ratchet_revalidates_markers_on_unchanged_lines(
 def test_loading_a_devtools_script_leaves_the_session_clean() -> None:
     assert str(DEVTOOLS) not in sys.path
     assert "allow" not in sys.modules
+    assert not any(name.startswith("devtools_") for name in sys.modules)
+    assert "tomllib" in sys.modules
+
+
+def test_allow_policy_lets_a_vendored_copy_set_its_own_approvers_and_codes() -> None:
+    policy = allow.Policy(approvers=frozenset({"Ann Lee"}), codes=r"HA2\d\d", max_days=30)
+    good = "# noqa: HA201 -- kept for the old hub (expires 2026-12-01, approved by Ann Lee)"
+    assert allow.parse(good, TODAY, policy) == allow.Marker(frozenset({"HA201"}), None)
+    mitch = good.replace("Ann Lee", "Mitch Mitchell")
+    assert (
+        allow.parse(mitch, TODAY, policy).problem == "exception approver must be one of ['Ann Lee']"
+    )
+    late = good.replace("2026-12-01", "2027-01-01")
+    assert allow.parse(late, TODAY, policy).problem == (
+        "exception expiry 2027-01-01 is more than 30 days out"
+    )
+    assert (
+        allow.parse(
+            "# noqa: ELK201 -- a b c (expires 2026-12-01, approved by Ann Lee)", TODAY, policy
+        )
+        is None
+    )
+    assert allow.parse(mitch.replace("HA201", "ELK201"), TODAY).problem is None
+    assert list(allow.line_markers(["x = 1", good], TODAY, policy)) == [2]
+
+
+def test_vendorable_modules_import_only_the_standard_library() -> None:
+    for name in ("allow", "privacc", "privacc_probes"):
+        tree = ast.parse((DEVTOOLS / f"{name}.py").read_text(encoding="utf-8"))
+        imported = {
+            (node.module or "").split(".")[0]
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+        } | {
+            alias.name.split(".")[0]
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Import)
+            for alias in node.names
+        }
+        assert imported <= set(sys.stdlib_module_names) | {"__future__"}, (name, imported)
