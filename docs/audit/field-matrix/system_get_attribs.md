@@ -16,9 +16,8 @@ Draft for Architect row-by-row review (audit #99). Code @ main `21e5d66`. Rows w
 | `eth_fail_dly_tm` | none found by grep | unreviewed | none | open |
 | `pots_fail_dly_tm` | none found by grep | unreviewed | none | open |
 | `Fire Supervision Time` | none found by grep | unreviewed | none | open |
-| `BurgSupervision Time` | none found by grep | unreviewed | none | open |
+| `Burg Supervision Time` | none found by grep | unreviewed | none | open |
 | `cloud_pw` | none found by grep | unreviewed | none | open |
 | `cloud_url` | none found by grep | unreviewed | none | open |
 | `flags` | none found by grep | unreviewed | none | open |
 | `error_code` | grep hint (module-wide, unconfirmed): src/elke27_lib/handlers/system.py:67 | unreviewed | none | open |
-| `Burg Supervision Time` | none found by grep | unreviewed | none | open |
