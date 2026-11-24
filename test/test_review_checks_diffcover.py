@@ -411,3 +411,48 @@ def test_rules_come_from_coverage_config(tmp_path: Path) -> None:
         "src/elke27_lib/e.py:2 ELK205 changed line excluded on line 2: raise NotImplementedError"
         " exception needs '-- <reason> (expires YYYY-MM-DD, approved by <Name>)'"
     ]
+
+
+HANDLERS = [
+    "def f(x):",
+    "    try:",
+    "        y = int(x)",
+    "    except ValueError:  # pragma: no cover{except_}",
+    "        y = 0",
+    "    else:  # pragma: no cover{else_}",
+    "        y += 1",
+    "    finally:  # pragma: no cover{finally_}",
+    "        x = None",
+    "    return y",
+]
+
+
+@pytest.mark.parametrize(
+    ("clause", "header", "body"), [("except_", 4, 5), ("else_", 6, 7), ("finally_", 8, 9)]
+)
+def test_pragma_on_except_else_and_finally_follows_coverage_block_rules(
+    clause: str, header: int, body: int
+) -> None:
+    from coverage.config import DEFAULT_EXCLUDE
+
+    path = "src/elke27_lib/h.py"
+    marks = {"except_": f" {EXCEPTION}", "else_": f" {EXCEPTION}", "finally_": f" {EXCEPTION}"}
+    rules = diffcover.coverage_rules(None)
+    assert rules.exclude == tuple(DEFAULT_EXCLUDE)
+    text = [line.format(**marks) for line in HANDLERS]
+    report = {
+        "files": {
+            path: {
+                "missing_lines": [],
+                "missing_branches": [],
+                "excluded_lines": [4, 5, 6, 7, 8, 9],
+            }
+        }
+    }
+    assert diffcover.findings(report, {path: {body}}, {path: text}, TODAY, rules=rules) == []
+    marks[clause] = ""
+    text = [line.format(**marks) for line in HANDLERS]
+    assert diffcover.findings(report, {path: {body}}, {path: text}, TODAY, rules=rules) == [
+        f"{path}:{body} ELK205 changed line excluded on line {header}: # pragma: no cover"
+        " exception needs '-- <reason> (expires YYYY-MM-DD, approved by <Name>)'"
+    ]

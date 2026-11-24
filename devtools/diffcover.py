@@ -23,9 +23,10 @@ Exclusions follow coverage's own config (``report:exclude_lines`` and
 ``report:partial_branches``, read through ``coverage.Coverage().config``), never a
 copy of its patterns:
 
-- every changed line in the report's ``excluded_lines`` is traced to the innermost
-  enclosing statement whose lines (the header, for a block) match an exclusion
-  pattern, and every changed line matching a partial-branch pattern (``# pragma: no
+- every changed line in the report's ``excluded_lines`` is traced, with coverage's
+  own parser run once per exclusion pattern, to the nearest line at or above it
+  that the pattern matched (so coverage's block rules, ``except``, ``else:`` and
+  ``finally:`` included, apply unchanged), and every changed line matching a partial-branch pattern (``# pragma: no
   branch``) is checked on its own line. That line must carry the exception form
   right after the pragma: ``# pragma: no cover -- <reason of three or more words>
   (expires YYYY-MM-DD, approved by <Name>)`` with a listed approver (see
@@ -173,44 +174,45 @@ def pragma_problem(line: str, pattern: str, today: dt.date) -> str | None:
     return f"{line[match.start() : match.end()].strip()} {marker.problem}"
 
 
-def _header(node: ast.stmt) -> range:
-    """The lines a pattern may sit on to exclude ``node``: decorators through the colon."""
-    start = min([node.lineno, *(d.lineno for d in getattr(node, "decorator_list", []))])
-    body = getattr(node, "body", None)
-    if isinstance(body, list) and body and isinstance(body[0], ast.stmt):
-        return range(start, body[0].lineno)
-    return range(start, (node.end_lineno or node.lineno) + 1)
+def _excluded_by(text: list[str], pattern: str) -> tuple[set[int], list[int]]:
+    """Lines coverage excludes for one pattern, and the lines the pattern matched."""
+    from coverage.parser import PythonParser
+
+    parser = PythonParser(text="\n".join(text), exclude=pattern)
+    parser.parse_source()
+    return set(parser.excluded), sorted(parser.raw_excluded)
 
 
 def exclusion_problem(
-    tree: ast.Module, text: list[str], number: int, rules: Rules, today: dt.date
+    exclusions: dict[str, tuple[set[int], list[int]]],
+    text: list[str],
+    number: int,
+    rules: Rules,
+    today: dt.date,
 ) -> str | None:
     """Why changed line ``number``, which coverage excluded, lacks an accepted reason.
 
-    The innermost enclosing statement whose own lines (or header, for a block) match an
-    exclusion pattern decides: an exempt pattern is accepted, any other needs the
-    exception form on that line.
+    Coverage's own parser is run once per exclusion pattern (``exclusions`` maps each
+    pattern to its excluded and matched lines), so its block rules (``def``, ``if``,
+    ``except``, ``else:``, ``finally:``) are used as is. A pattern that excludes the
+    line is traced to the nearest line at or above it that the pattern matched. An
+    exempt pattern is accepted; any other needs the exception form on that line.
     """
-    enclosing = sorted(
-        (
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.stmt)
-            and node.lineno <= number <= (node.end_lineno or node.lineno)
-        ),
-        key=lambda node: (node.lineno, -(node.end_lineno or node.lineno)),
-        reverse=True,
-    )
-    for node in enclosing:
-        for line in _header(node):
-            for pattern in rules.exclude:
-                if not re.search(pattern, text[line - 1]):
-                    continue
-                if pattern in rules.exempt:
-                    return None
-                problem = pragma_problem(text[line - 1], pattern, today)
-                return None if problem is None else f"excluded on line {line}: {problem}"
-    return "excluded from coverage without a matching pattern"
+    found: list[str] = []
+    for pattern in rules.exclude:
+        excluded, matched = exclusions[pattern]
+        if number not in excluded:
+            continue
+        if pattern in rules.exempt:
+            return None
+        line = max((n for n in matched if n <= number), default=None)
+        if line is None:
+            continue
+        problem = pragma_problem(text[line - 1], pattern, today)
+        if problem is None:
+            return None
+        found.append(f"excluded on line {line}: {problem}")
+    return found[0] if found else "excluded from coverage without a matching pattern"
 
 
 def statement_starts(text: list[str], lines: set[int]) -> dict[int, int]:
@@ -252,9 +254,10 @@ def findings(
         stmts = set(starts.values())
         missing = set(entry.get("missing_lines", []))
         excluded = set(entry.get("excluded_lines", []))
-        tree = ast.parse("\n".join(text))
-        for number in sorted(n for n in (lines | stmts) & excluded if _code_line(text, n)):
-            if problem := exclusion_problem(tree, text, number, rules, today):
+        changed_excluded = sorted(n for n in (lines | stmts) & excluded if _code_line(text, n))
+        exclusions = {p: _excluded_by(text, p) for p in rules.exclude} if changed_excluded else {}
+        for number in changed_excluded:
+            if problem := exclusion_problem(exclusions, text, number, rules, today):
                 out.append(f"{path}:{number} {CODE} changed line {problem}")
         for number in sorted({*lines, *stmts}):
             if not _code_line(text, number) or number in excluded:
