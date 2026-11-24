@@ -80,8 +80,9 @@
     asyncio does not log "Future exception was never retrieved".
   - Keepalive stats RTT and counters (#95): ``last_round_trip_s`` and
     ``max_round_trip_s`` use the transport-confirmed send instant kept per probe
-    ``seq`` until stats are recorded, so a reply handled before the probe coroutine
-    resumes still reports the true RTT. New ``probes_failed``
+    ``seq`` until stats are recorded. RTT runs from that send instant to when the
+    probe resumes, so a reply handled before the probe resumes can overstate it by
+    that scheduling delay. New ``probes_failed``
     (probe never left) and ``probe_timeouts`` (written, reply deadline passed;
     ``rescued`` remains a subset). ``misses`` and liveness policy are unchanged.
 
