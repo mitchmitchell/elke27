@@ -264,7 +264,7 @@ def test_main_passes_pytest_args_after_the_split_and_returns_pytest_status(
         calls.append(pytest_args)
         return 5
 
-    monkeypatch.setattr(diffcover, "_run_tests", fake_run)
+    monkeypatch.setattr(diffcover, "run_tests", fake_run)
     assert diffcover.main(["--base", base, "--", "-k", "not live", "-x"], root=tmp_path) == 5
     assert calls == [["-k", "not live", "-x"]]
 
@@ -280,7 +280,7 @@ def test_main_reads_the_report_the_tests_wrote(
         report.write_text(json.dumps({"files": {"src/elke27_lib/mod.py": entry}}), encoding="utf-8")
         return 0
 
-    monkeypatch.setattr(diffcover, "_run_tests", fake_run)
+    monkeypatch.setattr(diffcover, "run_tests", fake_run)
     assert diffcover.main(["--base", base], root=tmp_path) == 1
 
 

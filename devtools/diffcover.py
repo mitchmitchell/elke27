@@ -287,7 +287,8 @@ def findings(
     return out
 
 
-def _run_tests(root: Path, report: Path, pytest_args: list[str]) -> int:
+def run_tests(root: Path, report: Path, pytest_args: list[str]) -> int:
+    """Run pytest with branch coverage of ``src/`` and write the JSON report; pytest's status."""
     cmd = [
         sys.executable,
         "-m",
@@ -322,7 +323,7 @@ def main(argv: Sequence[str] | None = None, root: Path = ROOT) -> int:
         return 2
     with tempfile.TemporaryDirectory() as tmp:
         report_path = args.coverage_json or Path(tmp) / "coverage.json"
-        if args.coverage_json is None and (status := _run_tests(root, report_path, pytest_args)):
+        if args.coverage_json is None and (status := run_tests(root, report_path, pytest_args)):
             return status
         report = json.loads(report_path.read_text(encoding="utf-8"))
     changed = changed_lines(diff)
