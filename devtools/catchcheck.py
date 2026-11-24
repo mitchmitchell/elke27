@@ -42,6 +42,7 @@ SKIP = ("test/fixtures/",)
 BROAD = {"Exception", "BaseException"}
 
 CATCH_CEILING: dict[str, int] = {
+    "devtools/ratchet.py": 2,
     "src/elke27_lib/client.py": 26,
     "src/elke27_lib/discovery.py": 1,
     "src/elke27_lib/dispatcher_loop.py": 1,
