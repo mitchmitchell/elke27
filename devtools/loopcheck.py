@@ -642,9 +642,7 @@ LICENSE_RE = re.compile(r"^#\s*(?:SPDX-License-Identifier:|Copyright\b|Licensed 
 SUPPRESSION_RE = re.compile(
     r"#\s*(?:(?:ruff|flake8):\s*)?noqa:\s*[A-Z]+\d+(?:\s*,\s*[A-Z]+\d+)*"
     r"|#\s*(?:type|pyright):\s*ignore\[[^\]]+\]"
-    r"|#\s*pragma:\s*no\s*(?:cover|branch)\b"
-    r"|#\s*fmt:\s*(?:skip|off|on)\b"
-    r"|#\s*isort:\s*skip\b",
+    r"|#\s*pragma:\s*no\s*(?:cover|branch)\b",
     re.IGNORECASE,
 )
 TOML_REASON_KEYS = frozenset(
