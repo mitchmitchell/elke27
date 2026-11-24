@@ -21,6 +21,7 @@ def main():
     errcount += run(["ruff", "format", *SRC_PATHS])
     errcount += run(["basedpyright", "--stats", *SRC_PATHS])
     errcount += run(["python", "devtools/loopcheck.py", "src"])
+    errcount += run(["python", "devtools/catchcheck.py"])
 
     rprint()
 
