@@ -2,9 +2,10 @@
 
 Each :class:`Probe` is a one-statement source snippet and the forms
 :func:`privacc.reach` must report for it (an empty tuple means the snippet is public
-and must count zero). The set covers the elke27 #162 review (B3) and the HACS #194
-review (B1-B3). Run with :data:`PACKAGES` watched; a vendored copy of ``privacc.py``
-must pass every probe unchanged.
+and must count zero). The set covers the elke27 #162 review (B3), the counter gaps
+from the #162 D55 review, and the HACS #194 review (B1-B3). Run with
+:data:`PACKAGES` watched; a vendored copy of ``privacc.py`` must pass every probe
+unchanged.
 """
 
 from __future__ import annotations
@@ -98,6 +99,30 @@ PROBES: tuple[Probe, ...] = (
     ),
     Probe("class Sub(Elke27Client):\n    _client = None\n", ("Sub._client override",)),
     Probe("class Sub(HomeAssistant):\n    _state: int = 0\n", ("Sub._state override",)),
+    Probe(
+        "mocker.patch.object(target=hub, attribute='_client')\n",
+        ("patch.object(..., '_client')",),
+    ),
+    Probe(
+        "monkeypatch.setattr(target='elke27_lib.client._x', value=1)\n",
+        ("setattr('elke27_lib.client._x')",),
+    ),
+    Probe("hub.__dict__.get('_client')\n", ("__dict__/vars().get('_client')",)),
+    Probe("vars(hub).get('_client')\n", ("__dict__/vars().get('_client')",)),
+    Probe("hub.__dict__.pop('_client', None)\n", ("__dict__/vars().pop('_client')",)),
+    Probe("hub.__dict__.update(_client=1)\n", ("__dict__/vars().update('_client')",)),
+    Probe("vars(hub).update({'_client': 1})\n", ("__dict__/vars().update('_client')",)),
+    Probe("patch.dict(hub.__dict__, {'_client': 1})\n", ("patch.dict(..., '_client')",)),
+    Probe("mock.patch.dict(hub.__dict__, _client=1)\n", ("patch.dict(..., '_client')",)),
+    Probe("operator.attrgetter('_client')\n", ("attrgetter('_client')",)),
+    Probe("attrgetter('kernel._session')\n", ("attrgetter('kernel._session')",)),
+    Probe("operator.methodcaller('_connect')\n", ("methodcaller('_connect')",)),
+    Probe(
+        "Base = Elke27Client\nclass Sub(Base):\n    def _m(self):\n        return 1\n",
+        ("Sub._m override",),
+    ),
+    Probe("hub.__dict__.get('public')\n", ()),
+    Probe("operator.attrgetter('public.name')\n", ()),
     Probe("mock.patch.object(hub, 'public')\n", ()),
     Probe("patch('elke27_lib.client.Elke27Client')\n", ()),
     Probe("vars(hub)['public'] = 1\n", ()),

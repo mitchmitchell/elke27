@@ -189,6 +189,16 @@ privacc_probes = load("privacc_probes")
 
 
 HIDDEN_PRIVATE_ACCESS_CEILING: dict[str, int] = {
+    "test/test_snapshot_after_arm_bypass.py": 1,
+}
+
+_REFLECTED = re.compile(r"^((get|has|set|del)attr\(\.\.\., |from |import )")
+"""Forms first counted by ``devtools/privacc.py``: a private name passed to
+``getattr``/``hasattr``/``setattr``/``delattr``, and private imports from the
+library. They are frozen in their own ceiling at main's count so the older
+ceiling above is never raised."""
+
+REFLECTED_PRIVATE_ACCESS_CEILING: dict[str, int] = {
     "test/conftest.py": 6,
     "test/helpers/keepalive_seam.py": 2,
     "test/test_area_exit_delay_state.py": 2,
@@ -207,21 +217,31 @@ HIDDEN_PRIVATE_ACCESS_CEILING: dict[str, int] = {
     "test/test_raw_passthrough.py": 1,
     "test/test_session_extra.py": 9,
     "test/test_session_io_tstat_regression.py": 2,
-    "test/test_snapshot_after_arm_bypass.py": 1,
     "test/test_transport_command_retry.py": 3,
 }
 
 
+def _hidden_counts(reflected: bool) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for path in [*_test_modules(), *_helper_modules()]:
+        hits = [
+            h for h in privacc.reach_in_file(path) if bool(_REFLECTED.match(h.form)) is reflected
+        ]
+        if hits:
+            counts[_rel(path)] = len(hits)
+    return counts
+
+
 def test_hidden_private_access_does_not_grow() -> None:
     """Private reach SLF001 cannot see (devtools/privacc.py) only shrinks."""
-    counts = {
-        _rel(p): n
-        for p in [*_test_modules(), *_helper_modules()]
-        if (n := len(privacc.reach_in_file(p)))
-    }
-    assert counts == HIDDEN_PRIVATE_ACCESS_CEILING, (
+    assert _hidden_counts(reflected=False) == HIDDEN_PRIVATE_ACCESS_CEILING, (
         "Hidden private access changed (file: count). Patch or subclass through the "
         "public API; when a count drops, lower HIDDEN_PRIVATE_ACCESS_CEILING."
+    )
+    assert _hidden_counts(reflected=True) == REFLECTED_PRIVATE_ACCESS_CEILING, (
+        "Private names passed to getattr/setattr/hasattr/delattr or imported from the "
+        "library changed (file: count). Use the public API; when a count drops, lower "
+        "REFLECTED_PRIVATE_ACCESS_CEILING."
     )
 
 

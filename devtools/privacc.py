@@ -42,6 +42,8 @@ _TARGET_KEYWORDS = ("target", "in_dict")
 _NAME_KEYWORDS = ("attribute", "name")
 _REFLECTION = {"setattr", "getattr", "hasattr", "delattr"}
 _DUNDER_REFLECTION = {"__setattr__", "__getattribute__", "__getattr__", "__delattr__"}
+_GETTERS = {"attrgetter", "methodcaller"}
+_DICT_METHODS = {"get", "pop", "setdefault", "update"}
 
 
 @dataclass(frozen=True, order=True)
@@ -88,10 +90,39 @@ def _private_target(target: str | None) -> bool:
     return target is not None and "." in target and any(map(is_private, target.split(".")))
 
 
+def _via_dict(node: ast.expr) -> bool:
+    """``obj.__dict__`` or ``vars(obj)``."""
+    if isinstance(node, ast.Attribute):
+        return node.attr == "__dict__"
+    return isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "vars"
+
+
+def _literal_keys(node: ast.expr | None) -> list[str]:
+    if not isinstance(node, ast.Dict):
+        return []
+    return [k for k in map(_string, node.keys) if k is not None and is_private(k)]
+
+
+def _dict_method_hits(call: ast.Call) -> list[str]:
+    """``__dict__``/``vars()`` ``.get``/``.pop``/``.setdefault``/``.update`` with private keys."""
+    func = call.func
+    if not (
+        isinstance(func, ast.Attribute) and func.attr in _DICT_METHODS and _via_dict(func.value)
+    ):
+        return []
+    keys = [k for k in (_string(call.args[0]) if call.args else None,) if k and is_private(k)]
+    if func.attr == "update":
+        keys = [
+            *(_literal_keys(call.args[0]) if call.args else []),
+            *(k.arg for k in call.keywords if k.arg and is_private(k.arg)),
+        ]
+    return [f"__dict__/vars().{func.attr}({k!r})" for k in keys]
+
+
 def _call_hits(call: ast.Call) -> list[str]:
     chain = _chain(call.func)
-    if not chain:
-        return []
+    if (dict_hits := _dict_method_hits(call)) or not chain:
+        return dict_hits
     last = chain[-1]
     under_patch = len(chain) >= 2 and chain[-2] == "patch"
     hits: list[str] = []
@@ -110,6 +141,18 @@ def _call_hits(call: ast.Call) -> list[str]:
         target = _argument(call, 0, _TARGET_KEYWORDS)
         if _private_target(target):
             hits.append(f"patch.dict({target!r})")
+        values = call.args[1] if len(call.args) > 1 else None
+        values = next((k.value for k in call.keywords if k.arg == "values"), values)
+        keys = [
+            *_literal_keys(values),
+            *(k.arg for k in call.keywords if k.arg and is_private(k.arg)),
+        ]
+        hits += [f"patch.dict(..., {k!r})" for k in keys]
+    elif last in _GETTERS:
+        names = [_string(a) for a in call.args]
+        hits += [
+            f"{last}({n!r})" for n in names if n is not None and any(map(is_private, n.split(".")))
+        ]
     elif last == "patch":
         target = _argument(call, 0, _TARGET_KEYWORDS)
         if _private_target(target):
@@ -129,12 +172,7 @@ def _dict_key_hit(node: ast.Subscript) -> str | None:
     key = _string(node.slice)
     if key is None or not is_private(key):
         return None
-    owner = node.value
-    via_dict = isinstance(owner, ast.Attribute) and owner.attr == "__dict__"
-    via_vars = (
-        isinstance(owner, ast.Call) and isinstance(owner.func, ast.Name) and owner.func.id == "vars"
-    )
-    return f"[{key!r}] via __dict__/vars()" if via_dict or via_vars else None
+    return f"[{key!r}] via __dict__/vars()" if _via_dict(node.value) else None
 
 
 def _watched(module: str, packages: frozenset[str]) -> bool:
@@ -169,6 +207,21 @@ def _imported_names(tree: ast.Module, packages: frozenset[str]) -> set[str]:
             names |= {
                 a.asname or a.name.split(".")[0] for a in node.names if _watched(a.name, packages)
             }
+    aliases = [
+        (node.targets[0].id, node.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and isinstance(node.value, ast.Name | ast.Attribute)
+    ]
+    grew = True
+    while grew:
+        grew = False
+        for alias, value in aliases:
+            if alias not in names and (_chain(value) or [""])[0] in names:
+                names.add(alias)
+                grew = True
     return names
 
 
