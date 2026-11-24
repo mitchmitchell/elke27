@@ -154,8 +154,7 @@ ignore = [
 "src/elke27_lib/*_thread.py" = ["ASYNC"]
 # Tests use asyncio.sleep polling and interactive stubs; not loop hygiene gates.
 "test/*" = ["ASYNC"]
-# Test helpers may catch broadly (they report failures, never hide them).
-"test/helpers/*" = ["SLF001", "BLE001"]
+"test/helpers/keepalive_seam.py" = ["SLF001"]
 # Legacy tests that read private members. This list may only shrink: new tests use
 # the public API, and test_review_guards fails when a listed file is clean.
 "test/conftest.py" = ["SLF001"]
