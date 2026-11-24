@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import json
+import logging
 import os
 import pathlib
 import time
@@ -38,6 +40,19 @@ def _load_redactor():
 
 
 _REDACT = _load_redactor()
+
+
+def _yaml_text(summary: dict[str, Any]) -> str | None:
+    """The summary as YAML, or ``None`` without PyYAML or when a value is not representable."""
+    if importlib.util.find_spec("yaml") is None:
+        return None
+    yaml_mod = importlib.import_module("yaml")
+    try:
+        text = yaml_mod.safe_dump(summary, sort_keys=False, default_flow_style=False)
+    except yaml_mod.YAMLError as err:
+        logging.getLogger(__name__).warning("summary is not YAML (%s); writing JSON instead", err)
+        return None
+    return text if isinstance(text, str) else None
 
 
 def _minimal_redact(record: dict[str, Any]) -> dict[str, Any]:
@@ -183,17 +198,7 @@ class Reporter:
                 "record_count": len(self._records),
                 "records": self._records,
             }
-            # YAML is optional; try PyYAML, otherwise write a JSON-formatted fallback.
-            try:
-                yaml_mod = importlib.import_module("yaml")
-                safe_dump = getattr(yaml_mod, "safe_dump", None)
-                if callable(safe_dump):
-                    with self._yaml_path.open("w", encoding="utf-8") as f:
-                        safe_dump(summary, f, sort_keys=False, default_flow_style=False)
-                    return
-            except ImportError:
-                pass
-            with self._yaml_path.open("w", encoding="utf-8") as f:
-                # Fallback: write JSON with .yaml extension (still readable, avoids hard dependency)
-                f.write(json.dumps(summary, indent=2, default=_safe_json_default, sort_keys=False))
-                f.write("\n")
+            text = _yaml_text(summary)
+            if text is None:
+                text = json.dumps(summary, indent=2, default=_safe_json_default, sort_keys=False)
+            self._yaml_path.write_text(f"{text.rstrip()}\n", encoding="utf-8")

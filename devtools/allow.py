@@ -4,8 +4,9 @@ A finding is skipped only when its line carries a marker in this form::
 
     # noqa: ELK2nn -- <reason of three or more words> (expires YYYY-MM-DD, approved by <Name>)
 
-The reason needs at least three words, the expiry date must not have passed and the
-approver must be a person listed in ``APPROVERS``. A marker that names the code but
+The reason needs at least three words, the expiry date must not have passed and may
+be at most ``MAX_DAYS`` (90) days out, and the approver must be a person listed in
+``APPROVERS``. A marker that names the code but
 breaks one of those rules is itself reported, so a stale or unapproved exception
 fails the check instead of hiding the finding.
 """
@@ -18,6 +19,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 APPROVERS = frozenset({"Mitch Mitchell"})
+MAX_DAYS = 90
 
 _MARKER = re.compile(
     r"#\s*noqa:\s*(?P<codes>ELK2\d\d(?:\s*,\s*ELK2\d\d)*)\s*(?P<rest>.*)$", re.IGNORECASE
@@ -55,6 +57,10 @@ def parse(comment: str, today: dt.date) -> Marker | None:
         return Marker(codes, f"exception expiry {form.group('date')!r} is not a date")
     if expires < today:
         return Marker(codes, f"exception expired on {expires.isoformat()}")
+    if expires > today + dt.timedelta(days=MAX_DAYS):
+        return Marker(
+            codes, f"exception expiry {expires.isoformat()} is more than {MAX_DAYS} days out"
+        )
     if form.group("who").strip() not in APPROVERS:
         return Marker(codes, f"exception approver must be one of {sorted(APPROVERS)}")
     return Marker(codes, None)

@@ -206,9 +206,17 @@ def _root_name(node: ast.expr) -> str | None:
     return node.id if isinstance(node, ast.Name) else None
 
 
+def _last_name(node: ast.expr) -> str | None:
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return node.id if isinstance(node, ast.Name) else None
+
+
 def _hidden_private_access(path: Path) -> list[str]:
     """Private reach the SLF001 counter misses: string patch targets, dunder
-    reflection, ``patch.object`` names and library subclasses overriding ``_`` methods."""
+    reflection, ``patch.object``/``patch.multiple`` names under any root
+    (``mock.``, ``mocker.``, ``unittest.mock.``), ``__dict__``/``vars()`` subscripts
+    and library subclasses overriding ``_`` methods."""
     tree = _tree(path)
     library = _library_names(tree)
     hits: list[str] = []
@@ -227,11 +235,36 @@ def _hidden_private_access(path: Path) -> list[str]:
             elif name in _DUNDER_REFLECTION or (
                 name == "object"
                 and isinstance(node.func, ast.Attribute)
-                and _root_name(node.func.value) == "patch"
+                and _last_name(node.func.value) == "patch"
             ):
                 literal = _literal_name(node)
                 if literal is not None and _is_private(literal):
                     hits.append(f"{name}(..., {literal!r})")
+            elif (
+                name == "multiple"
+                and isinstance(node.func, ast.Attribute)
+                and _last_name(node.func.value) == "patch"
+            ):
+                hits += [
+                    f"multiple(..., {k.arg}=)"
+                    for k in node.keywords
+                    if k.arg and _is_private(k.arg)
+                ]
+        elif (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.slice, ast.Constant)
+            and isinstance(node.slice.value, str)
+            and _is_private(node.slice.value)
+            and (
+                (isinstance(node.value, ast.Attribute) and node.value.attr == "__dict__")
+                or (
+                    isinstance(node.value, ast.Call)
+                    and isinstance(node.value.func, ast.Name)
+                    and node.value.func.id == "vars"
+                )
+            )
+        ):
+            hits.append(f"[{node.slice.value!r}] via __dict__/vars()")
         elif isinstance(node, ast.ClassDef) and any(_root_name(b) in library for b in node.bases):
             hits += [
                 f"{node.name}.{item.name} override"
@@ -257,6 +290,50 @@ def test_hidden_private_access_does_not_grow() -> None:
     assert counts == HIDDEN_PRIVATE_ACCESS_CEILING, (
         "Hidden private access changed (file: count). Patch or subclass through the "
         "public API; when a count drops, lower HIDDEN_PRIVATE_ACCESS_CEILING."
+    )
+
+
+def test_hidden_private_access_sees_every_patch_spelling(tmp_path: Path) -> None:
+    """patch.object with a private name counts whether spelled plain, mock. or mocker."""
+    fixture = tmp_path / "test_fixture.py"
+    fixture.write_text(
+        "from unittest import mock\n"
+        "from unittest.mock import patch\n"
+        "from elke27_lib.client import Elke27Client\n"
+        "def test_x(mocker, monkeypatch, client):\n"
+        "    patch.object(client, '_kernel')\n"
+        "    mock.patch.object(client, '_kernel')\n"
+        "    mocker.patch.object(client, '_kernel')\n"
+        "    mock.patch.object(client, 'public')\n"
+        "    mock.patch('elke27_lib.client._helper')\n"
+        "    monkeypatch.setattr('elke27_lib.client._helper', None)\n"
+        "    object.__setattr__(client, '_kernel', None)\n"
+        "    unittest.mock.patch.object(client, '_kernel')\n"
+        "    mock.patch.multiple(client, _g=1, public=2)\n"
+        "    mocker.patch.multiple(client, _h=1)\n"
+        "    client.__dict__['_j'] = 1\n"
+        "    vars(client)['_k'] = 1\n"
+        "    vars(client)['public'] = 1\n"
+        "class Sub(Elke27Client):\n"
+        "    def _build_area_map(self):\n"
+        "        return {}\n",
+        encoding="utf-8",
+    )
+    assert sorted(_hidden_private_access(fixture)) == sorted(
+        [
+            "object(..., '_kernel')",
+            "object(..., '_kernel')",
+            "object(..., '_kernel')",
+            "patch('elke27_lib.client._helper')",
+            "setattr('elke27_lib.client._helper')",
+            "__setattr__(..., '_kernel')",
+            "object(..., '_kernel')",
+            "multiple(..., _g=)",
+            "multiple(..., _h=)",
+            "['_j'] via __dict__/vars()",
+            "['_k'] via __dict__/vars()",
+            "Sub._build_area_map override",
+        ]
     )
 
 

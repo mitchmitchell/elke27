@@ -6,7 +6,7 @@ attribute access. A private name is one that starts with ``_`` and is not a dund
 Importing a public name under a private alias (``import x as _x``) is fine.
 
 An import that must stay needs ``# noqa: ELK202 -- <reason> (expires YYYY-MM-DD,
-approved by <Name>)`` on its line (see ``devtools/allow.py``).
+approved by <Name>)`` on the line of the imported name (or of the ``from``) (see ``devtools/allow.py``).
 
 Usage: ``python devtools/privatecheck.py [--root DIR]``. Scans ``src/elke27_lib``
 under the root, prints ``path:line ELK202 message`` per finding and exits 1 when
@@ -48,14 +48,15 @@ def findings(path: Path, source: str, rel: str, today: dt.date) -> list[str]:
         for alias in node.names:
             if not _private(alias.name):
                 continue
-            skip, problem = allow.verdict(markers, node.lineno, CODE)
+            line = alias.lineno
+            skip, problem = allow.verdict(markers, line, CODE)
+            if not skip and problem is None and line != node.lineno:
+                skip, problem = allow.verdict(markers, node.lineno, CODE)
             if skip:
                 continue
             source_module = "." * node.level + module
             message = f"imports private {alias.name} from {source_module}; make it public"
-            found.append(
-                f"{rel}:{node.lineno} {CODE} {message}" + (f" ({problem})" if problem else "")
-            )
+            found.append(f"{rel}:{line} {CODE} {message}" + (f" ({problem})" if problem else ""))
     return found
 
 
