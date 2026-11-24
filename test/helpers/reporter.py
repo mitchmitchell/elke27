@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import json
+import logging
 import os
 import pathlib
 import time
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any
+
+from test.helpers.redaction import redact_record
 
 
 def _safe_json_default(obj: Any) -> Any:
@@ -16,7 +20,7 @@ def _safe_json_default(obj: Any) -> Any:
         return {"__bytes__": True, "len": len(obj), "sha256": None}
     try:
         return str(obj)
-    except Exception:
+    except (TypeError, ValueError, RecursionError):
         return repr(obj)
 
 
@@ -25,55 +29,17 @@ def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def _load_redactor():
-    # Prefer project redaction helper if present; otherwise do minimal redaction.
-    try:
-        module = importlib.import_module("test.helpers.redaction")
-        redact_record = getattr(module, "redact_record", None)
-        if callable(redact_record):
-            return redact_record
-    except Exception:
+def _yaml_text(summary: dict[str, Any]) -> str | None:
+    """The summary as YAML, or ``None`` without PyYAML or when a value is not representable."""
+    if importlib.util.find_spec("yaml") is None:
         return None
-    return None
-
-
-_REDACT = _load_redactor()
-
-
-def _minimal_redact(record: dict[str, Any]) -> dict[str, Any]:
-    # Last-resort redaction: remove common secret-ish keys.
-    secret_keys = {
-        "pin",
-        "pass",
-        "access_code",
-        "pass_phrase",
-        "link_enc",
-        "link_hmac",
-        "sk",
-        "shm",
-        "session_key",
-        "session_hmac",
-        "key",
-        "secret",
-        "password",
-    }
-
-    def scrub(v: Any) -> Any:
-        if isinstance(v, dict):
-            v_map = cast(dict[str, Any], v)
-            out: dict[str, Any] = {}
-            for k, vv in v_map.items():
-                if str(k).lower() in secret_keys:
-                    out[k] = "<redacted>"
-                else:
-                    out[k] = scrub(vv)
-            return out
-        if isinstance(v, list):
-            v_list = cast(list[Any], v)
-            return [scrub(x) for x in v_list]
-        return v
-
-    return scrub(record)
+    yaml_mod = importlib.import_module("yaml")
+    try:
+        text = yaml_mod.safe_dump(summary, sort_keys=False, default_flow_style=False)
+    except yaml_mod.YAMLError as err:
+        logging.getLogger(__name__).warning("summary is not YAML (%s); writing JSON instead", err)
+        return None
+    return text if isinstance(text, str) else None
 
 
 @dataclass
@@ -102,15 +68,7 @@ class Reporter:
         self._yaml_path = self.artifacts_dir / f"{base}.summary.yaml"
 
     def _apply_redaction(self, record: dict[str, Any]) -> dict[str, Any]:
-        if _REDACT is not None:
-            try:
-                redacted = _REDACT(record)
-                if isinstance(redacted, dict):
-                    return cast(dict[str, Any], redacted)
-            except Exception:
-                # If project redactor fails, fall back.
-                return _minimal_redact(record)
-        return _minimal_redact(record)
+        return redact_record(record)
 
     def emit(self, record_type: str, **fields: Any) -> dict[str, Any]:
         """
@@ -184,17 +142,7 @@ class Reporter:
                 "record_count": len(self._records),
                 "records": self._records,
             }
-            # YAML is optional; try PyYAML, otherwise write a JSON-formatted fallback.
-            try:
-                yaml_mod = importlib.import_module("yaml")
-                safe_dump = getattr(yaml_mod, "safe_dump", None)
-                if callable(safe_dump):
-                    with self._yaml_path.open("w", encoding="utf-8") as f:
-                        safe_dump(summary, f, sort_keys=False, default_flow_style=False)
-                    return
-            except Exception:
-                pass
-            with self._yaml_path.open("w", encoding="utf-8") as f:
-                # Fallback: write JSON with .yaml extension (still readable, avoids hard dependency)
-                f.write(json.dumps(summary, indent=2, default=_safe_json_default, sort_keys=False))
-                f.write("\n")
+            text = _yaml_text(summary)
+            if text is None:
+                text = json.dumps(summary, indent=2, default=_safe_json_default, sort_keys=False)
+            self._yaml_path.write_text(f"{text.rstrip()}\n", encoding="utf-8")
