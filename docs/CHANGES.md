@@ -81,8 +81,9 @@
   - Keepalive stats RTT and counters (#95): ``last_round_trip_s`` and
     ``max_round_trip_s`` use the transport-confirmed send instant kept per probe
     ``seq`` until stats are recorded, so a reply handled before the probe coroutine
-    resumes still reports the true RTT. When the send instant is unknown, a
-    matched reply is counted but RTT fields stay unchanged. New ``probes_failed``
+    resumes still reports the true RTT. A probe without that send instant
+    (connection state reset before its write was confirmed) counts as
+    ``probes_failed``. New ``probes_failed``
     (probe never left) and ``probe_timeouts`` (written, reply deadline passed;
     ``rescued`` remains a subset). ``misses`` and liveness policy are unchanged.
 

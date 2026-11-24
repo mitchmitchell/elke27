@@ -65,3 +65,8 @@ async def test_late_on_sent_after_abandon_leaves_no_entry() -> None:
 @pytest.mark.asyncio
 async def test_reused_seq_not_stale_rtt_after_session_reset() -> None:
     await keepalive_seam.run_reused_seq_not_stale_rtt_after_session_reset()
+
+
+@pytest.mark.asyncio
+async def test_write_confirmed_after_send_state_reset_counts_failed() -> None:
+    await keepalive_seam.run_write_confirmed_after_send_state_reset_counts_failed()

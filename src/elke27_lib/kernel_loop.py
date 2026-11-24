@@ -1094,13 +1094,13 @@ class E27Kernel:
                     seq,
                     self.now() - queued_at,
                 )
-            if not self.was_request_sent(seq):
+            sent_at = self._keepalive_probe_sent_at_by_seq.get(seq)
+            if not self.was_request_sent(seq) or sent_at is None:
                 self._abandon_unsent_probe(seq)
                 self._log.debug("E27 keepalive probe failed before it was sent: seq=%s", seq)
                 stats.probes_failed += 1
                 return False
             self.forget_request_sent(seq)
-            sent_at = self._keepalive_probe_sent_at_by_seq.get(seq)
             stats.probes_sent += 1
             self._log.debug("E27 keepalive probe sent")
             try:
@@ -1116,7 +1116,7 @@ class E27Kernel:
                         seq,
                         self.state.panel.session_id,
                     )
-                rescued = sent_at is not None and self._rx_thread_at > sent_at
+                rescued = self._rx_thread_at > sent_at
                 if rescued:
                     stats.rescued += 1
                     self._log.debug("E27 keepalive reply missing; later traffic kept the link")
@@ -1129,23 +1129,17 @@ class E27Kernel:
                     exc,
                     exc_info=True,
                 )
-                return sent_at is not None and self._rx_thread_at > sent_at
+                return self._rx_thread_at > sent_at
             stats.replies += 1
-            rtt: float | None = None
-            if sent_at is not None:
-                rtt = self.now() - sent_at
-                stats.last_round_trip_s = rtt
-                if stats.max_round_trip_s is None or rtt > stats.max_round_trip_s:
-                    stats.max_round_trip_s = rtt
-            rtt_display = f"{rtt:.3f}s" if rtt is not None else "n/a"
-            max_display = (
-                f"{stats.max_round_trip_s:.3f}s" if stats.max_round_trip_s is not None else "n/a"
-            )
+            rtt = self.now() - sent_at
+            stats.last_round_trip_s = rtt
+            if stats.max_round_trip_s is None or rtt > stats.max_round_trip_s:
+                stats.max_round_trip_s = rtt
             self._log.debug(
-                "E27 keepalive reply ok in %s (replies=%d, max=%s, timeout=%.1fs)",
-                rtt_display,
+                "E27 keepalive round-trip ok in %.3fs (replies=%d, max=%.3fs, timeout=%.1fs)",
+                rtt,
                 stats.replies,
-                max_display,
+                stats.max_round_trip_s,
                 self._keepalive_timeout_s,
             )
             return True

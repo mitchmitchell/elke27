@@ -265,9 +265,11 @@ class RecordingSession:
         self.on_message(msg)
 
 
-def attach_recording_session(seam: KeepaliveSeam) -> RecordingSession:
+def attach_recording_session(
+    seam: KeepaliveSeam, session: RecordingSession | None = None
+) -> RecordingSession:
     kernel, _ = _probing_kernel(seam)
-    session = RecordingSession()
+    session = RecordingSession() if session is None else session
     session.on_message = cast(Any, kernel)._on_message
     set_private(kernel, "_session", session)
     return session
@@ -363,7 +365,7 @@ def assert_keepalive_invariants(stats: KeepaliveStats) -> None:
 
 
 def stats_probing_seam(
-    *, send_wait_s: float = 30.0
+    *, send_wait_s: float = 30.0, session: RecordingSession | None = None
 ) -> tuple[KeepaliveSeam, E27Kernel, RecordingSession]:
     clock = MonotonicTestClock(1000.0)
     seam = KeepaliveSeam(clock=clock, kernel=E27Kernel())
@@ -373,7 +375,7 @@ def stats_probing_seam(
         schedule_reply_timeout=seam.schedule_reply_timeout,
     )
     seam.kernel = E27Kernel(now_monotonic=clock.now, keepalive_test_hooks=hooks)
-    session = attach_recording_session(seam)
+    session = attach_recording_session(seam, session)
     kernel = seam.kernel
     set_private(kernel, "_keepalive_timeout_s", 5.0)
     return seam, kernel, session
@@ -427,26 +429,10 @@ class FailSendSession(RecordingSession):
             on_fail(SessionIOError("send failed"))
 
 
-def kernel_failing_send(*, send_wait_s: float = 0.05) -> E27Kernel:
-    clock = MonotonicTestClock(1000.0)
-    kernel = E27Kernel(
-        now_monotonic=clock.now,
-        keepalive_test_hooks=KeepaliveTestHooks(send_wait_s=send_wait_s),
-    )
-    set_private(kernel, "_loop", asyncio.get_running_loop())
-    set_private(kernel, "_keepalive_enabled", True)
-    set_private(kernel, "_keepalive_timeout_s", 5.0)
-    set_private(kernel, "_rx_thread_at", 0.0)
-    session = FailSendSession()
-    session.on_message = get_private(kernel, "_on_message")
-    set_private(kernel, "_session", session)
-    kernel.requests.register(("system", "r_u_alive"), lambda: {})
-    return kernel
-
-
 async def run_unsent_send_error() -> None:
-    kernel = kernel_failing_send()
+    _, kernel, session = stats_probing_seam(send_wait_s=0.05, session=FailSendSession())
     assert await asyncio.wait_for(send_keepalive(kernel, force=True), timeout=2.0) is False
+    assert session.sent == []
     stats = kernel.keepalive_stats
     assert stats.probes_sent == 0
     assert stats.probes_failed == 1
@@ -560,7 +546,6 @@ async def run_large_clock_offset_rtt() -> None:
     assert await asyncio.wait_for(task, timeout=2.0) is True
     stats = kernel.keepalive_stats
     assert stats.last_round_trip_s == 12.5
-    assert stats.last_round_trip_s is not None and stats.last_round_trip_s >= 0.0
     assert_keepalive_invariants(stats)
 
 
@@ -569,8 +554,7 @@ async def run_non_keepalive_tracked_request_leaves_no_probe_sent_entry() -> None
     kernel.register_request(("area", "get_status"), lambda area_id=1: {"area_id": area_id})
     seq = kernel.request(("area", "get_status"), area_id=1)
     await until_probe_sent(session)
-    session.confirm_sent(0)
-    get_private(kernel, "_mark_request_sent")(seq)
+    assert session.confirm_sent(0) == seq
     assert get_private(kernel, "_keepalive_probe_sent_at_by_seq") == {}
 
 
@@ -578,17 +562,12 @@ async def run_probe_cancelled_at_await_future_leaves_no_entry() -> None:
     seam, kernel, session = stats_probing_seam()
     task = asyncio.create_task(send_keepalive(kernel, force=True))
     await until_probe_sent(session)
-    confirm_probe_sent_and_maybe_reply(seam, session, 0, reply_after_s=None)
-    await asyncio.sleep(0)
-    seq = int(session.sent[0][0]["seq"])
+    seq = confirm_probe_sent_and_maybe_reply(seam, session, 0, reply_after_s=None)
+    await wait_until_probe(lambda: kernel.keepalive_stats.probes_sent == 1)
+    assert seq in get_private(kernel, "_keepalive_probe_sent_at_by_seq")
     task.cancel()
-    for _ in range(50):
-        if task.done():
-            break
-        await asyncio.sleep(0)
-    if not task.done():
-        get_private(kernel, "_pending_responses").fail(seq, KernelError("probe wait cancelled"))
-        await asyncio.wait_for(task, timeout=2.0)
+    await asyncio.gather(task, return_exceptions=True)
+    assert task.cancelled()
     assert get_private(kernel, "_keepalive_probe_sent_at_by_seq") == {}
 
 
@@ -621,4 +600,20 @@ async def run_reused_seq_not_stale_rtt_after_session_reset() -> None:
     stats = kernel.keepalive_stats
     assert stats.last_round_trip_s == pytest.approx(0.1)
     assert stats.max_round_trip_s == pytest.approx(0.25)
+    assert_keepalive_invariants(stats)
+
+
+async def run_write_confirmed_after_send_state_reset_counts_failed() -> None:
+    seam, kernel, session = stats_probing_seam()
+    task = asyncio.create_task(send_keepalive(kernel, force=True))
+    await until_probe_sent(session)
+    reset_outbound_send_tracking(kernel)
+    confirm_probe_sent_and_maybe_reply(seam, session, 0, reply_after_s=0.1)
+    assert await asyncio.wait_for(task, timeout=2.0) is False
+    stats = kernel.keepalive_stats
+    assert stats.probes_sent == 0
+    assert stats.probes_failed == 1
+    assert stats.replies == 0
+    assert stats.last_round_trip_s is None
+    assert get_private(kernel, "_keepalive_probe_sent_at_by_seq") == {}
     assert_keepalive_invariants(stats)
