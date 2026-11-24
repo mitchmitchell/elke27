@@ -75,7 +75,7 @@ SOURCE = [
 
 def test_changed_lines_and_removed_calls_cover_src_only() -> None:
     assert diffcover.changed_lines(DIFF) == {"src/elke27_lib/mod.py": {4, 5, 12}}
-    assert diffcover.removed_calls(DIFF) == {"src/elke27_lib/mod.py": {"helper"}}
+    assert diffcover.removed_calls(DIFF) == {"helper"}
 
 
 def test_findings_name_missing_lines_untaken_branches_and_orphans() -> None:
@@ -92,12 +92,13 @@ def test_findings_name_missing_lines_untaken_branches_and_orphans() -> None:
         {"src/elke27_lib/mod.py": {4, 5, 12}},
         {"src/elke27_lib/mod.py": SOURCE},
         TODAY,
-        {"src/elke27_lib/mod.py": {"helper"}},
+        {"helper"},
     )
     assert out == [
-        "src/elke27_lib/mod.py:8 ELK205 helper() lost its tested caller in this change; delete or test it",
         "src/elke27_lib/mod.py:5 ELK205 changed line never runs under the test suite",
         "src/elke27_lib/mod.py:4 ELK205 branch to line 6 is never taken",
+        "src/elke27_lib/mod.py:8 ELK205 no test runs helper() and this change removed a call"
+        " to it; delete or test it",
     ]
 
 
@@ -171,9 +172,7 @@ def test_excluded_changed_lines_need_an_exception_on_their_pragma_line() -> None
     out = diffcover.findings(report, {path: set(range(1, len(text) + 1))}, {path: text}, TODAY)
     flagged = sorted(int(line.split(":")[1].split()[0]) for line in out)
     assert flagged == [7, 8, 9, 12, 13, 16, 17]
-    assert (
-        f"{path}:8 ELK205 changed line excluded by the pragma on line 7: pragma: no cover" in out[1]
-    )
+    assert f"{path}:8 ELK205 changed line excluded on line 7: # pragma: no cover" in out[1]
 
 
 def test_new_line_under_an_unchanged_pragma_def_is_a_finding() -> None:
@@ -182,7 +181,7 @@ def test_new_line_under_an_unchanged_pragma_def_is_a_finding() -> None:
     path = "src/elke27_lib/probe_mod.py"
     out = diffcover.findings(report, {path: {8}}, {path: text}, TODAY)
     assert out == [
-        f"{path}:8 ELK205 changed line excluded by the pragma on line 7: pragma: no cover"
+        f"{path}:8 ELK205 changed line excluded on line 7: # pragma: no cover"
         " exception needs '-- <reason> (expires YYYY-MM-DD, approved by <Name>)'"
     ]
 
@@ -297,5 +296,118 @@ def test_main_checks_a_file_whose_change_only_removed_lines(
     report = str(_report(tmp_path, [2]))
     assert diffcover.main(["--base", base, "--coverage-json", report], root=tmp_path) == 1
     out = capsys.readouterr().out
-    assert "src/elke27_lib/mod.py:1 ELK205 helper() lost its tested caller in this change" in out
+    assert (
+        "src/elke27_lib/mod.py:1 ELK205 no test runs helper() and this change removed a call" in out
+    )
     assert "diffcover: 1 finding(s) in 0 changed src line(s)" in out
+
+
+def _entry(missing: list[int], branches: list[list[int]] | None = None) -> dict[str, object]:
+    return {"missing_lines": missing, "missing_branches": branches or [], "excluded_lines": []}
+
+
+def test_orphan_check_spans_modules_and_deleted_files() -> None:
+    diff = "\n".join(
+        [
+            "diff --git a/src/elke27_lib/a.py b/src/elke27_lib/a.py",
+            "--- a/src/elke27_lib/a.py",
+            "+++ b/src/elke27_lib/a.py",
+            "@@ -3 +2,0 @@",
+            "-    helper_b(flag)",
+            "diff --git a/src/elke27_lib/gone.py b/src/elke27_lib/gone.py",
+            "--- a/src/elke27_lib/gone.py",
+            "+++ /dev/null",
+            "@@ -1,2 +0,0 @@",
+            "-def run():",
+            "-    return helper_c()",
+        ]
+    )
+    assert diffcover.removed_calls(diff) == {"helper_b", "run", "helper_c"}
+    b_source = [
+        "def helper_b(flag):",
+        "    x = flag",
+        "    return x",
+        "",
+        "def helper_c():",
+        "    return 1",
+    ]
+    report = {"files": {"src/elke27_lib/b.py": _entry([2, 3, 6])}}
+    out = diffcover.findings(
+        report, {}, {"src/elke27_lib/b.py": b_source}, TODAY, diffcover.removed_calls(diff)
+    )
+    assert [line.split(" no test runs ")[1].split("(")[0] for line in out] == [
+        "helper_b",
+        "helper_c",
+    ]
+
+
+CONTINUATION = [
+    "def build(x):",
+    "    return dict(",
+    "        a=x,",
+    "        b=x * 4,",
+    "    )",
+    "",
+    "def pick(x, y):",
+    "    if (",
+    "        x > 1",
+    "        and y > 2",
+    "    ):",
+    "        return 1",
+    "    return 0",
+]
+
+
+def test_continuation_line_edit_is_checked_as_its_statement() -> None:
+    report = {"files": {"src/elke27_lib/c.py": _entry([2])}}
+    out = diffcover.findings(
+        report, {"src/elke27_lib/c.py": {4}}, {"src/elke27_lib/c.py": CONTINUATION}, TODAY
+    )
+    assert out == ["src/elke27_lib/c.py:2 ELK205 changed line never runs under the test suite"]
+
+
+def test_wrapped_condition_edit_reports_its_untaken_branch() -> None:
+    report = {"files": {"src/elke27_lib/c.py": _entry([], [[8, 12]])}}
+    out = diffcover.findings(
+        report, {"src/elke27_lib/c.py": {10}}, {"src/elke27_lib/c.py": CONTINUATION}, TODAY
+    )
+    assert out == ["src/elke27_lib/c.py:8 ELK205 branch to line 12 is never taken"]
+
+
+def test_no_branch_pragma_on_a_changed_line_needs_the_exception_form() -> None:
+    text = ["def f(x):", "    if x > 5:  # pragma: no branch", "        return 1", "    return 0"]
+    report = {"files": {"src/elke27_lib/d.py": _entry([])}}
+    out = diffcover.findings(
+        report, {"src/elke27_lib/d.py": {2}}, {"src/elke27_lib/d.py": text}, TODAY
+    )
+    assert out == [
+        "src/elke27_lib/d.py:2 ELK205 changed line # pragma: no branch exception needs"
+        " '-- <reason> (expires YYYY-MM-DD, approved by <Name>)'"
+    ]
+    text[1] = f"    if x > 5:  # pragma: no branch {EXCEPTION}"
+    assert (
+        diffcover.findings(
+            report, {"src/elke27_lib/d.py": {2}}, {"src/elke27_lib/d.py": text}, TODAY
+        )
+        == []
+    )
+
+
+def test_rules_come_from_coverage_config(tmp_path: Path) -> None:
+    config = tmp_path / "pyproject.toml"
+    config.write_text(
+        "[tool.coverage.report]\nexclude_also = ['raise NotImplementedError']\n", encoding="utf-8"
+    )
+    rules = diffcover.coverage_rules(config)
+    assert "raise NotImplementedError" in rules.exclude
+    assert any("branch" in p for p in rules.partial)
+    assert len(rules.exempt) == 2 and all(p in rules.exclude for p in rules.exempt)
+    text = ["def f():", "    raise NotImplementedError"]
+    report = {"files": {"src/elke27_lib/e.py": {**_entry([]), "excluded_lines": [2]}}}
+    out = diffcover.findings(
+        report, {"src/elke27_lib/e.py": {2}}, {"src/elke27_lib/e.py": text}, TODAY, rules=rules
+    )
+    assert out == [
+        "src/elke27_lib/e.py:2 ELK205 changed line excluded on line 2: raise NotImplementedError"
+        " exception needs '-- <reason> (expires YYYY-MM-DD, approved by <Name>)'"
+    ]
