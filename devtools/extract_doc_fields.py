@@ -5,10 +5,11 @@ on the command line or in the ``ELKE27_API_DOC`` environment variable.
 
 Each JSON example in the reference starts on a line whose first non-blank text after
 the bullet is ``{``. Examples may wrap over several lines; the lines are joined with a
-single space until the braces balance or the next bullet starts. Curly quotes are read as straight quotes. A
-message is a response or broadcast when it has a top-level ``seq`` and no ``session_id``. Its type is ``(group, command)`` and its documented fields
-are the top-level keys of the command body. Requests are skipped, and examples that
-do not parse as JSON are counted and reported on stderr.
+single space until the braces balance or the next bullet starts. Curly quotes are read
+as straight quotes. A message is a response or broadcast when it has a top-level
+``seq`` and no ``session_id``. Its type is ``(group, command)`` and its documented
+fields are the top-level keys of the command body. Requests are skipped, and examples
+that do not parse as JSON are counted and reported on stderr.
 
 The generated module lists field names only. Doc locations are written only when
 ``--locations`` names a file outside this repository.
@@ -37,7 +38,6 @@ DEFAULT_OUTPUT = ROOT / "src" / "elke27_lib" / "protocol_manifest.py"
 DOC_ENV = "ELKE27_API_DOC"
 BULLET_CHARS = "▪•◦-* \t"
 BULLETS = ("▪", "•", "◦")
-ENVELOPE_KEYS = frozenset({"seq", "session_id"})
 MAX_EXAMPLE_LINES = 40
 CURLY_QUOTES = str.maketrans({"\u201c": '"', "\u201d": '"'})
 
@@ -59,27 +59,6 @@ class Extraction:
     fields: Mapping[MessageType, frozenset[str]]
     locations: Mapping[MessageType, Mapping[str, int]]
     unparsed: Sequence[int]
-
-
-def _balance(text: str) -> int:
-    depth = 0
-    in_string = False
-    escaped = False
-    for char in text:
-        if in_string:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
-        elif char == '"':
-            in_string = True
-        elif char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-    return depth
 
 
 def _closing_index(text: str) -> int:
@@ -119,7 +98,7 @@ def iter_examples(lines: Sequence[str]) -> Iterator[Example]:
             continue
         start = index
         parts = [stripped.strip()]
-        while _balance(" ".join(parts)) > 0 and index + 1 < len(lines):
+        while _closing_index(" ".join(parts)) < 0 and index + 1 < len(lines):
             if index - start >= MAX_EXAMPLE_LINES or _starts_bullet(lines[index + 1]):
                 break
             index += 1
@@ -134,7 +113,7 @@ def _message_fields(message: object) -> Iterator[tuple[MessageType, list[str]]]:
     if not isinstance(message, dict) or "seq" not in message or "session_id" in message:
         return
     for group, body in message.items():
-        if group in ENVELOPE_KEYS or not isinstance(body, dict):
+        if not isinstance(body, dict):
             continue
         for command, payload in body.items():
             if isinstance(payload, dict):
