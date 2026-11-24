@@ -65,16 +65,42 @@ async def test_y():
     import asyncio as aio
     await aio.sleep(0)
     assert asyncio.get_running_loop().time() > 0
+
+async def test_stored(client):
+    t0 = time.monotonic()
+    await client.run()
+    elapsed = time.monotonic() - t0
+    assert elapsed < 0.5
+    now = asyncio.get_running_loop().time()
+    stamp = time.time_ns() + time.perf_counter_ns()
+    while not client.done:
+        await asyncio.sleep(0.01)
+    await asyncio.sleep(delay=0)
+    await asyncio.sleep(0, "result")
+    s = asyncio.sleep
+    await s(0)
 """
 
 
-def test_counts_yields_loops_sleeps_and_clock_asserts_in_tests() -> None:
-    lines = [line for line, _ in sleepcheck.sites(TEST_SOURCE, False, TODAY)]
-    assert lines == [8, 9, 11, 13, 15, 16, 17, 22, 23]
+def test_counts_yields_loops_sleeps_and_clock_reads_in_tests() -> None:
+    found = sleepcheck.sites(TEST_SOURCE, False, TODAY)
+    lines = [line for line, _ in found]
+    assert lines == [8, 9, 11, 13, 14, 15, 16, 17, 22, 23, 26, 28, 30, 31, 31, 32, 34, 35, 37]
+    texts = dict(found)
+    assert texts[26] == "time.monotonic() reads the wall clock; use a fake clock"
+    assert texts[30] == "loop.time() reads the wall clock; use a fake clock"
+    assert texts[32] == "while loop awaiting asyncio.sleep; wait on a gate"
 
 
 def test_src_counts_only_the_yield_seam() -> None:
-    assert [line for line, _ in sleepcheck.sites(TEST_SOURCE, True, TODAY)] == [8, 9, 22]
+    assert [line for line, _ in sleepcheck.sites(TEST_SOURCE, True, TODAY)] == [
+        8,
+        9,
+        22,
+        34,
+        35,
+        37,
+    ]
 
 
 def test_src_yield_has_no_ceiling() -> None:
