@@ -81,9 +81,8 @@
   - Keepalive stats RTT and counters (#95): ``last_round_trip_s`` and
     ``max_round_trip_s`` use the transport-confirmed send instant kept per probe
     ``seq`` until stats are recorded, so a reply handled before the probe coroutine
-    resumes still reports the true RTT. New ``probes_failed`` (probe never left,
-    including one whose send tracking was reset before its write was confirmed)
-    and ``probe_timeouts`` (written, reply deadline passed;
+    resumes still reports the true RTT. New ``probes_failed``
+    (probe never left) and ``probe_timeouts`` (written, reply deadline passed;
     ``rescued`` remains a subset). ``misses`` and liveness policy are unchanged.
 
   Area Delay, Arm Night Stay Instant, Status Read Publication (0.6.0, 2026-11-17)

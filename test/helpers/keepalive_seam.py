@@ -603,17 +603,17 @@ async def run_reused_seq_not_stale_rtt_after_session_reset() -> None:
     assert_keepalive_invariants(stats)
 
 
-async def run_write_confirmed_after_send_state_reset_counts_failed() -> None:
+async def run_write_confirmed_after_send_state_reset_measures_rtt() -> None:
     seam, kernel, session = stats_probing_seam()
     task = asyncio.create_task(send_keepalive(kernel, force=True))
     await until_probe_sent(session)
     reset_outbound_send_tracking(kernel)
     confirm_probe_sent_and_maybe_reply(seam, session, 0, reply_after_s=0.1)
-    assert await asyncio.wait_for(task, timeout=2.0) is False
+    assert await asyncio.wait_for(task, timeout=2.0) is True
     stats = kernel.keepalive_stats
-    assert stats.probes_sent == 0
-    assert stats.probes_failed == 1
-    assert stats.replies == 0
-    assert stats.last_round_trip_s is None
+    assert stats.probes_sent == 1
+    assert stats.probes_failed == 0
+    assert stats.replies == 1
+    assert stats.last_round_trip_s == pytest.approx(0.1)
     assert get_private(kernel, "_keepalive_probe_sent_at_by_seq") == {}
     assert_keepalive_invariants(stats)

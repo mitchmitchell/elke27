@@ -1094,13 +1094,14 @@ class E27Kernel:
                     seq,
                     self.now() - queued_at,
                 )
-            sent_at = self._keepalive_probe_sent_at_by_seq.get(seq)
-            if not self.was_request_sent(seq) or sent_at is None:
+            if not self.was_request_sent(seq):
                 self._abandon_unsent_probe(seq)
                 self._log.debug("E27 keepalive probe failed before it was sent: seq=%s", seq)
                 stats.probes_failed += 1
                 return False
             self.forget_request_sent(seq)
+            sent_at = self._keepalive_probe_sent_at_by_seq[seq]
+            assert sent_at is not None
             stats.probes_sent += 1
             self._log.debug("E27 keepalive probe sent")
             try:
@@ -1874,7 +1875,6 @@ class E27Kernel:
 
     def _reset_outbound_send_tracking(self) -> None:
         self._confirmed_sent_seqs.clear()
-        self._keepalive_probe_sent_at_by_seq.clear()
 
     def _fail_all_pending_commands(self, exc: BaseException) -> None:
         self._reset_outbound_send_tracking()
