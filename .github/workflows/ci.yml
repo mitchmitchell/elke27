@@ -69,8 +69,8 @@ jobs:
       - name: Run linting
         run: uv run python devtools/lint.py
 
-      - name: Run tests
-        run: uv run pytest
+      - name: Run tests with diff branch coverage
+        run: uv run python devtools/diffcover.py
   audit:
     # Dependency vulnerability audit of the locked runtime + dev dependencies.
     # Ignored advisories: none. Any future --ignore-vuln must be listed here with
