@@ -11,10 +11,24 @@ HEAD``), and report each changed line that coverage lists as missing or as the
 source of a missing branch. A function no test runs whose name was called on a line
 the change removed (its tested caller went away) is a finding too.
 
-A changed line excluded with ``# pragma: no cover`` must give the reason in the
-exception form ``# pragma: no cover -- <reason of three or more words> (expires
-YYYY-MM-DD, approved by <Name>)`` with a listed approver (see
-``devtools/allow.py``); a bare pragma on a changed line is a finding.
+Exclusions come from coverage itself: the report's ``excluded_lines``, never a second
+regex here. Every changed line coverage excluded needs a reason, decided per line by
+the innermost enclosing statement that explains the exclusion:
+
+- a ``pragma: no cover`` in any spelling coverage honours (its own pattern
+  ``#\s*(pragma|PRAGMA)[:\s]?\s*(no|NO)\s*(cover|COVER)``, so ``# pragma no cover``
+  and ``# pragma: no coverage`` count) on the statement's own lines, or on the header
+  of an enclosing ``def``/``class``/``if``/... whose whole block coverage dropped.
+  That pragma line must carry the exception form ``# pragma: no cover -- <reason of
+  three or more words> (expires YYYY-MM-DD, approved by <Name>)`` with a listed
+  approver (see ``devtools/allow.py``), whether or not the pragma line itself changed;
+- an ``if TYPE_CHECKING:`` block, or a ``...`` stub body (a ``def`` whose body is only
+  ``...``, as in protocols and overloads). These are coverage's other default
+  exclusions; the code never runs by design and basedpyright checks it, so they are
+  accepted without a marker.
+
+A changed excluded line with neither is a finding, and so is one whose pragma line
+has no valid exception. Blank and comment-only lines are skipped.
 
 Usage: ``python devtools/diffcover.py [--base REV] [--root DIR] [--coverage-json FILE]
 [-- PYTEST ARGS]``. ``--coverage-json`` skips the test run and reads an existing report. Exits
@@ -41,7 +55,6 @@ DESCRIPTION = "Fail on changed library lines that the test suite never runs."
 ROOT = Path(__file__).resolve().parent.parent
 SRC = "src/"
 _HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
-_PRAGMA = re.compile(r"#\s*pragma:\s*no\s*cover\b(?P<rest>.*)$", re.IGNORECASE)
 
 
 class GitError(RuntimeError):
@@ -107,15 +120,73 @@ def orphaned_functions(source: str, missing: set[int], called: set[str]) -> list
     return found
 
 
+COVERAGE_PRAGMA = re.compile(r"#\s*(pragma|PRAGMA)[:\s]?\s*(no|NO)\s*(cover|COVER)\w*(?P<rest>.*)$")
+_TYPE_CHECKING = re.compile(r"^\s*if\s+(typing\.)?TYPE_CHECKING\s*:")
+
+
 def pragma_problem(line: str, today: dt.date) -> str | None:
-    """Why a ``pragma: no cover`` on a changed line is not an accepted exception."""
-    match = _PRAGMA.search(line)
+    """Why the coverage pragma on ``line`` is not an accepted exception (``None`` if it is)."""
+    match = COVERAGE_PRAGMA.search(line)
     if match is None:
-        return None
-    marker = allow.parse(f"# noqa: ELK205 {match.group('rest').strip()}", today)
-    if marker is None or marker.problem is None:
-        return None
-    return f"pragma: no cover {marker.problem}"
+        return "has no pragma"
+    marker = allow.parse(f"# noqa: {CODE} {match.group('rest').strip()}", today)
+    assert marker is not None
+    return None if marker.problem is None else f"pragma: no cover {marker.problem}"
+
+
+def _header(node: ast.stmt) -> range:
+    """The lines a pragma may sit on to exclude ``node``: decorators through the colon."""
+    start = min([node.lineno, *(d.lineno for d in getattr(node, "decorator_list", []))])
+    body = getattr(node, "body", None)
+    if isinstance(body, list) and body and isinstance(body[0], ast.stmt):
+        return range(start, body[0].lineno)
+    return range(start, (node.end_lineno or node.lineno) + 1)
+
+
+def _is_ellipsis(node: ast.stmt) -> bool:
+    return (
+        isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Constant)
+        and node.value.value is Ellipsis
+    )
+
+
+def _is_stub(node: ast.stmt) -> bool:
+    """A bare ``...`` statement, or a ``def`` whose body is ``...`` (after a docstring)."""
+    if _is_ellipsis(node):
+        return True
+    if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+        return False
+    body = node.body
+    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+        body = body[1:] if not _is_ellipsis(body[0]) else body
+    return len(body) == 1 and _is_ellipsis(body[0])
+
+
+def exclusion_problem(tree: ast.Module, text: list[str], number: int, today: dt.date) -> str | None:
+    """Why changed line ``number``, which coverage excluded, lacks an accepted reason."""
+    enclosing = sorted(
+        (
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.stmt)
+            and node.lineno <= number <= (node.end_lineno or node.lineno)
+        ),
+        key=lambda node: (node.lineno, -(node.end_lineno or node.lineno)),
+        reverse=True,
+    )
+    for node in enclosing:
+        for line in _header(node):
+            if COVERAGE_PRAGMA.search(text[line - 1]):
+                problem = pragma_problem(text[line - 1], today)
+                return (
+                    None if problem is None else f"excluded by the pragma on line {line}: {problem}"
+                )
+        if isinstance(node, ast.If) and _TYPE_CHECKING.match(text[node.lineno - 1]):
+            return None
+        if _is_stub(node):
+            return None
+    return "excluded from coverage without a pragma or a default exclusion"
 
 
 def findings(
@@ -132,15 +203,24 @@ def findings(
     for path in sorted(changed):
         lines = changed[path]
         text = sources.get(path, [])
-        for number in sorted(lines):
-            if 0 < number <= len(text) and (problem := pragma_problem(text[number - 1], today)):
-                out.append(f"{path}:{number} {CODE} {problem}")
         entry = files.get(path)
         if not isinstance(entry, dict):
             if any(t.strip() and not t.strip().startswith("#") for t in text):
                 out.append(f"{path}:1 {CODE} changed module is not measured; no test imports it")
             continue
         missing = set(entry.get("missing_lines", []))
+        excluded = sorted(
+            n
+            for n in lines & set(entry.get("excluded_lines", []))
+            if 0 < n <= len(text)
+            and text[n - 1].strip()
+            and not text[n - 1].lstrip().startswith("#")
+        )
+        if excluded:
+            tree = ast.parse("\n".join(text))
+            for number in excluded:
+                if problem := exclusion_problem(tree, text, number, today):
+                    out.append(f"{path}:{number} {CODE} changed line {problem}")
         for number, name in orphaned_functions(
             "\n".join(text), missing, (removed or {}).get(path, set())
         ):

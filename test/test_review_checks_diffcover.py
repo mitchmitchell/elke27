@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import datetime as dt
 import importlib.util
+import json
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
+
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 DEVTOOLS = ROOT / "devtools"
@@ -106,18 +110,103 @@ def test_unmeasured_changed_module_is_a_finding() -> None:
     ]
 
 
-def test_pragma_on_a_changed_line_needs_the_exception_form() -> None:
-    good = "x = 1  # pragma: no cover -- only on a dead socket (expires 2026-12-01, approved by Mitch Mitchell)"
-    assert diffcover.pragma_problem(good, TODAY) is None
-    assert diffcover.pragma_problem("x = 1  # pragma: no cover", TODAY) is not None
-    assert diffcover.pragma_problem("x = 1", TODAY) is None
-    out = diffcover.findings(
-        {"files": {"src/a.py": {"missing_lines": [], "missing_branches": []}}},
-        {"src/a.py": {1}},
-        {"src/a.py": ["x = 1  # pragma: no cover"]},
-        TODAY,
+EXCEPTION = "-- only on a dead socket (expires 2026-12-01, approved by Mitch Mitchell)"
+
+EXCLUDED_SOURCE = f"""\
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    import os
+
+
+def old() -> int:  # pragma: no cover
+    x = 1
+    return x
+
+
+def nocolon() -> int:  # pragma no cover
+    return 1
+
+
+def nocoverage() -> int:  # pragma: no coverage
+    return 2
+
+
+def approved() -> int:  # pragma: no cover {EXCEPTION}
+    return 3
+
+
+class P(Protocol):
+    def f(self) -> int: ...
+
+
+def stub() -> int:
+    \"\"\"Doc.\"\"\"
+    ...
+
+
+VALUE = 1
+"""
+
+
+def _coverage_report(source: str) -> dict[str, object]:
+    """A report entry with the ``excluded_lines`` coverage computes for ``source``.
+
+    Uses coverage's own parser and default exclusion patterns, without tracing, so the
+    test does not disturb the coverage run measuring the suite.
+    """
+    from coverage.config import DEFAULT_EXCLUDE
+    from coverage.python import PythonParser
+
+    parser = PythonParser(text=source, exclude="|".join(f"(?:{p})" for p in DEFAULT_EXCLUDE))
+    parser.parse_source()
+    entry = {"missing_lines": [], "missing_branches": [], "excluded_lines": sorted(parser.excluded)}
+    return {"files": {"src/elke27_lib/probe_mod.py": entry}}
+
+
+def test_excluded_changed_lines_need_an_exception_on_their_pragma_line() -> None:
+    report = _coverage_report(EXCLUDED_SOURCE)
+    text = EXCLUDED_SOURCE.splitlines()
+    path = "src/elke27_lib/probe_mod.py"
+    out = diffcover.findings(report, {path: set(range(1, len(text) + 1))}, {path: text}, TODAY)
+    flagged = sorted(int(line.split(":")[1].split()[0]) for line in out)
+    assert flagged == [7, 8, 9, 12, 13, 16, 17]
+    assert (
+        f"{path}:8 ELK205 changed line excluded by the pragma on line 7: pragma: no cover" in out[1]
     )
-    assert len(out) == 1 and "pragma: no cover" in out[0]
+
+
+def test_new_line_under_an_unchanged_pragma_def_is_a_finding() -> None:
+    report = _coverage_report(EXCLUDED_SOURCE)
+    text = EXCLUDED_SOURCE.splitlines()
+    path = "src/elke27_lib/probe_mod.py"
+    out = diffcover.findings(report, {path: {8}}, {path: text}, TODAY)
+    assert out == [
+        f"{path}:8 ELK205 changed line excluded by the pragma on line 7: pragma: no cover"
+        " exception needs '-- <reason> (expires YYYY-MM-DD, approved by <Name>)'"
+    ]
+
+
+def test_pragma_spellings_coverage_honours_cannot_bypass() -> None:
+    report = _coverage_report(EXCLUDED_SOURCE)
+    text = EXCLUDED_SOURCE.splitlines()
+    path = "src/elke27_lib/probe_mod.py"
+    out = diffcover.findings(report, {path: {13, 17}}, {path: text}, TODAY)
+    assert [line.split(" ELK205 ")[0] for line in out] == [f"{path}:13", f"{path}:17"]
+
+
+def test_type_checking_blocks_and_stubs_are_accepted_without_a_marker() -> None:
+    report = _coverage_report(EXCLUDED_SOURCE)
+    text = EXCLUDED_SOURCE.splitlines()
+    path = "src/elke27_lib/probe_mod.py"
+    files = report["files"]
+    assert isinstance(files, dict)
+    excluded = set(files[path]["excluded_lines"])
+    assert {3, 4, 25, 30} <= excluded
+    assert (
+        diffcover.findings(report, {path: {3, 4, 25, 28, 29, 30, 20, 21}}, {path: text}, TODAY)
+        == []
+    )
 
 
 def test_ci_and_make_run_the_same_command() -> None:
@@ -125,3 +214,88 @@ def test_ci_and_make_run_the_same_command() -> None:
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
     assert "run: uv run python devtools/diffcover.py" in workflow
     assert "uv run python devtools/diffcover.py" in makefile
+
+
+def _repo(tmp_path: Path, base_source: str) -> str:
+    module = tmp_path / "src" / "elke27_lib" / "mod.py"
+    module.parent.mkdir(parents=True)
+    module.write_text(base_source, encoding="utf-8")
+    for args in (
+        ["init", "-q"],
+        ["add", "."],
+        [
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "base",
+        ],
+    ):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True)
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def _report(tmp_path: Path, missing: list[int]) -> Path:
+    path = tmp_path / "report.json"
+    entry = {"missing_lines": missing, "missing_branches": [], "excluded_lines": []}
+    path.write_text(json.dumps({"files": {"src/elke27_lib/mod.py": entry}}), encoding="utf-8")
+    return path
+
+
+def test_main_exits_2_on_a_bad_or_missing_base(tmp_path: Path) -> None:
+    _repo(tmp_path, "x = 1\n")
+    report = str(_report(tmp_path, []))
+    assert diffcover.main(["--base", "nosuchrev", "--coverage-json", report], root=tmp_path) == 2
+    assert diffcover.main(["--coverage-json", report], root=tmp_path) == 2
+
+
+def test_main_passes_pytest_args_after_the_split_and_returns_pytest_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base = _repo(tmp_path, "x = 1\n")
+    calls: list[list[str]] = []
+
+    def fake_run(root: Path, report: Path, pytest_args: list[str]) -> int:
+        calls.append(pytest_args)
+        return 5
+
+    monkeypatch.setattr(diffcover, "_run_tests", fake_run)
+    assert diffcover.main(["--base", base, "--", "-k", "not live", "-x"], root=tmp_path) == 5
+    assert calls == [["-k", "not live", "-x"]]
+
+
+def test_main_reads_the_report_the_tests_wrote(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base = _repo(tmp_path, "x = 1\n")
+    (tmp_path / "src" / "elke27_lib" / "mod.py").write_text("x = 1\ny = 2\n", encoding="utf-8")
+
+    def fake_run(root: Path, report: Path, pytest_args: list[str]) -> int:
+        entry = {"missing_lines": [2], "missing_branches": [], "excluded_lines": []}
+        report.write_text(json.dumps({"files": {"src/elke27_lib/mod.py": entry}}), encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(diffcover, "_run_tests", fake_run)
+    assert diffcover.main(["--base", base], root=tmp_path) == 1
+
+
+def test_main_checks_a_file_whose_change_only_removed_lines(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    base = _repo(
+        tmp_path, "def helper():\n    return 1\n\n\ndef g():\n    helper()\n    return 2\n"
+    )
+    (tmp_path / "src" / "elke27_lib" / "mod.py").write_text(
+        "def helper():\n    return 1\n\n\ndef g():\n    return 2\n", encoding="utf-8"
+    )
+    report = str(_report(tmp_path, [2]))
+    assert diffcover.main(["--base", base, "--coverage-json", report], root=tmp_path) == 1
+    out = capsys.readouterr().out
+    assert "src/elke27_lib/mod.py:1 ELK205 helper() lost its tested caller in this change" in out
+    assert "diffcover: 1 finding(s) in 0 changed src line(s)" in out
