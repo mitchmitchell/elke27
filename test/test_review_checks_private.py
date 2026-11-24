@@ -322,17 +322,7 @@ def _git_repo(root: Path, files: dict[str, str]) -> None:
     for args in (
         ["init", "-q"],
         ["add", "."],
-        [
-            "-c",
-            "user.name=t",
-            "-c",
-            "user.email=t@t",
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "-qm",
-            "base",
-        ],
+        ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"],
     ):
         subprocess.run(["git", *args], cwd=root, check=True)
 
