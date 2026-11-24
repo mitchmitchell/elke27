@@ -54,9 +54,7 @@ def test_python_ceiling_new_against_the_base_is_allowed(tmp_path: Path) -> None:
     assert _messages(tmp_path, {}, head) == []
 
 
-def test_python_ceiling_added_key_in_a_new_file_of_an_existing_table_name_is_checked(
-    tmp_path: Path,
-) -> None:
+def test_python_ceiling_added_key_is_growth(tmp_path: Path) -> None:
     base = {"devtools/comment_ceiling.py": CEILINGS}
     head = {"devtools/comment_ceiling.py": CEILINGS.replace('"src/b.py": 1', '"src/c.py": 1')}
     assert _messages(tmp_path, base, head) == ["COMMENT_CEILING gained 'src/c.py'"]
@@ -115,15 +113,24 @@ def test_loopcheck_scope_lists_only_grow(tmp_path: Path) -> None:
     assert _messages(tmp_path, {"pyproject.toml": source}, {"pyproject.toml": widened}) == []
 
 
+GUARDS = "test/test_review_guards.py"
+NOQA = 'NOQA_CEILING: dict[str, int] = {\n    "src/elke27_lib/client.py:BLE001": 12,\n}\n'
+
+
 def test_new_inline_slf001_noqa_in_src_is_growth(tmp_path: Path) -> None:
-    clean = "def f(o):\n    return o.x\n"
-    base = {"src/pkg/a.py": clean}
-    head = {"src/pkg/a.py": clean.replace("o.x", "o._x  # noqa: SLF001 -- seam")}
-    assert _messages(tmp_path, base, head) == [f"{ratchet.INLINE_TABLE} gained 'src/pkg/a.py'"]
-    two = head["src/pkg/a.py"] + "def g(o):\n    return o._y  # noqa: E501, SLF001\n"
-    assert _messages(tmp_path, head, {"src/pkg/a.py": two}) == [
-        f"{ratchet.INLINE_TABLE}['src/pkg/a.py'] rose 1 -> 2"
+    """A new SLF001 escape in src shows up as NOQA_CEILING growth, at its entry."""
+    grown = NOQA.replace("}", '    "src/elke27_lib/redact.py:SLF001": 1,\n}')
+    found = ratchet.compare(
+        _tables(tmp_path / "base", {GUARDS: NOQA}), _tables(tmp_path / "head", {GUARDS: grown})
+    )
+    assert [(f.path, f.line, f.message) for f in found] == [
+        (GUARDS, 3, "NOQA_CEILING gained 'src/elke27_lib/redact.py:SLF001'")
     ]
-    assert _messages(tmp_path, head, base) == []
-    found = ratchet.compare(_tables(tmp_path / "b2", base), _tables(tmp_path / "h2", head))
-    assert [(f.path, f.line) for f in found] == [("src/pkg/a.py", 2)]
+    file_level = NOQA.replace("}", '    "src/elke27_lib/redact.py:SLF001:file": 1,\n}')
+    assert _messages(tmp_path, {GUARDS: NOQA}, {GUARDS: file_level}) == [
+        "NOQA_CEILING gained 'src/elke27_lib/redact.py:SLF001:file'"
+    ]
+    raised = NOQA.replace("12", "13")
+    assert _messages(tmp_path, {GUARDS: NOQA}, {GUARDS: raised}) == [
+        "NOQA_CEILING['src/elke27_lib/client.py:BLE001'] rose 12 -> 13"
+    ]

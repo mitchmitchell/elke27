@@ -17,8 +17,7 @@ table entry that was added or raised:
 - every table of counts under ``[tool.elke27]`` whose key ends in ``ceiling`` (a
   value that is not an integer is a finding), every list whose key ends in
   ``exclude``, and every list ending in ``_modules`` or ``_paths`` (what a check
-  covers; dropping an entry is the growth);
-- inline ``noqa`` directives naming ``SLF001`` in ``src/``, counted per file.
+  covers; dropping an entry is the growth).
 
 Tables are matched by file and name, so a same-named table elsewhere cannot stand
 in for the real one. A table that disappears is reported too. Replacing a glob
@@ -81,9 +80,6 @@ RUFF_SUPPRESSIONS = (
     ("lint", "flake8-self", "extend-ignore-names"),
 )
 RUFF_SCOPES = (("include",),)
-SRC = "src/"
-INLINE_NOQA = re.compile(r"#\s*noqa:[^#]*\bSLF001\b")
-INLINE_TABLE = "inline noqa: SLF001 per src file"
 RUFF_SELECTIONS = (
     ("select",),
     ("extend-select",),
@@ -473,20 +469,6 @@ def tables(tree: Tree) -> dict[str, Table]:
         if source is not None:
             for table in python_tables(path, source):
                 found[f"{path}::{table.name}"] = table
-    inline: dict[str, Value] = {}
-    inline_lines: dict[str, int] = {}
-    for path in tree.paths():
-        if not (path.startswith(SRC) and path.endswith(".py")):
-            continue
-        hits = [
-            number
-            for number, text in enumerate((tree.read(path) or "").splitlines(), 1)
-            if INLINE_NOQA.search(text)
-        ]
-        if hits:
-            inline[path] = len(hits)
-            inline_lines[path] = hits[0]
-    found[f"{SRC}::{INLINE_TABLE}"] = Table(SRC, INLINE_TABLE, inline, inline_lines)
     for path, prefix in RUFF_FILES:
         source = tree.read(path)
         if source is not None and path != PYPROJECT:
@@ -552,19 +534,20 @@ def compare(base: dict[str, Table], head: dict[str, Table]) -> list[Finding]:
             continue
         for entry, value in new.entries.items():
             line = new.lines.get(entry, 1)
-            path = entry if new.path == SRC else new.path
             if entry not in old.entries:
                 if not _narrows(entry, value, old):
-                    findings.append(Finding(path, line, f"{name} gained {entry!r}"))
+                    findings.append(Finding(new.path, line, f"{name} gained {entry!r}"))
                 continue
             before = old.entries[entry]
             if isinstance(value, int) and isinstance(before, int) and value > before:
-                findings.append(Finding(path, line, f"{name}[{entry!r}] rose {before} -> {value}"))
+                findings.append(
+                    Finding(new.path, line, f"{name}[{entry!r}] rose {before} -> {value}")
+                )
             elif isinstance(value, frozenset) and isinstance(before, frozenset):
                 if gained := sorted(value - before):
-                    findings.append(Finding(path, line, f"{name}[{entry!r}] gained {gained}"))
+                    findings.append(Finding(new.path, line, f"{name}[{entry!r}] gained {gained}"))
             elif type(value) is not type(before):
-                findings.append(Finding(path, line, f"{name}[{entry!r}] changed kind"))
+                findings.append(Finding(new.path, line, f"{name}[{entry!r}] changed kind"))
     return findings
 
 
