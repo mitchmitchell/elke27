@@ -456,3 +456,44 @@ def test_pragma_on_except_else_and_finally_follows_coverage_block_rules(
         f"{path}:{body} ELK205 changed line excluded on line {header}: # pragma: no cover"
         " exception needs '-- <reason> (expires YYYY-MM-DD, approved by <Name>)'"
     ]
+
+
+NESTED = [
+    "def outer():  # pragma: no cover{outer}",
+    "    a = 1",
+    "    b = 2  # pragma: no cover{inner}",
+    "    c = 3",
+    "    return a + b + c",
+]
+
+
+@pytest.mark.parametrize(
+    ("outer", "inner", "line", "expected"),
+    [
+        ("", " {exc}", 4, 1),
+        ("", " {exc}", 3, 1),
+        (" {exc}", "", 3, 3),
+        (" {exc}", " {exc}", 4, None),
+        (" {exc}", " {exc}", 3, None),
+    ],
+)
+def test_valid_exception_nearby_does_not_cover_for_a_bare_enclosing_pragma(
+    outer: str, inner: str, line: int, expected: int | None
+) -> None:
+    path = "src/elke27_lib/n.py"
+    marks = {"outer": outer.format(exc=EXCEPTION), "inner": inner.format(exc=EXCEPTION)}
+    text = [row.format(**marks) for row in NESTED]
+    report = {
+        "files": {
+            path: {"missing_lines": [], "missing_branches": [], "excluded_lines": [1, 2, 3, 4, 5]}
+        }
+    }
+    rules = diffcover.coverage_rules(None)
+    got = diffcover.findings(report, {path: {line}}, {path: text}, TODAY, rules=rules)
+    if expected is None:
+        assert got == []
+    else:
+        assert got == [
+            f"{path}:{line} ELK205 changed line excluded on line {expected}: # pragma: no cover"
+            " exception needs '-- <reason> (expires YYYY-MM-DD, approved by <Name>)'"
+        ]

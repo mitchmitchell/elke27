@@ -24,10 +24,11 @@ Exclusions follow coverage's own config (``report:exclude_lines`` and
 copy of its patterns:
 
 - every changed line in the report's ``excluded_lines`` is traced, with coverage's
-  own parser run once per exclusion pattern, to the nearest line at or above it
-  that the pattern matched (so coverage's block rules, ``except``, ``else:`` and
-  ``finally:`` included, apply unchanged), and every changed line matching a partial-branch pattern (``# pragma: no
-  branch``) is checked on its own line. That line must carry the exception form
+  own parser run once per matched line of each exclusion pattern, to every line
+  whose excluded block holds it (so coverage's block rules, ``except``, ``else:``
+  and ``finally:`` included, apply unchanged), and every changed line matching a
+  partial-branch pattern (``# pragma: no branch``) is checked on its own line. Each
+  such line must carry the exception form
   right after the pragma: ``# pragma: no cover -- <reason of three or more words>
   (expires YYYY-MM-DD, approved by <Name>)`` with a listed approver (see
   ``devtools/allow.py``), whether or not the pragma line itself changed. So the
@@ -174,17 +175,37 @@ def pragma_problem(line: str, pattern: str, today: dt.date) -> str | None:
     return f"{line[match.start() : match.end()].strip()} {marker.problem}"
 
 
-def _excluded_by(text: list[str], pattern: str) -> tuple[set[int], list[int]]:
-    """Lines coverage excludes for one pattern, and the lines the pattern matched."""
+def _excluded_by(text: list[str], pattern: str) -> dict[int, set[int]]:
+    """Each line ``pattern`` matches, mapped to the lines coverage excludes for it alone.
+
+    Coverage's parser is run once more per matched line with matching narrowed to that
+    line, so the block it excludes (a ``def``, ``if``, ``except``, ``else:`` or
+    ``finally:`` clause, a decorated function) is coverage's own, not a rebuilt rule.
+    """
     from coverage.parser import PythonParser
 
-    parser = PythonParser(text="\n".join(text), exclude=pattern)
-    parser.parse_source()
-    return set(parser.excluded), sorted(parser.raw_excluded)
+    class _OneMatch(PythonParser):
+        def __init__(self, source: str, only: int | None) -> None:
+            self.only = only
+            super().__init__(text=source, exclude=pattern)
+
+        def lines_matching(self, regex: str) -> set[int]:
+            found = super().lines_matching(regex)
+            return found if self.only is None else found & {self.only}
+
+    source = "\n".join(text)
+    every = _OneMatch(source, None)
+    every.parse_source()
+    blocks: dict[int, set[int]] = {}
+    for line in sorted(every.raw_excluded):
+        parser = _OneMatch(source, line)
+        parser.parse_source()
+        blocks[line] = set(parser.excluded)
+    return blocks
 
 
 def exclusion_problem(
-    exclusions: dict[str, tuple[set[int], list[int]]],
+    exclusions: dict[str, dict[int, set[int]]],
     text: list[str],
     number: int,
     rules: Rules,
@@ -192,27 +213,27 @@ def exclusion_problem(
 ) -> str | None:
     """Why changed line ``number``, which coverage excluded, lacks an accepted reason.
 
-    Coverage's own parser is run once per exclusion pattern (``exclusions`` maps each
-    pattern to its excluded and matched lines), so its block rules (``def``, ``if``,
-    ``except``, ``else:``, ``finally:``) are used as is. A pattern that excludes the
-    line is traced to the nearest line at or above it that the pattern matched. An
-    exempt pattern is accepted; any other needs the exception form on that line.
+    ``exclusions`` maps each exclusion pattern to the lines it matched, each with the
+    block coverage excludes because of that line alone. Every matched line whose block
+    holds ``number`` must be accepted: an exempt pattern is, any other needs the
+    exception form on that line. So a valid exception nearby cannot cover for a bare
+    pragma on an enclosing block. The nearest unaccepted line is reported.
     """
-    found: list[str] = []
+    problems: list[tuple[int, str]] = []
+    covered = False
     for pattern in rules.exclude:
-        excluded, matched = exclusions[pattern]
-        if number not in excluded:
-            continue
-        if pattern in rules.exempt:
-            return None
-        line = max((n for n in matched if n <= number), default=None)
-        if line is None:
-            continue
-        problem = pragma_problem(text[line - 1], pattern, today)
-        if problem is None:
-            return None
-        found.append(f"excluded on line {line}: {problem}")
-    return found[0] if found else "excluded from coverage without a matching pattern"
+        for line, block in exclusions[pattern].items():
+            if number not in block:
+                continue
+            covered = True
+            if pattern in rules.exempt:
+                continue
+            problem = pragma_problem(text[line - 1], pattern, today)
+            if problem is not None:
+                problems.append((line, f"excluded on line {line}: {problem}"))
+    if problems:
+        return max(problems)[1]
+    return None if covered else "excluded from coverage without a matching pattern"
 
 
 def statement_starts(text: list[str], lines: set[int]) -> dict[int, int]:
