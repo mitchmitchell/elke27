@@ -581,10 +581,34 @@ DOCUMENTED_FIELDS: Final[Mapping[tuple[str, str], frozenset[str]]] = {
             "keypad_id",
         }
     ),
+    ("keypad", "get_configured"): frozenset(
+        {
+            "block_count",
+            "block_id",
+            "error_code",
+            "keypads",
+        }
+    ),
+    ("keypad", "get_table_info"): frozenset(
+        {
+            "element_size",
+            "error_code",
+            "increment_size",
+            "table_csm",
+            "table_elements",
+            "tablesize",
+        }
+    ),
     ("keypad", "get_version_info"): frozenset(
         {
             "error_code",
             "error_message",
+            "keypad_id",
+        }
+    ),
+    ("keypad", "set_attribs"): frozenset(
+        {
+            "error_code",
             "keypad_id",
         }
     ),
@@ -1479,6 +1503,14 @@ DOCUMENTED_FIELDS: Final[Mapping[tuple[str, str], frozenset[str]]] = {
         {
             "error_code",
             "wgnd_id",
+        }
+    ),
+    ("wgnd", "get_configured"): frozenset(
+        {
+            "block_count",
+            "block_id",
+            "error_code",
+            "wgnds",
         }
     ),
     ("wgnd", "get_table_info"): frozenset(

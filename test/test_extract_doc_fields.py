@@ -31,6 +31,9 @@ Global widget_get_status (ID_NONCE_STRUCT *id_nonce, cJSON *root)
        ▪ {"seq":0,"widget":{"get_avail":"available":"FF","error_code":0}}
        ▪ {"Mode":"ON"}
        ▪ {"seq":0,"widget":{"get_mode":true}}
+       ▪ {"seq":0,"widget":{"get_code":{"code":"1234
+       ◦ Response
+             ▪ {"seq":0,"widget":{"get_name":{"name":"Front","error_code":0}}}
 """
 
 
@@ -61,6 +64,7 @@ def test_extract_reads_response_and_broadcast_fields_only() -> None:
             {"widget_id", "Mode", "flags", "error_code", "error_message"}
         ),
         ("widget", "changed"): frozenset({"widget_id", "Mode"}),
+        ("widget", "get_name"): frozenset({"name", "error_code"}),
     }
 
 
@@ -79,7 +83,7 @@ def test_extract_joins_wrapped_examples_and_keeps_first_location() -> None:
 def test_extract_reports_examples_that_are_not_json() -> None:
     extraction = extractor.extract(SAMPLE.splitlines())
 
-    assert list(extraction.unparsed) == [14]
+    assert list(extraction.unparsed) == [14, 17]
 
 
 def test_rendered_manifest_round_trips_and_is_sorted() -> None:
@@ -125,6 +129,18 @@ def test_no_library_module_imports_the_manifest() -> None:
                 importers.append(path.name)
 
     assert importers == []
+
+
+def test_read_lines_keeps_page_breaks_inside_lines(tmp_path: Path) -> None:
+    doc = tmp_path / "reference.txt"
+    doc.write_text(
+        'one\x0cstill one\n  ▪ {"seq":0,"widget":{"changed":{"Mode":"ON"}}}\n', encoding="utf-8"
+    )
+
+    lines = extractor.read_lines(doc)
+
+    assert lines[0] == "one\x0cstill one"
+    assert extractor.extract(lines).locations[("widget", "changed")] == {"Mode": 2}
 
 
 def test_main_writes_manifest_and_private_locations(tmp_path: Path) -> None:

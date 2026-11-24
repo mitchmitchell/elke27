@@ -5,7 +5,7 @@ on the command line or in the ``ELKE27_API_DOC`` environment variable.
 
 Each JSON example in the reference starts on a line whose first non-blank text after
 the bullet is ``{``. Examples may wrap over several lines; the lines are joined with a
-single space until the braces balance. Curly quotes are read as straight quotes. A
+single space until the braces balance or the next bullet starts. Curly quotes are read as straight quotes. A
 message is a response or broadcast when it has a top-level ``seq`` and no ``session_id``. Its type is ``(group, command)`` and its documented fields
 are the top-level keys of the command body. Requests are skipped, and examples that
 do not parse as JSON are counted and reported on stderr.
@@ -36,6 +36,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUTPUT = ROOT / "src" / "elke27_lib" / "protocol_manifest.py"
 DOC_ENV = "ELKE27_API_DOC"
 BULLET_CHARS = "▪•◦-* \t"
+BULLETS = ("▪", "•", "◦")
 ENVELOPE_KEYS = frozenset({"seq", "session_id"})
 MAX_EXAMPLE_LINES = 40
 CURLY_QUOTES = str.maketrans({"\u201c": '"', "\u201d": '"'})
@@ -104,6 +105,10 @@ def _closing_index(text: str) -> int:
     return -1
 
 
+def _starts_bullet(line: str) -> bool:
+    return line.lstrip().startswith(BULLETS)
+
+
 def iter_examples(lines: Sequence[str]) -> Iterator[Example]:
     """Yield every JSON example that starts a bullet line, joined across wraps."""
     index = 0
@@ -115,7 +120,7 @@ def iter_examples(lines: Sequence[str]) -> Iterator[Example]:
         start = index
         parts = [stripped.strip()]
         while _balance(" ".join(parts)) > 0 and index + 1 < len(lines):
-            if index - start >= MAX_EXAMPLE_LINES:
+            if index - start >= MAX_EXAMPLE_LINES or _starts_bullet(lines[index + 1]):
                 break
             index += 1
             parts.append(lines[index].strip())
@@ -196,6 +201,11 @@ def render_locations(locations: Mapping[MessageType, Mapping[str, int]]) -> str:
     return "\n".join(out)
 
 
+def read_lines(path: Path) -> list[str]:
+    """Read the reference as lines split on newlines only, so page breaks keep line numbers."""
+    return path.read_text(encoding="utf-8").split("\n")
+
+
 def _inside_repo(path: Path) -> bool:
     return path.resolve().is_relative_to(ROOT)
 
@@ -223,7 +233,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if locations_path is not None and _inside_repo(locations_path):
         print("error: --locations must point outside this repository", file=sys.stderr)
         return 2
-    extraction = extract(doc.read_text(encoding="utf-8").splitlines())
+    extraction = extract(read_lines(doc))
     if extraction.unparsed:
         print(
             f"skipped {len(extraction.unparsed)} examples that are not valid JSON", file=sys.stderr
