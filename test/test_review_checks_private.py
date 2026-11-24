@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import datetime as dt
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
+
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 DEVTOOLS = ROOT / "devtools"
@@ -14,14 +17,21 @@ TODAY = dt.date(2026, 11, 24)
 
 
 def _load(name: str) -> ModuleType:
-    if str(DEVTOOLS) not in sys.path:
-        sys.path.insert(0, str(DEVTOOLS))
-    spec = importlib.util.spec_from_file_location(name, DEVTOOLS / f"{name}.py")
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
+    """Load a devtools script by path; sys.path and sys.modules are restored after."""
+    saved_path = list(sys.path)
+    saved_modules = set(sys.modules)
+    sys.path.insert(0, str(DEVTOOLS))
+    try:
+        spec = importlib.util.spec_from_file_location(f"devtools_{name}", DEVTOOLS / f"{name}.py")
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        sys.path[:] = saved_path
+        for added in set(sys.modules) - saved_modules:
+            del sys.modules[added]
 
 
 allow = _load("allow")
@@ -320,3 +330,32 @@ def test_allow_marker_expiry_is_capped_at_90_days() -> None:
     assert (
         allow.parse(over, TODAY).problem == "exception expiry 2027-02-23 is more than 90 days out"
     )
+
+
+def _git_repo(root: Path, files: dict[str, str]) -> None:
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text, encoding="utf-8")
+    for args in (
+        ["init", "-q"],
+        ["add", "."],
+        ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"],
+    ):
+        subprocess.run(["git", *args], cwd=root, check=True)
+
+
+def test_ratchet_revalidates_markers_on_unchanged_lines(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    expired = (
+        "# noqa: ELK201 -- kept for the old seam (expires 2026-01-01, approved by Mitch Mitchell)"
+    )
+    _git_repo(tmp_path, {"test/g.py": f'X_CEILING = {{\n    "a.py": 4,  {expired}\n}}\n'})
+    assert ratchet.main(["--base", "HEAD"], root=tmp_path) == 1
+    out = capsys.readouterr().out
+    assert "test/g.py:2 ELK201 exception marker rejected: exception expired on 2026-01-01" in out
+
+
+def test_loading_a_devtools_script_leaves_the_session_clean() -> None:
+    assert str(DEVTOOLS) not in sys.path
+    assert "allow" not in sys.modules

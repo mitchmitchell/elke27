@@ -9,7 +9,9 @@ import os
 import pathlib
 import time
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any
+
+from test.helpers.redaction import redact_record
 
 
 def _safe_json_default(obj: Any) -> Any:
@@ -27,21 +29,6 @@ def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def _load_redactor():
-    # Prefer project redaction helper if present; otherwise do minimal redaction.
-    try:
-        module = importlib.import_module("test.helpers.redaction")
-        redact_record = getattr(module, "redact_record", None)
-        if callable(redact_record):
-            return redact_record
-    except ImportError:
-        return None
-    return None
-
-
-_REDACT = _load_redactor()
-
-
 def _yaml_text(summary: dict[str, Any]) -> str | None:
     """The summary as YAML, or ``None`` without PyYAML or when a value is not representable."""
     if importlib.util.find_spec("yaml") is None:
@@ -53,42 +40,6 @@ def _yaml_text(summary: dict[str, Any]) -> str | None:
         logging.getLogger(__name__).warning("summary is not YAML (%s); writing JSON instead", err)
         return None
     return text if isinstance(text, str) else None
-
-
-def _minimal_redact(record: dict[str, Any]) -> dict[str, Any]:
-    # Last-resort redaction: remove common secret-ish keys.
-    secret_keys = {
-        "pin",
-        "pass",
-        "access_code",
-        "pass_phrase",
-        "link_enc",
-        "link_hmac",
-        "sk",
-        "shm",
-        "session_key",
-        "session_hmac",
-        "key",
-        "secret",
-        "password",
-    }
-
-    def scrub(v: Any) -> Any:
-        if isinstance(v, dict):
-            v_map = cast(dict[str, Any], v)
-            out: dict[str, Any] = {}
-            for k, vv in v_map.items():
-                if str(k).lower() in secret_keys:
-                    out[k] = "<redacted>"
-                else:
-                    out[k] = scrub(vv)
-            return out
-        if isinstance(v, list):
-            v_list = cast(list[Any], v)
-            return [scrub(x) for x in v_list]
-        return v
-
-    return scrub(record)
 
 
 @dataclass
@@ -117,14 +68,7 @@ class Reporter:
         self._yaml_path = self.artifacts_dir / f"{base}.summary.yaml"
 
     def _apply_redaction(self, record: dict[str, Any]) -> dict[str, Any]:
-        if _REDACT is not None:
-            try:
-                redacted = _REDACT(record)
-                if isinstance(redacted, dict):
-                    return cast(dict[str, Any], redacted)
-            except (TypeError, ValueError, KeyError, AttributeError):
-                return _minimal_redact(record)
-        return _minimal_redact(record)
+        return redact_record(record)
 
     def emit(self, record_type: str, **fields: Any) -> dict[str, Any]:
         """

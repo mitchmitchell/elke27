@@ -22,7 +22,9 @@ codes, narrows the table and is allowed. A new Python table is allowed (it start
 new ceiling).
 
 An entry that must grow needs ``# noqa: ELK201 -- <reason> (expires YYYY-MM-DD,
-approved by <Name>)`` on its line (see ``devtools/allow.py``).
+approved by <Name>)`` on its line (see ``devtools/allow.py``). Every ELK201 marker in
+a file that holds a ratchet table is re-validated on each run, grown or not, so an
+expired or unapproved marker on an unchanged line fails.
 
 Usage: ``python devtools/ratchet.py [--base REV] [--head REV]``. The base defaults
 to ``git merge-base origin/main HEAD``. Prints ``path:line ELK201 message`` per
@@ -535,6 +537,23 @@ def apply_exceptions(findings: list[Finding], head: Tree, today: dt.date) -> lis
     return kept
 
 
+def marker_findings(head: dict[str, Table], tree: Tree, today: dt.date) -> list[Finding]:
+    """Every ELK201 marker in a file holding a ratchet table that ``allow`` rejects.
+
+    Checked whether or not its line grew, so an expired or unapproved exception on an
+    unchanged entry still fails.
+    """
+    found: list[Finding] = []
+    for path in sorted({table.path for table in head.values()}):
+        source = tree.read(path)
+        if source is None:
+            continue
+        for line, marker in sorted(allow.line_markers(source.splitlines(), today).items()):
+            if CODE in marker.codes and marker.problem is not None:
+                found.append(Finding(path, line, f"exception marker rejected: {marker.problem}"))
+    return found
+
+
 def main(argv: Sequence[str] | None = None, root: Path = ROOT) -> int:
     """Run the check; see the module docstring."""
     parser = argparse.ArgumentParser(description=DESCRIPTION)
@@ -545,11 +564,17 @@ def main(argv: Sequence[str] | None = None, root: Path = ROOT) -> int:
         base_rev = args.base or _git(root, "merge-base", "origin/main", "HEAD").strip()
         base_rev = _git(root, "rev-parse", "--verify", f"{base_rev}^{{commit}}").strip()
         head = Tree(root, args.head)
-        findings = compare(tables(Tree(root, base_rev)), tables(head))
+        head_tables = tables(head)
+        findings = compare(tables(Tree(root, base_rev)), head_tables)
     except GitError as error:
         print(f"ratchet: {error}", file=sys.stderr)
         return 2
-    findings = apply_exceptions(findings, head, dt.date.today())
+    today = dt.date.today()
+    findings = apply_exceptions(findings, head, today)
+    reported = {(f.path, f.line) for f in findings}
+    findings += [
+        f for f in marker_findings(head_tables, head, today) if (f.path, f.line) not in reported
+    ]
     for finding in findings:
         print(finding.render())
     print(f"ratchet: {len(findings)} finding(s) against {base_rev[:12]}")
