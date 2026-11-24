@@ -219,7 +219,7 @@ def test_supplement_entry_without_a_malformed_example_is_refused() -> None:
 def test_reviewed_supplement_names_the_two_phase_one_types() -> None:
     assert dict(extractor.REVIEWED_SUPPLEMENT) == {
         ("area", "get_trouble"): frozenset({"area_id", "error_code"}),
-        ("zone", "get_all_zones_status"): frozenset({"status"}),
+        ("zone", "get_all_zones_status"): frozenset({"status", "error_code"}),
     }
     for message_type, names in extractor.REVIEWED_SUPPLEMENT.items():
         assert protocol_manifest.DOCUMENTED_FIELDS[message_type] == names

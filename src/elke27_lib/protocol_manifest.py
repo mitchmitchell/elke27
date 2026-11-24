@@ -1707,6 +1707,7 @@ DOCUMENTED_FIELDS: Final[Mapping[tuple[str, str], frozenset[str]]] = {
     ),
     ("zone", "get_all_zones_status"): frozenset(
         {
+            "error_code",
             "status",
         }
     ),

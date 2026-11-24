@@ -7,3 +7,4 @@ One hex char per zone, table values 0-F. Handler zone.py:1141 maps all 16 values
 | field | code read site | decision | test that proves it | status |
 |---|---|---|---|---|
 | `status` | src/elke27_lib/handlers/zone.py:1036, :1141 | read (all 16 table values) | test/test_handlers_zone_extra.py | open (needs doc-shaped corpus test) |
+| `error_code` | src/elke27_lib/handlers/zone.py:354 | unreviewed | none | open |

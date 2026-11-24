@@ -64,7 +64,7 @@ MessageType = tuple[str, str]
 
 REVIEWED_SUPPLEMENT: Mapping[MessageType, frozenset[str]] = {
     ("area", "get_trouble"): frozenset({"area_id", "error_code"}),
-    ("zone", "get_all_zones_status"): frozenset({"status"}),
+    ("zone", "get_all_zones_status"): frozenset({"status", "error_code"}),
 }
 
 
