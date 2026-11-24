@@ -141,13 +141,16 @@ def _call_hits(call: ast.Call) -> list[str]:
         target = _argument(call, 0, _TARGET_KEYWORDS)
         if _private_target(target):
             hits.append(f"patch.dict({target!r})")
-        values = call.args[1] if len(call.args) > 1 else None
-        values = next((k.value for k in call.keywords if k.arg == "values"), values)
-        keys = [
-            *_literal_keys(values),
-            *(k.arg for k in call.keywords if k.arg and is_private(k.arg)),
-        ]
-        hits += [f"patch.dict(..., {k!r})" for k in keys]
+        in_dict = call.args[0] if call.args else None
+        in_dict = next((k.value for k in call.keywords if k.arg == "in_dict"), in_dict)
+        if in_dict is not None and _via_dict(in_dict):
+            values = call.args[1] if len(call.args) > 1 else None
+            values = next((k.value for k in call.keywords if k.arg == "values"), values)
+            keys = [
+                *_literal_keys(values),
+                *(k.arg for k in call.keywords if k.arg and is_private(k.arg)),
+            ]
+            hits += [f"patch.dict(..., {k!r})" for k in keys]
     elif last in _GETTERS:
         names = [_string(a) for a in call.args]
         hits += [
@@ -207,21 +210,24 @@ def _imported_names(tree: ast.Module, packages: frozenset[str]) -> set[str]:
             names |= {
                 a.asname or a.name.split(".")[0] for a in node.names if _watched(a.name, packages)
             }
-    aliases = [
-        (node.targets[0].id, node.value)
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Assign)
-        and len(node.targets) == 1
-        and isinstance(node.targets[0], ast.Name)
-        and isinstance(node.value, ast.Name | ast.Attribute)
-    ]
+    links: list[tuple[list[str], list[ast.expr]]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            links.append(([node.name], list(node.bases)))
+        elif isinstance(node, ast.Assign):
+            targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            links.append((targets, [node.value]))
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            if isinstance(node.target, ast.Name):
+                links.append(([node.target.id], [node.value]))
     grew = True
     while grew:
         grew = False
-        for alias, value in aliases:
-            if alias not in names and (_chain(value) or [""])[0] in names:
-                names.add(alias)
-                grew = True
+        for targets, sources in links:
+            if any((_chain(v) or [""])[0] in names for v in sources):
+                fresh = set(targets) - names
+                names |= fresh
+                grew = grew or bool(fresh)
     return names
 
 
