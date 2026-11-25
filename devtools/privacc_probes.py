@@ -153,4 +153,25 @@ PROBES: tuple[Probe, ...] = (
     Probe("getattr(hub, '__class__')\n", ()),
     Probe("from json import _default_decoder\n", ()),
     Probe("class Local:\n    _client = None\n    def _x(self):\n        return 1\n", ()),
+    Probe("patch.dict('_env', {})\n", ()),
+    Probe(
+        "patch.multiple('elke27_lib.client._Helper', x=1)\n",
+        ("patch.multiple('elke27_lib.client._Helper')",),
+    ),
+    Probe(
+        "patch.dict(in_dict=hub.__dict__, values={'_client': 1})\n",
+        ("patch.dict(..., '_client')",),
+    ),
+    Probe("settings['_token'] = 1\n", ()),
+    Probe("import _thread\n", ()),
+    Probe(
+        "try:\n    Base = Elke27Client\nexcept ImportError:\n    Base = object\n"
+        "class Mid(Base):\n    pass\nclass Sub(Mid):\n    def _m(self):\n        return 1\n",
+        ("Sub._m override",),
+    ),
+    Probe(
+        "from .elke27_lib.client import Elke27Client as Local\n"
+        "class Sub(Local):\n    def _m(self):\n        return 1\n",
+        (),
+    ),
 )
