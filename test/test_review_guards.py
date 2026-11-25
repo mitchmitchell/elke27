@@ -24,6 +24,8 @@ import tokenize
 import tomllib
 from pathlib import Path
 
+from test.helpers.devtools import load
+
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "src" / "elke27_lib"
 TEST = ROOT / "test"
@@ -182,159 +184,91 @@ def test_private_access_in_helpers_does_not_grow() -> None:
     )
 
 
-_PATCHERS = {"setattr", "delattr", "patch"}
-_DUNDER_REFLECTION = {"__setattr__", "__getattribute__", "__delattr__"}
-
-
-def _library_names(tree: ast.Module) -> set[str]:
-    names: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("elke27_lib"):
-            names |= {a.asname or a.name for a in node.names}
-        elif isinstance(node, ast.Import):
-            names |= {
-                a.asname or a.name.split(".")[0]
-                for a in node.names
-                if a.name.startswith("elke27_lib")
-            }
-    return names
-
-
-def _root_name(node: ast.expr) -> str | None:
-    while isinstance(node, ast.Attribute):
-        node = node.value
-    return node.id if isinstance(node, ast.Name) else None
-
-
-def _last_name(node: ast.expr) -> str | None:
-    if isinstance(node, ast.Attribute):
-        return node.attr
-    return node.id if isinstance(node, ast.Name) else None
-
-
-def _hidden_private_access(path: Path) -> list[str]:
-    """Private reach the SLF001 counter misses: string patch targets, dunder
-    reflection, ``patch.object``/``patch.multiple`` names under any root
-    (``mock.``, ``mocker.``, ``unittest.mock.``), ``__dict__``/``vars()`` subscripts
-    and library subclasses overriding ``_`` methods."""
-    tree = _tree(path)
-    library = _library_names(tree)
-    hits: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call):
-            name = _call_name(node)
-            first = node.args[0] if node.args else None
-            if (
-                name in _PATCHERS
-                and isinstance(first, ast.Constant)
-                and isinstance(first.value, str)
-                and "." in first.value
-                and any(_is_private(part) for part in first.value.split("."))
-            ):
-                hits.append(f"{name}({first.value!r})")
-            elif name in _DUNDER_REFLECTION or (
-                name == "object"
-                and isinstance(node.func, ast.Attribute)
-                and _last_name(node.func.value) == "patch"
-            ):
-                literal = _literal_name(node)
-                if literal is not None and _is_private(literal):
-                    hits.append(f"{name}(..., {literal!r})")
-            elif (
-                name == "multiple"
-                and isinstance(node.func, ast.Attribute)
-                and _last_name(node.func.value) == "patch"
-            ):
-                hits += [
-                    f"multiple(..., {k.arg}=)"
-                    for k in node.keywords
-                    if k.arg and _is_private(k.arg)
-                ]
-        elif (
-            isinstance(node, ast.Subscript)
-            and isinstance(node.slice, ast.Constant)
-            and isinstance(node.slice.value, str)
-            and _is_private(node.slice.value)
-            and (
-                (isinstance(node.value, ast.Attribute) and node.value.attr == "__dict__")
-                or (
-                    isinstance(node.value, ast.Call)
-                    and isinstance(node.value.func, ast.Name)
-                    and node.value.func.id == "vars"
-                )
-            )
-        ):
-            hits.append(f"[{node.slice.value!r}] via __dict__/vars()")
-        elif isinstance(node, ast.ClassDef) and any(_root_name(b) in library for b in node.bases):
-            hits += [
-                f"{node.name}.{item.name} override"
-                for item in node.body
-                if isinstance(item, ast.FunctionDef | ast.AsyncFunctionDef)
-                and _is_private(item.name)
-            ]
-    return hits
+privacc = load("privacc")
+privacc_probes = load("privacc_probes")
 
 
 HIDDEN_PRIVATE_ACCESS_CEILING: dict[str, int] = {
     "test/test_snapshot_after_arm_bypass.py": 1,
 }
 
+_REFLECTED = re.compile(r"^((get|has|set|del)attr\(\.\.\., |from |import )")
+"""Forms first counted by ``devtools/privacc.py``: a private name passed to
+``getattr``/``hasattr``/``setattr``/``delattr``, and private imports from the
+library. They are frozen in their own ceiling at main's count so the older
+ceiling above is never raised."""
+
+REFLECTED_PRIVATE_ACCESS_CEILING: dict[str, int] = {
+    "test/conftest.py": 6,
+    "test/helpers/keepalive_seam.py": 2,
+    "test/test_area_exit_delay_state.py": 2,
+    "test/test_barrier_commands.py": 1,
+    "test/test_client_execute_coverage.py": 14,
+    "test/test_client_extra.py": 8,
+    "test/test_client_more.py": 3,
+    "test/test_discovery.py": 7,
+    "test/test_dispatcher_extra.py": 2,
+    "test/test_e27_session.py": 10,
+    "test/test_hello.py": 1,
+    "test/test_kernel_coverage.py": 10,
+    "test/test_kernel_extra.py": 5,
+    "test/test_linking.py": 4,
+    "test/test_presentation_errors.py": 6,
+    "test/test_raw_passthrough.py": 1,
+    "test/test_session_extra.py": 9,
+    "test/test_session_io_tstat_regression.py": 2,
+    "test/test_transport_command_retry.py": 3,
+}
+
+
+def _hidden_counts(reflected: bool) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for path in [*_test_modules(), *_helper_modules()]:
+        hits = [
+            h for h in privacc.reach_in_file(path) if bool(_REFLECTED.match(h.form)) is reflected
+        ]
+        if hits:
+            counts[_rel(path)] = len(hits)
+    return counts
+
 
 def test_hidden_private_access_does_not_grow() -> None:
-    """String patch targets, dunder reflection and private overrides only shrink."""
-    counts = {
-        _rel(p): n
-        for p in [*_test_modules(), *_helper_modules()]
-        if (n := len(_hidden_private_access(p)))
-    }
-    assert counts == HIDDEN_PRIVATE_ACCESS_CEILING, (
+    """Private reach SLF001 cannot see (devtools/privacc.py) only shrinks."""
+    assert _hidden_counts(reflected=False) == HIDDEN_PRIVATE_ACCESS_CEILING, (
         "Hidden private access changed (file: count). Patch or subclass through the "
         "public API; when a count drops, lower HIDDEN_PRIVATE_ACCESS_CEILING."
     )
+    assert _hidden_counts(reflected=True) == REFLECTED_PRIVATE_ACCESS_CEILING, (
+        "Private names passed to getattr/setattr/hasattr/delattr or imported from the "
+        "library changed (file: count). Use the public API; when a count drops, lower "
+        "REFLECTED_PRIVATE_ACCESS_CEILING."
+    )
 
 
-def test_hidden_private_access_sees_every_patch_spelling(tmp_path: Path) -> None:
-    """patch.object with a private name counts whether spelled plain, mock. or mocker."""
-    fixture = tmp_path / "test_fixture.py"
-    fixture.write_text(
-        "from unittest import mock\n"
-        "from unittest.mock import patch\n"
-        "from elke27_lib.client import Elke27Client\n"
-        "def test_x(mocker, monkeypatch, client):\n"
-        "    patch.object(client, '_kernel')\n"
-        "    mock.patch.object(client, '_kernel')\n"
-        "    mocker.patch.object(client, '_kernel')\n"
-        "    mock.patch.object(client, 'public')\n"
-        "    mock.patch('elke27_lib.client._helper')\n"
-        "    monkeypatch.setattr('elke27_lib.client._helper', None)\n"
-        "    object.__setattr__(client, '_kernel', None)\n"
-        "    unittest.mock.patch.object(client, '_kernel')\n"
-        "    mock.patch.multiple(client, _g=1, public=2)\n"
-        "    mocker.patch.multiple(client, _h=1)\n"
-        "    client.__dict__['_j'] = 1\n"
-        "    vars(client)['_k'] = 1\n"
-        "    vars(client)['public'] = 1\n"
-        "class Sub(Elke27Client):\n"
-        "    def _build_area_map(self):\n"
-        "        return {}\n",
-        encoding="utf-8",
+def test_hidden_private_access_counts_every_probe() -> None:
+    """Every form in the shared probe set (devtools/privacc_probes.py) is counted."""
+    wrong = {
+        probe.source: got
+        for probe in privacc_probes.PROBES
+        if (got := tuple(h.form for h in privacc.reach(probe.module(), privacc_probes.PACKAGES)))
+        != probe.forms
+    }
+    assert wrong == {}
+
+
+def test_hidden_private_access_watches_only_the_given_packages() -> None:
+    """Imports and subclasses count only for watched packages; string targets always do."""
+    source = (
+        "from homeassistant.core import HomeAssistant\n"
+        "from homeassistant.exceptions import _function_cache\n"
+        "class Sub(HomeAssistant):\n"
+        "    _state = 0\n"
+        "patch('homeassistant.exceptions._function_cache')\n"
     )
-    assert sorted(_hidden_private_access(fixture)) == sorted(
-        [
-            "object(..., '_kernel')",
-            "object(..., '_kernel')",
-            "object(..., '_kernel')",
-            "patch('elke27_lib.client._helper')",
-            "setattr('elke27_lib.client._helper')",
-            "__setattr__(..., '_kernel')",
-            "object(..., '_kernel')",
-            "multiple(..., _g=)",
-            "multiple(..., _h=)",
-            "['_j'] via __dict__/vars()",
-            "['_k'] via __dict__/vars()",
-            "Sub._build_area_map override",
-        ]
-    )
+    assert [h.form for h in privacc.reach(source)] == [
+        "patch('homeassistant.exceptions._function_cache')"
+    ]
+    assert len(privacc.reach(source, ("homeassistant",))) == 3
 
 
 def test_review_tables_only_shrink_against_main() -> None:

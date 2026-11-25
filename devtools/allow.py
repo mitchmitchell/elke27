@@ -5,10 +5,16 @@ A finding is skipped only when its line carries a marker in this form::
     # noqa: ELK2nn -- <reason of three or more words> (expires YYYY-MM-DD, approved by <Name>)
 
 The reason needs at least three words, the expiry date must not have passed and may
-be at most ``MAX_DAYS`` (90) days out, and the approver must be a person listed in
-``APPROVERS``. A marker that names the code but
-breaks one of those rules is itself reported, so a stale or unapproved exception
-fails the check instead of hiding the finding.
+be at most ``max_days`` (90) days out, and the approver must be a person listed in
+``approvers``. A marker that names the code but breaks one of those rules is itself
+reported, so a stale or unapproved exception fails the check instead of hiding the
+finding.
+
+This module uses only the standard library and imports nothing from the project, so
+another repository can vendor it unchanged. The approver list, the code pattern and
+the expiry cap live in a :class:`Policy`; callers that need other values pass their
+own ``policy=`` to :func:`parse` and :func:`line_markers` (the default is
+:data:`DEFAULT`: ``ELK2nn`` codes, approved by Mitch Mitchell, 90 days).
 """
 
 from __future__ import annotations
@@ -17,17 +23,36 @@ import datetime as dt
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
+from functools import cached_property
 
 APPROVERS = frozenset({"Mitch Mitchell"})
 MAX_DAYS = 90
+CODES = r"ELK2\d\d"
 
-_MARKER = re.compile(
-    r"#\s*noqa:\s*(?P<codes>ELK2\d\d(?:\s*,\s*ELK2\d\d)*)\s*(?P<rest>.*)$", re.IGNORECASE
-)
 _FORM = re.compile(
     r"^--\s+(?P<reason>.+?)\s+\(expires\s+(?P<date>\d{4}-\d{2}-\d{2}),\s+approved by\s+"
     r"(?P<who>[^)]+?)\)\s*$"
 )
+
+
+@dataclass(frozen=True)
+class Policy:
+    """Who may approve an exception, which codes it may name, and how long it may last."""
+
+    approvers: frozenset[str] = APPROVERS
+    codes: str = CODES
+    max_days: int = MAX_DAYS
+
+    @cached_property
+    def marker(self) -> re.Pattern[str]:
+        """The ``# noqa: <codes> <rest>`` pattern for this policy's codes."""
+        code = f"(?:{self.codes})"
+        return re.compile(
+            rf"#\s*noqa:\s*(?P<codes>{code}(?:\s*,\s*{code})*)\s*(?P<rest>.*)$", re.IGNORECASE
+        )
+
+
+DEFAULT = Policy()
 
 
 @dataclass(frozen=True)
@@ -38,9 +63,9 @@ class Marker:
     problem: str | None
 
 
-def parse(comment: str, today: dt.date) -> Marker | None:
-    """Parse one comment; ``None`` when it names no ELK2xx code."""
-    match = _MARKER.search(comment)
+def parse(comment: str, today: dt.date, policy: Policy = DEFAULT) -> Marker | None:
+    """Parse one comment; ``None`` when it names no code the policy covers."""
+    match = policy.marker.search(comment)
     if match is None:
         return None
     codes = frozenset(c.strip().upper() for c in match.group("codes").split(","))
@@ -57,20 +82,23 @@ def parse(comment: str, today: dt.date) -> Marker | None:
         return Marker(codes, f"exception expiry {form.group('date')!r} is not a date")
     if expires < today:
         return Marker(codes, f"exception expired on {expires.isoformat()}")
-    if expires > today + dt.timedelta(days=MAX_DAYS):
+    if expires > today + dt.timedelta(days=policy.max_days):
         return Marker(
-            codes, f"exception expiry {expires.isoformat()} is more than {MAX_DAYS} days out"
+            codes,
+            f"exception expiry {expires.isoformat()} is more than {policy.max_days} days out",
         )
-    if form.group("who").strip() not in APPROVERS:
-        return Marker(codes, f"exception approver must be one of {sorted(APPROVERS)}")
+    if form.group("who").strip() not in policy.approvers:
+        return Marker(codes, f"exception approver must be one of {sorted(policy.approvers)}")
     return Marker(codes, None)
 
 
-def line_markers(lines: Iterable[str], today: dt.date) -> dict[int, Marker]:
+def line_markers(
+    lines: Iterable[str], today: dt.date, policy: Policy = DEFAULT
+) -> dict[int, Marker]:
     """Markers by 1-based line number, from raw source lines (any file type)."""
     found: dict[int, Marker] = {}
     for number, line in enumerate(lines, start=1):
-        if "#" in line and (marker := parse(line, today)) is not None:
+        if "#" in line and (marker := parse(line, today, policy)) is not None:
             found[number] = marker
     return found
 
