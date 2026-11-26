@@ -4,7 +4,7 @@
 
 .DEFAULT_GOAL := default
 
-.PHONY: default install lint test upgrade build clean
+.PHONY: default install lint test diffcover upgrade build clean
 
 default: install lint test 
 
@@ -16,6 +16,9 @@ lint:
 
 test:
 	uv run pytest --cov=src --cov-report=term-missing -k "not test_live_e27_"
+
+diffcover:
+	uv run python devtools/diffcover.py
 
 upgrade:
 	uv sync --upgrade --all-extras --dev
