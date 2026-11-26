@@ -35,7 +35,7 @@ def fingerprint_bytes(data: bytes) -> str:
 def _fingerprint_hex(s: str) -> str | None:
     try:
         b = bytes.fromhex(s)
-    except Exception:
+    except ValueError:
         return None
     return fingerprint_bytes(b)
 

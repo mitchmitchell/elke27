@@ -18,9 +18,13 @@ from __future__ import annotations
 
 import ast
 import re
+import subprocess
+import sys
 import tokenize
 import tomllib
 from pathlib import Path
+
+from test.helpers.devtools import load
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "src" / "elke27_lib"
@@ -126,7 +130,7 @@ def test_private_access_only_in_legacy_test_files() -> None:
 # PRIVATE_ACCESS_CEILING (which carries each file's count). Adding a file, swapping
 # one for another, or adding a code such as BLE001 fails here.
 FROZEN_EXTRA_PER_FILE_IGNORES: dict[str, list[str]] = {
-    "test/helpers/*": ["SLF001", "BLE001"],
+    "test/helpers/keepalive_seam.py": ["SLF001"],
     "src/elke27_lib/*_thread.py": ["ASYNC"],
     "test/*": ["ASYNC"],
 }
@@ -163,6 +167,124 @@ def test_private_access_in_helpers_only_in_legacy_modules() -> None:
         "New test helpers must use the public API, not private members."
     )
     assert LEGACY_PRIVATE_HELPERS - found == set(), "Drop clean LEGACY_PRIVATE_HELPERS entries"
+
+
+HELPER_PRIVATE_ACCESS_CEILING: dict[str, int] = {
+    "test/helpers/internal.py": 5,
+    "test/helpers/keepalive_seam.py": 62,
+}
+
+
+def test_private_access_in_helpers_does_not_grow() -> None:
+    """Helper modules are counted like test files; the legacy ones only shrink."""
+    counts = {_rel(p): n for p in _helper_modules() if (n := _private_access_count(p))}
+    assert counts == {f: n for f, n in HELPER_PRIVATE_ACCESS_CEILING.items() if n}, (
+        "Private access in test/helpers changed (file: count). New helpers use the "
+        "public API; when a count drops, lower HELPER_PRIVATE_ACCESS_CEILING."
+    )
+
+
+privacc = load("privacc")
+privacc_probes = load("privacc_probes")
+
+
+HIDDEN_PRIVATE_ACCESS_CEILING: dict[str, int] = {
+    "test/test_snapshot_after_arm_bypass.py": 1,
+}
+
+_REFLECTED = re.compile(r"^((get|has|set|del)attr\(\.\.\., |from |import )")
+"""Forms first counted by ``devtools/privacc.py``: a private name passed to
+``getattr``/``hasattr``/``setattr``/``delattr``, and private imports from the
+library. They are frozen in their own ceiling at main's count so the older
+ceiling above is never raised."""
+
+REFLECTED_PRIVATE_ACCESS_CEILING: dict[str, int] = {
+    "test/conftest.py": 6,
+    "test/helpers/keepalive_seam.py": 2,
+    "test/test_area_exit_delay_state.py": 2,
+    "test/test_barrier_commands.py": 1,
+    "test/test_client_execute_coverage.py": 14,
+    "test/test_client_extra.py": 8,
+    "test/test_client_more.py": 3,
+    "test/test_discovery.py": 7,
+    "test/test_dispatcher_extra.py": 2,
+    "test/test_e27_session.py": 10,
+    "test/test_hello.py": 1,
+    "test/test_kernel_coverage.py": 10,
+    "test/test_kernel_extra.py": 5,
+    "test/test_linking.py": 4,
+    "test/test_presentation_errors.py": 6,
+    "test/test_raw_passthrough.py": 1,
+    "test/test_session_extra.py": 9,
+    "test/test_session_io_tstat_regression.py": 2,
+    "test/test_transport_command_retry.py": 3,
+}
+
+
+def _hidden_counts(reflected: bool) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for path in [*_test_modules(), *_helper_modules()]:
+        hits = [
+            h for h in privacc.reach_in_file(path) if bool(_REFLECTED.match(h.form)) is reflected
+        ]
+        if hits:
+            counts[_rel(path)] = len(hits)
+    return counts
+
+
+def test_hidden_private_access_does_not_grow() -> None:
+    """Private reach SLF001 cannot see (devtools/privacc.py) only shrinks."""
+    assert _hidden_counts(reflected=False) == HIDDEN_PRIVATE_ACCESS_CEILING, (
+        "Hidden private access changed (file: count). Patch or subclass through the "
+        "public API; when a count drops, lower HIDDEN_PRIVATE_ACCESS_CEILING."
+    )
+    assert _hidden_counts(reflected=True) == REFLECTED_PRIVATE_ACCESS_CEILING, (
+        "Private names passed to getattr/setattr/hasattr/delattr or imported from the "
+        "library changed (file: count). Use the public API; when a count drops, lower "
+        "REFLECTED_PRIVATE_ACCESS_CEILING."
+    )
+
+
+def test_hidden_private_access_counts_every_probe() -> None:
+    """Every form in the shared probe set (devtools/privacc_probes.py) is counted."""
+    wrong = {
+        probe.source: got
+        for probe in privacc_probes.PROBES
+        if (got := tuple(h.form for h in privacc.reach(probe.module(), privacc_probes.PACKAGES)))
+        != probe.forms
+    }
+    assert wrong == {}
+
+
+def test_hidden_private_access_watches_only_the_given_packages() -> None:
+    """Imports and subclasses count only for watched packages; string targets always do."""
+    source = (
+        "from homeassistant.core import HomeAssistant\n"
+        "from homeassistant.exceptions import _function_cache\n"
+        "class Sub(HomeAssistant):\n"
+        "    _state = 0\n"
+        "patch('homeassistant.exceptions._function_cache')\n"
+    )
+    assert [h.form for h in privacc.reach(source)] == [
+        "patch('homeassistant.exceptions._function_cache')"
+    ]
+    assert len(privacc.reach(source, ("homeassistant",))) == 3
+
+
+def test_review_tables_only_shrink_against_main() -> None:
+    """devtools/ratchet.py: no ceiling, allowlist or ignore table grew against main."""
+    result = subprocess.run(
+        [sys.executable, "devtools/ratchet.py"], cwd=ROOT, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_library_modules_do_not_import_private_names() -> None:
+    """devtools/privatecheck.py: no ``from .x import _name`` inside src."""
+    result = subprocess.run(
+        [sys.executable, "devtools/privatecheck.py"], cwd=ROOT, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 # Names ruff SLF001 ignores by default (namedtuple/enum API) and owner names it skips.
