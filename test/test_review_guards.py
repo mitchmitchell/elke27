@@ -171,7 +171,7 @@ def test_private_access_in_helpers_only_in_legacy_modules() -> None:
 
 HELPER_PRIVATE_ACCESS_CEILING: dict[str, int] = {
     "test/helpers/internal.py": 5,
-    "test/helpers/keepalive_seam.py": 62,
+    "test/helpers/keepalive_seam.py": 51,
 }
 
 

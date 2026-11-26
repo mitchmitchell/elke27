@@ -24,6 +24,50 @@ from elke27_lib.session_thread import SessionIOError, SessionState
 from test.helpers.internal import get_private, set_private
 
 
+def keepalive_timeout_s(kernel: E27Kernel) -> float:
+    return float(get_private(kernel, "_keepalive_timeout_s"))
+
+
+def probe_sent_at_by_seq(kernel: E27Kernel) -> dict[int, float]:
+    return cast(dict[int, float], get_private(kernel, "_keepalive_probe_sent_at_by_seq"))
+
+
+def probe_seqs(kernel: E27Kernel) -> set[int]:
+    return cast(set[int], get_private(kernel, "_keepalive_probe_seqs"))
+
+
+def _install_probe(kernel: E27Kernel, probe: Callable[..., Any]) -> None:
+    set_private(kernel, "_send_keepalive_request", probe)
+
+
+def _install_send(kernel: E27Kernel, send: Callable[..., Any]) -> None:
+    set_private(kernel, "_send_request_with_seq", send)
+
+
+def _set_closing(kernel: E27Kernel, closing: bool) -> None:
+    set_private(kernel, "_closing", closing)
+
+
+def _set_missed(kernel: E27Kernel, missed: int) -> None:
+    set_private(kernel, "_keepalive_missed", missed)
+
+
+def _set_rx_thread_at(kernel: E27Kernel, at: float) -> None:
+    set_private(kernel, "_rx_thread_at", at)
+
+
+def _attach_session(kernel: E27Kernel, session: object) -> None:
+    set_private(kernel, "_session", session)
+
+
+def _keepalive_task(kernel: E27Kernel) -> Any:
+    return get_private(kernel, "_keepalive_task")
+
+
+def _mark_request_sent(kernel: E27Kernel, seq: int) -> None:
+    get_private(kernel, "_mark_request_sent")(seq)
+
+
 @dataclass
 class MonotonicTestClock:
     """Settable monotonic clock for kernel ``now_monotonic``."""
@@ -90,10 +134,10 @@ def _probing_kernel(seam: KeepaliveSeam) -> tuple[E27Kernel, _FakeSession]:
     set_private(kernel, "_keepalive_interval_s", 0.0)
     set_private(kernel, "_keepalive_timeout_s", 5.0)
     set_private(kernel, "_keepalive_max_missed", 1)
-    set_private(kernel, "_rx_thread_at", 0.0)
+    _set_rx_thread_at(kernel, 0.0)
     fake = _FakeSession()
     cast(Any, fake)._outbound = type("O", (), {"is_idle": lambda self: True})()
-    set_private(kernel, "_session", fake)
+    _attach_session(kernel, fake)
     kernel.requests.register(("system", "r_u_alive"), lambda: {})
     return kernel, fake
 
@@ -122,7 +166,7 @@ def _install_probe_send(
     *,
     reply_delay_s: float | None,
 ) -> None:
-    timeout_s = float(get_private(kernel, "_keepalive_timeout_s"))
+    timeout_s = keepalive_timeout_s(kernel)
 
     def _send(seq: int, *_a: Any, **kw: Any) -> int:
         cast(Any, kernel)._mark_request_sent(seq)
@@ -131,18 +175,18 @@ def _install_probe_send(
             return seq
         seam.advance(reply_delay_s)
         if reply_delay_s < timeout_s:
-            set_private(kernel, "_rx_thread_at", seam.clock.now())
+            _set_rx_thread_at(kernel, seam.clock.now())
             cast(Any, kernel)._pending_responses.resolve(
                 seq, {"seq": seq, "system": {"r_u_alive": {}}}
             )
         return seq
 
-    set_private(kernel, "_send_request_with_seq", _send)
+    _install_send(kernel, _send)
 
 
 def _install_o14_late_rx_rescue_send(seam: KeepaliveSeam, kernel: E27Kernel) -> None:
     """Probe reply times out (D > T) after send returns; unrelated rx lands after ``sent_at``."""
-    timeout_s = float(get_private(kernel, "_keepalive_timeout_s"))
+    timeout_s = keepalive_timeout_s(kernel)
 
     def _send(seq: int, *_a: Any, **kw: Any) -> int:
         cast(Any, kernel)._mark_request_sent(seq)
@@ -164,22 +208,22 @@ def _install_o14_late_rx_rescue_send(seam: KeepaliveSeam, kernel: E27Kernel) -> 
         asyncio.create_task(_deliver_after_send())
         return seq
 
-    set_private(kernel, "_send_request_with_seq", _send)
+    _install_send(kernel, _send)
 
 
 async def run_o10() -> None:
     seam = kernel_with_keepalive_seam()
     kernel, fake = _probing_kernel(seam)
-    timeout_s = float(get_private(kernel, "_keepalive_timeout_s"))
+    timeout_s = keepalive_timeout_s(kernel)
     _install_probe_send(seam, kernel, reply_delay_s=timeout_s - 0.5)
-    set_private(kernel, "_keepalive_missed", 1)
+    _set_missed(kernel, 1)
     assert await cast(Any, kernel)._send_keepalive_request() is True
 
     async def _probe_ok(*, force: bool = False) -> bool:
-        set_private(kernel, "_closing", True)
+        _set_closing(kernel, True)
         return True
 
-    set_private(kernel, "_send_keepalive_request", _probe_ok)
+    _install_probe(kernel, _probe_ok)
     await cast(Any, kernel)._keepalive_loop()
     assert get_private(kernel, "_keepalive_missed") == 0
     assert fake.disconnects == []
@@ -188,7 +232,7 @@ async def run_o10() -> None:
 async def run_o11() -> None:
     seam = kernel_with_keepalive_seam()
     kernel, fake = _probing_kernel(seam)
-    timeout_s = float(get_private(kernel, "_keepalive_timeout_s"))
+    timeout_s = keepalive_timeout_s(kernel)
     _install_probe_send(seam, kernel, reply_delay_s=timeout_s)
     # Boundary: scheduled timeout at D=T fires; no early resolve -> miss.
     assert await cast(Any, kernel)._send_keepalive_request() is False
@@ -198,15 +242,15 @@ async def run_o11() -> None:
 async def run_o12() -> None:
     seam = kernel_with_keepalive_seam()
     kernel, fake = _probing_kernel(seam)
-    timeout_s = float(get_private(kernel, "_keepalive_timeout_s"))
+    timeout_s = keepalive_timeout_s(kernel)
     _install_probe_send(seam, kernel, reply_delay_s=timeout_s + 0.01)
     assert await cast(Any, kernel)._send_keepalive_request() is False
-    set_private(kernel, "_keepalive_missed", 0)
+    _set_missed(kernel, 0)
 
     async def _probe_miss(*, force: bool = False) -> bool:
         return False
 
-    set_private(kernel, "_send_keepalive_request", _probe_miss)
+    _install_probe(kernel, _probe_miss)
     await cast(Any, kernel)._keepalive_loop()
     assert len(fake.disconnects) == 1
 
@@ -221,7 +265,7 @@ async def run_o13() -> None:
         probes["n"] += 1
         return False
 
-    set_private(kernel, "_send_keepalive_request", _probe_miss)
+    _install_probe(kernel, _probe_miss)
     await cast(Any, kernel)._keepalive_loop()
     assert probes["n"] == 2
     assert len(fake.disconnects) == 1
@@ -273,7 +317,7 @@ def attach_recording_session(
     kernel, _ = _probing_kernel(seam)
     session = RecordingSession() if session is None else session
     session.on_message = cast(Any, kernel)._on_message
-    set_private(kernel, "_session", session)
+    _attach_session(kernel, session)
     return session
 
 
@@ -301,7 +345,7 @@ async def run_forced_probe_no_rescue_from_prior_command_reply() -> None:
     for _ in range(3):
         await asyncio.sleep(0)
 
-    seam.advance(float(get_private(kernel, "_keepalive_timeout_s")))
+    seam.advance(keepalive_timeout_s(kernel))
     assert await asyncio.wait_for(probe, timeout=2.0) is False
     assert probe_seq != cmd_seq
 
@@ -311,13 +355,13 @@ async def run_o14() -> None:
     kernel, fake = _probing_kernel(seam)
     _install_o14_late_rx_rescue_send(seam, kernel)
     assert await cast(Any, kernel)._send_keepalive_request() is True
-    set_private(kernel, "_keepalive_missed", 1)
+    _set_missed(kernel, 1)
 
     async def _probe_rescue(*, force: bool = False) -> bool:
-        set_private(kernel, "_closing", True)
+        _set_closing(kernel, True)
         return True
 
-    set_private(kernel, "_send_keepalive_request", _probe_rescue)
+    _install_probe(kernel, _probe_rescue)
     await cast(Any, kernel)._keepalive_loop()
     assert fake.disconnects == []
 
@@ -325,26 +369,26 @@ async def run_o14() -> None:
 async def run_o15() -> None:
     seam = kernel_with_keepalive_seam()
     kernel, fake = _probing_kernel(seam)
-    timeout_s = float(get_private(kernel, "_keepalive_timeout_s"))
+    timeout_s = keepalive_timeout_s(kernel)
     _install_probe_send(seam, kernel, reply_delay_s=timeout_s + 0.01)
     cast(Any, kernel)._start_keepalive()
-    task = get_private(kernel, "_keepalive_task")
+    task = _keepalive_task(kernel)
     assert task is not None
     await asyncio.wait_for(task, timeout=2.0)
     assert task.done()
     assert len(fake.disconnects) == 1
     set_private(kernel, "_keepalive_enabled", True)
-    set_private(kernel, "_session", fake)
+    _attach_session(kernel, fake)
     fake.state = SessionState.ACTIVE
     fake.disconnects.clear()
-    set_private(kernel, "_closing", False)
-    set_private(kernel, "_keepalive_missed", 0)
+    _set_closing(kernel, False)
+    _set_missed(kernel, 0)
     cast(Any, kernel)._start_keepalive()
-    second = get_private(kernel, "_keepalive_task")
+    second = _keepalive_task(kernel)
     assert second is not None and second is not task and not second.done()
-    live_task = get_private(kernel, "_keepalive_task")
+    live_task = _keepalive_task(kernel)
     assert live_task is not None and not live_task.done()
-    set_private(kernel, "_closing", True)
+    _set_closing(kernel, True)
     cast(Any, kernel)._stop_keepalive()
 
 
@@ -499,7 +543,7 @@ async def run_stale_reply_while_newer_outstanding() -> None:
     first = asyncio.create_task(send_keepalive(kernel, force=True))
     await until_probe_sent(session)
     seq_old = confirm_probe_sent_and_maybe_reply(seam, session, 0, reply_after_s=None)
-    seam.advance(float(get_private(kernel, "_keepalive_timeout_s")) + 0.01)
+    seam.advance(keepalive_timeout_s(kernel) + 0.01)
     assert await asyncio.wait_for(first, timeout=2.0) is False
     assert kernel.keepalive_stats.probe_timeouts == 1
 
@@ -527,8 +571,8 @@ async def run_probe_timeout_and_rescued() -> None:
     task = asyncio.create_task(send_keepalive(kernel, force=True))
     await until_probe_sent(session)
     sent_seq = confirm_probe_sent_and_maybe_reply(seam, session, 0, reply_after_s=None)
-    seam.advance(float(get_private(kernel, "_keepalive_timeout_s")) + 0.01)
-    set_private(kernel, "_rx_thread_at", seam.clock.now() + 0.001)
+    seam.advance(keepalive_timeout_s(kernel) + 0.01)
+    _set_rx_thread_at(kernel, seam.clock.now() + 0.001)
     session.deliver({"seq": sent_seq + 500, "area": {"get_status": {"area_id": 1}}})
     assert await asyncio.wait_for(task, timeout=2.0) is True
     stats = kernel.keepalive_stats
@@ -557,7 +601,8 @@ async def run_non_keepalive_tracked_request_leaves_no_probe_sent_entry() -> None
     seq = kernel.request(("area", "get_status"), area_id=1)
     await until_probe_sent(session)
     assert session.confirm_sent(0) == seq
-    assert get_private(kernel, "_keepalive_probe_sent_at_by_seq") == {}
+    assert probe_sent_at_by_seq(kernel) == {}
+    assert probe_seqs(kernel) == set()
 
 
 async def run_probe_cancelled_at_await_future_leaves_no_entry() -> None:
@@ -566,11 +611,12 @@ async def run_probe_cancelled_at_await_future_leaves_no_entry() -> None:
     await until_probe_sent(session)
     seq = confirm_probe_sent_and_maybe_reply(seam, session, 0, reply_after_s=None)
     await wait_until_probe(lambda: kernel.keepalive_stats.probes_sent == 1)
-    assert seq in get_private(kernel, "_keepalive_probe_sent_at_by_seq")
+    assert seq in probe_sent_at_by_seq(kernel)
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
     assert task.cancelled()
-    assert get_private(kernel, "_keepalive_probe_sent_at_by_seq") == {}
+    assert probe_sent_at_by_seq(kernel) == {}
+    assert probe_seqs(kernel) == set()
 
 
 async def run_late_on_sent_after_abandon_leaves_no_entry() -> None:
@@ -579,8 +625,8 @@ async def run_late_on_sent_after_abandon_leaves_no_entry() -> None:
     await until_probe_sent(session)
     seq = int(session.sent[0][0]["seq"])
     get_private(kernel, "_abandon_unsent_probe")(seq)
-    get_private(kernel, "_mark_request_sent")(seq)
-    assert seq not in get_private(kernel, "_keepalive_probe_sent_at_by_seq")
+    _mark_request_sent(kernel, seq)
+    assert seq not in probe_sent_at_by_seq(kernel)
     seam.advance(0.06)
     assert await asyncio.wait_for(task, timeout=2.0) is False
 
@@ -592,12 +638,13 @@ async def run_reused_seq_not_stale_rtt_after_session_reset() -> None:
     seq = confirm_probe_sent_and_maybe_reply(seam, session, 0, reply_after_s=0.25)
     assert await asyncio.wait_for(task, timeout=2.0) is True
     reset_outbound_send_tracking(kernel)
-    assert get_private(kernel, "_keepalive_probe_sent_at_by_seq") == {}
+    assert probe_sent_at_by_seq(kernel) == {}
+    assert probe_seqs(kernel) == set()
     set_private(kernel, "_seq", seq)
     task2 = asyncio.create_task(send_keepalive(kernel, force=True))
     await until_probe_sent(session, n=2)
     assert int(session.sent[1][0]["seq"]) == seq
-    get_private(kernel, "_keepalive_probe_sent_at_by_seq")[seq] = seam.clock.t - 500.0
+    probe_sent_at_by_seq(kernel)[seq] = seam.clock.t - 500.0
     confirm_probe_sent_and_maybe_reply(seam, session, 1, reply_after_s=0.1)
     assert await asyncio.wait_for(task2, timeout=2.0) is True
     stats = kernel.keepalive_stats
@@ -618,7 +665,8 @@ async def run_write_confirmed_after_send_state_reset_measures_rtt() -> None:
     assert stats.probes_failed == 0
     assert stats.replies == 1
     assert stats.last_round_trip_s == pytest.approx(0.1)
-    assert get_private(kernel, "_keepalive_probe_sent_at_by_seq") == {}
+    assert probe_sent_at_by_seq(kernel) == {}
+    assert probe_seqs(kernel) == set()
     assert_keepalive_invariants(stats)
 
 
@@ -628,13 +676,14 @@ async def run_probe_send_raises_counts_failed_not_sent() -> None:
     def _raise(*_a: Any, **_k: Any) -> None:
         raise KernelError("send raised")
 
-    set_private(kernel, "_send_request_with_seq", _raise)
+    _install_send(kernel, _raise)
     assert await asyncio.wait_for(send_keepalive(kernel, force=True), timeout=2.0) is False
     stats = kernel.keepalive_stats
     assert session.sent == []
     assert stats.probes_sent == 0
     assert stats.probes_failed == 1
-    assert get_private(kernel, "_keepalive_probe_sent_at_by_seq") == {}
+    assert probe_sent_at_by_seq(kernel) == {}
+    assert probe_seqs(kernel) == set()
 
 
 async def run_probe_timeout_does_not_count_failed() -> None:
@@ -642,7 +691,7 @@ async def run_probe_timeout_does_not_count_failed() -> None:
     task = asyncio.create_task(send_keepalive(kernel, force=True))
     await until_probe_sent(session)
     confirm_probe_sent_and_maybe_reply(seam, session, 0, reply_after_s=None)
-    seam.advance(float(get_private(kernel, "_keepalive_timeout_s")) + 0.01)
+    seam.advance(keepalive_timeout_s(kernel) + 0.01)
     assert await asyncio.wait_for(task, timeout=2.0) is False
     stats = kernel.keepalive_stats
     assert stats.probes_sent == 1
@@ -667,7 +716,7 @@ async def run_written_probe_other_error_counts_neither_failed_nor_timeout() -> N
 
 def _mark_confirmed(kernel: E27Kernel, seq: int) -> None:
     get_private(kernel, "_register_sent_event")(seq, asyncio.Event())
-    get_private(kernel, "_mark_request_sent")(seq)
+    _mark_request_sent(kernel, seq)
     assert kernel.was_request_sent(seq)
 
 
