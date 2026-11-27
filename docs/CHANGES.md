@@ -100,8 +100,11 @@
     they are reset only once the new session has replaced it. Calling
     ``connect`` or ``close`` from inside the keepalive task raises
     ``KernelError`` before ``connect`` changes anything. ``close`` resets the
-    miss count once the loop has stopped. The ``KeepaliveStats`` docstring now
-    describes every public field.
+    miss count once the loop has stopped. The probe's write wait uses
+    ``asyncio.timeout`` instead of ``asyncio.wait_for``, which on Python 3.11 can
+    drop a cancellation that arrives just after the write is confirmed; that
+    made ``close`` or ``connect`` wait forever. The ``KeepaliveStats`` docstring
+    now describes every public field.
 
   Area Delay, Arm Night Stay Instant, Status Read Publication (0.6.0, 2026-11-17)
 

@@ -1158,7 +1158,8 @@ class E27Kernel:
                 # A HIGH-priority probe can wait behind one in-flight command
                 # (up to its own reply timeout); never wait forever on a wedged
                 # outbound queue.
-                await asyncio.wait_for(sent_event.wait(), timeout=self._keepalive_send_wait_s)
+                async with asyncio.timeout(self._keepalive_send_wait_s):
+                    await sent_event.wait()
             except TimeoutError:
                 if probe.sent_at is None:
                     self._abandon_unsent_probe(seq)

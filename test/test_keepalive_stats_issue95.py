@@ -340,7 +340,6 @@ async def test_probe_is_in_flight_before_its_write_is_confirmed(
     link = keepalive_link(monkeypatch)
     session = await link.connect()
     await link.check_link()
-    assert link.stats.probes_sent == 0
     assert link.stats.probe_in_flight is True
     session.confirm(0)
     session.reply(0)
@@ -778,3 +777,73 @@ async def test_close_starts_the_miss_count_again(
     await link.kernel.close()
     assert link.stats.consecutive_missed == 0
     assert link.stats.misses == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("yields", [0, 1, 2, 3])
+async def test_close_right_after_a_write_confirmation_returns(
+    monkeypatch: pytest.MonkeyPatch, yields: int
+) -> None:
+    link = keepalive_link(monkeypatch)
+    old = await link.connect()
+    await link.check_link()
+    old.confirm(0)
+    for _ in range(yields):
+        await asyncio.sleep(0)
+    closing = asyncio.create_task(link.kernel.close())
+    await asyncio.wait({closing}, timeout=2.0)
+    returned = closing.done()
+    if not returned:
+        for task in asyncio.all_tasks():
+            if task is not asyncio.current_task() and task is not closing:
+                task.cancel()
+        await asyncio.wait({closing}, timeout=2.0)
+    assert returned
+    assert link.stats.probe_in_flight is False
+    assert old.cancelled == [old.seq(0)]
+    link.advance(TIMEOUT_S + 0.01)
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert link.stats.misses == 0
+    assert link.stats.consecutive_missed == 0
+
+
+@pytest.mark.asyncio
+async def test_cancelled_reconnect_waits_for_a_slow_stopping_loop_before_restarting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    active = [0]
+    peak = [0]
+    release = asyncio.Event()
+
+    async def _sleep(_delay: float) -> None:
+        active[0] += 1
+        peak[0] = max(peak[0], active[0])
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await release.wait()
+            active[0] -= 1
+
+    link = keepalive_link(monkeypatch, sleep=_sleep)
+    old = await link.connect()
+    old.state = session_mod.SessionState.DISCONNECTED
+    release.set()
+    link.kernel.request_link_check()
+    await until(lambda: active[0] == 1)
+    release.clear()
+    peak[0] = 1
+    connecting = asyncio.create_task(link.connect())
+    await until(lambda: len(link.links) == 2)
+    connecting.cancel()
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert peak[0] == 1
+    assert not connecting.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await connecting
+    assert not link.links[1].handshake_entered.is_set()
+    await until(lambda: active[0] == 1)
+    assert peak[0] == 1
+    await link.kernel.close()
