@@ -38,7 +38,7 @@ async def test_unsent_probe_send_error_counts_failed_not_sent(
     assert session.sent == []
     assert stats.probes_sent == 0
     assert stats.probes_failed == 1
-    assert stats.probes_in_flight == 0
+    assert stats.probe_in_flight is False
     assert_keepalive_invariants(stats)
 
 
@@ -53,7 +53,7 @@ async def test_unsent_probe_send_wait_timeout_counts_failed_not_sent(
     stats = link.stats
     assert stats.probes_sent == 0
     assert stats.probes_failed == 1
-    assert stats.probes_in_flight == 0
+    assert stats.probe_in_flight is False
     assert_keepalive_invariants(stats)
 
 
@@ -67,7 +67,7 @@ async def test_unsent_probe_abort_counts_failed_not_sent(monkeypatch: pytest.Mon
     stats = link.stats
     assert stats.probes_sent == 0
     assert stats.probes_failed == 1
-    assert stats.probes_in_flight == 0
+    assert stats.probe_in_flight is False
     assert_keepalive_invariants(stats)
 
 
@@ -90,7 +90,7 @@ async def test_probe_that_cannot_be_queued_counts_failed_not_sent(
     assert session.sent == []
     assert stats.probes_sent == 0
     assert stats.probes_failed == 1
-    assert stats.probes_in_flight == 0
+    assert stats.probe_in_flight is False
 
 
 @pytest.mark.asyncio
@@ -101,7 +101,7 @@ async def test_immediate_reply_uses_confirmed_send_time_not_now(
     session = await link.connect()
     await link.check_link()
     session.confirm(0)
-    assert link.stats.probes_in_flight == 1
+    assert link.stats.probe_in_flight is True
     link.advance(0.250)
     session.reply(0)
     await _finished(link, "replies")
@@ -110,7 +110,7 @@ async def test_immediate_reply_uses_confirmed_send_time_not_now(
     assert stats.replies == 1
     assert stats.last_round_trip_s == 0.250
     assert stats.max_round_trip_s == 0.250
-    assert stats.probes_in_flight == 0
+    assert stats.probe_in_flight is False
     assert session.disconnects == []
     assert_keepalive_invariants(stats)
 
@@ -157,7 +157,7 @@ async def test_stale_reply_does_not_update_newer_outstanding_probe(
     assert stats.replies == 1
     assert stats.probe_timeouts == 1
     assert stats.last_round_trip_s == pytest.approx(0.1)
-    assert stats.probes_in_flight == 0
+    assert stats.probe_in_flight is False
     assert session.disconnects == []
     assert_keepalive_invariants(stats)
 
@@ -208,7 +208,7 @@ async def test_non_keepalive_tracked_request_is_not_a_probe(
     await until(lambda: len(session.sent) >= 1)
     assert session.confirm(0) == seq
     assert link.kernel.was_request_sent(seq)
-    assert link.stats.probes_in_flight == 0
+    assert link.stats.probe_in_flight is False
 
 
 @pytest.mark.asyncio
@@ -220,9 +220,9 @@ async def test_probe_cancelled_at_await_future_leaves_no_entry(
     await link.check_link()
     session.confirm(0)
     await _finished(link, "probes_sent")
-    assert link.stats.probes_in_flight == 1
+    assert link.stats.probe_in_flight is True
     await link.kernel.close()
-    await until(lambda: link.stats.probes_in_flight == 0)
+    await until(lambda: link.stats.probe_in_flight is False)
     stats = link.stats
     assert stats.replies == 0
     assert stats.probe_timeouts == 0
@@ -239,7 +239,7 @@ async def test_late_on_sent_after_abandon_leaves_no_entry(monkeypatch: pytest.Mo
     stats = link.stats
     assert stats.probes_sent == 0
     assert stats.probes_failed == 1
-    assert stats.probes_in_flight == 0
+    assert stats.probe_in_flight is False
 
 
 @pytest.mark.asyncio
@@ -254,7 +254,7 @@ async def test_probe_timeout_does_not_count_failed(monkeypatch: pytest.MonkeyPat
     assert stats.probes_sent == 1
     assert stats.probe_timeouts == 1
     assert stats.probes_failed == 0
-    assert stats.probes_in_flight == 0
+    assert stats.probe_in_flight is False
     assert len(session.disconnects) == 1
 
 
@@ -274,7 +274,7 @@ async def test_written_probe_other_error_counts_neither_failed_nor_timeout(
     assert stats.probes_failed == 0
     assert stats.probe_timeouts == 0
     assert stats.replies == 0
-    assert stats.probes_in_flight == 0
+    assert stats.probe_in_flight is False
 
 
 @pytest.mark.asyncio
@@ -315,7 +315,7 @@ async def test_each_probe_gets_its_own_rtt_across_a_reconnect(
     link.advance(0.25)
     first.reply(0)
     await _finished(link, "replies")
-    assert link.stats.probes_in_flight == 0
+    assert link.stats.probe_in_flight is False
     second = await link.connect()
     await link.check_link()
     second.confirm(0)
@@ -326,6 +326,6 @@ async def test_each_probe_gets_its_own_rtt_across_a_reconnect(
     assert stats.probes_sent == 2
     assert stats.last_round_trip_s == pytest.approx(0.1)
     assert stats.max_round_trip_s == pytest.approx(0.25)
-    assert stats.probes_in_flight == 0
+    assert stats.probe_in_flight is False
     assert_keepalive_invariants(stats)
     await link.kernel.close()

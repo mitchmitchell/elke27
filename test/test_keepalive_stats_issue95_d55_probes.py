@@ -26,7 +26,7 @@ async def test_probe_builder_error_does_not_wedge_the_next_probe(
     await until(lambda: len(calls) == 1)
     assert session.sent == []
     assert link.stats.probes_failed == 0
-    assert link.stats.probes_in_flight == 0
+    assert link.stats.probe_in_flight is False
     second = await link.connect()
     await link.check_link()
     second.confirm(0)
@@ -36,5 +36,5 @@ async def test_probe_builder_error_does_not_wedge_the_next_probe(
     stats = link.stats
     assert stats.probes_sent == 1
     assert stats.last_round_trip_s == pytest.approx(0.1)
-    assert stats.probes_in_flight == 0
+    assert stats.probe_in_flight is False
     await link.kernel.close()

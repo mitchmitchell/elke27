@@ -174,17 +174,16 @@ class KeepaliveStats:
     """
 
     probes_sent: int = 0
-    probes_failed: int = 0
-    probe_timeouts: int = 0
     replies: int = 0
     rescued: int = 0
     misses: int = 0
     consecutive_missed: int = 0
     last_round_trip_s: float | None = None
     max_round_trip_s: float | None = None
-    probes_in_flight: int = 0
-    """Probe seqs the kernel still tracks: registered and not yet released, or
-    holding a send stamp. ``0`` whenever no probe is outstanding."""
+    probes_failed: int = 0
+    probe_timeouts: int = 0
+    probe_in_flight: bool = False
+    """True while a keepalive probe has started and not yet finished."""
 
 
 def _queued_request_is_keepalive(item: _QueuedRequest) -> bool:
@@ -914,8 +913,8 @@ class E27Kernel:
         return replace(
             self._keepalive_stats,
             consecutive_missed=self._keepalive_missed,
-            probes_in_flight=len(
-                self._keepalive_probe_seqs | self._keepalive_probe_sent_at_by_seq.keys()
+            probe_in_flight=bool(
+                self._keepalive_probe_seqs or self._keepalive_probe_sent_at_by_seq
             ),
         )
 
@@ -1005,8 +1004,6 @@ class E27Kernel:
         self._pending_responses.drop(seq)
         self._remove_queued_seq(seq)
         self._sent_events.pop(seq, None)
-        self._keepalive_probe_seqs.discard(seq)
-        self._keepalive_probe_sent_at_by_seq.pop(seq, None)
         if (
             self._request_state is _RequestState.IN_FLIGHT
             and self._active_seq == seq
