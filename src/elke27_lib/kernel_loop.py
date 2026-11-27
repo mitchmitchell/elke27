@@ -166,11 +166,27 @@ class _QueuedRequest:
 
 @dataclass(slots=True)
 class KeepaliveStats:
-    """Keepalive counters since the kernel was created. Counts and timings only.
+    """Keepalive counters and timings since the kernel was created, plus whether a
+    probe is outstanding right now.
 
-    ``misses`` counts every failed keepalive check, including checks where the
-    probe never left (send error, send-wait timeout, session not active), so it
-    can exceed ``probes_sent - replies - rescued``.
+    - ``probes_sent``: probes whose write to the panel was confirmed.
+    - ``replies``: probes answered before their reply deadline.
+    - ``rescued``: probes with no reply where other traffic arrived after the
+      probe was written, so the link was kept. Always a subset of
+      ``probe_timeouts``.
+    - ``misses``: every failed keepalive check, including checks where the probe
+      never left (send error, send-wait timeout, session not active), so it can
+      exceed ``probes_sent - replies - rescued``.
+    - ``consecutive_missed``: misses since the last good check.
+    - ``last_round_trip_s`` / ``max_round_trip_s``: seconds from a probe's
+      confirmed write to its reply, for the latest and the slowest reply.
+    - ``probes_failed``: probes that never left (send error, send-wait timeout,
+      abort).
+    - ``probe_timeouts``: written probes whose reply deadline passed.
+    - ``probe_in_flight``: a keepalive probe has started and not yet finished.
+
+    A probe from a session that ``connect`` replaced is not counted after the
+    replacement.
     """
 
     probes_sent: int = 0
@@ -184,6 +200,15 @@ class KeepaliveStats:
     probe_timeouts: int = 0
     probe_in_flight: bool = False
     """True while a keepalive probe has started and not yet finished."""
+
+
+@dataclass(slots=True)
+class _KeepaliveProbe:
+    """The outstanding keepalive probe: its seq and, once its write is confirmed,
+    the send instant its round-trip time is measured from."""
+
+    seq: int
+    sent_at: float | None = None
 
 
 def _queued_request_is_keepalive(item: _QueuedRequest) -> bool:
@@ -478,8 +503,7 @@ class E27Kernel:
         self._closed_explicitly = False
         self._sent_events = {}
         self._confirmed_sent_seqs: set[int] = set()
-        self._keepalive_probe_seqs: set[int] = set()
-        self._keepalive_probe_sent_at_by_seq: dict[int, float] = {}
+        self._keepalive_probe: _KeepaliveProbe | None = None
         # Correlation-only pending entries for fire-and-forget sends (#40). Nothing
         # waits on them, so they are dropped on close and on every connect.
         self._fire_and_forget_pending_seqs: set[int] = set()
@@ -677,6 +701,7 @@ class E27Kernel:
         self._keepalive_max_missed = int(cfg.keepalive_max_missed)
         cfg = replace(cfg, keepalive_enabled=False)
 
+        self._detach_keepalive_probe()
         self._closed_explicitly = False
         s = session_mod.Session(cfg=cfg, client_identity=client_identity, link_key_hex=link_key_hex)
         s.wire_log_suppress_seqs = self._raw_passthrough_seqs
@@ -913,9 +938,7 @@ class E27Kernel:
         return replace(
             self._keepalive_stats,
             consecutive_missed=self._keepalive_missed,
-            probe_in_flight=bool(
-                self._keepalive_probe_seqs or self._keepalive_probe_sent_at_by_seq
-            ),
+            probe_in_flight=self._keepalive_probe is not None,
         )
 
     async def _keepalive_loop(self) -> None:
@@ -989,6 +1012,22 @@ class E27Kernel:
                 return
             self._keepalive_probe_requested = True
 
+    def _detach_keepalive_probe(self) -> None:
+        """Release a probe sent on a session ``connect`` is about to replace.
+
+        Its transport and pending reply are cancelled so the request slot frees for
+        the new session, and it is no longer the current probe, so it adds nothing
+        to ``keepalive_stats`` and a late write confirmation from the old link
+        cannot stamp a newer probe.
+        """
+        probe = self._keepalive_probe
+        if probe is None:
+            return
+        self._keepalive_probe = None
+        self.cancel_command_transport(
+            probe.seq, ConnectionLost("Session replaced while a keepalive probe was outstanding.")
+        )
+
     def _abandon_unsent_probe(self, seq: int) -> None:
         """Forget a probe nobody will wait for, so a queued copy can never reach the panel later.
 
@@ -1048,13 +1087,13 @@ class E27Kernel:
         self._keepalive_inflight = True
         stats = self._keepalive_stats
         future: asyncio.Future[Mapping[str, Any]] | None = None
-        probe_seq: int | None = None
+        probe: _KeepaliveProbe | None = None
         try:
             builder = self.requests.require(("system", "r_u_alive"))
             payload = builder()
             seq = self._next_seq()
-            probe_seq = seq
-            self._keepalive_probe_seqs.add(seq)
+            probe = _KeepaliveProbe(seq)
+            self._keepalive_probe = probe
             future = self._pending_responses.create(
                 seq,
                 command_key="system_r_u_alive",
@@ -1086,7 +1125,7 @@ class E27Kernel:
                 # outbound queue.
                 await asyncio.wait_for(sent_event.wait(), timeout=self._keepalive_send_wait_s)
             except TimeoutError:
-                if not self.was_request_sent(seq):
+                if probe.sent_at is None:
                     self._abandon_unsent_probe(seq)
                     self._log.info(
                         "E27 keepalive probe could not be sent within %.1fs: seq=%s",
@@ -1102,13 +1141,15 @@ class E27Kernel:
                     seq,
                     self.now() - queued_at,
                 )
-            if not self.was_request_sent(seq):
+            if self._keepalive_probe is not probe:
+                return True
+            sent_at = probe.sent_at
+            if sent_at is None:
                 self._abandon_unsent_probe(seq)
                 self._log.debug("E27 keepalive probe failed before it was sent: seq=%s", seq)
                 stats.probes_failed += 1
                 return False
             self.forget_request_sent(seq)
-            sent_at = self._keepalive_probe_sent_at_by_seq[seq]
             stats.probes_sent += 1
             self._log.debug("E27 keepalive probe sent")
             try:
@@ -1127,6 +1168,8 @@ class E27Kernel:
                     self._log.debug("E27 keepalive reply missing; later traffic kept the link")
                 return rescued
             except Exception as exc:  # noqa: BLE001 -- keepalive probe must not crash the loop
+                if self._keepalive_probe is not probe:
+                    return True
                 self._log.warning(
                     "E27 keepalive check failed: seq=%s session_id=%s error=%s",
                     seq,
@@ -1150,9 +1193,7 @@ class E27Kernel:
             return True
         finally:
             self._keepalive_inflight = False
-            if probe_seq is not None:
-                self._keepalive_probe_seqs.discard(probe_seq)
-                self._keepalive_probe_sent_at_by_seq.pop(probe_seq, None)
+            self._keepalive_probe = None
             if future is not None:
                 consume_outcome(future)
 
@@ -2142,8 +2183,9 @@ class E27Kernel:
         self._last_exchange_at = now
         if seq in self._sent_events:
             self._confirmed_sent_seqs.add(seq)
-        if seq in self._keepalive_probe_seqs:
-            self._keepalive_probe_sent_at_by_seq[seq] = now
+        probe = self._keepalive_probe
+        if probe is not None and probe.seq == seq:
+            probe.sent_at = now
         self._signal_sent_event(seq)
 
     def was_request_sent(self, seq: int) -> bool:

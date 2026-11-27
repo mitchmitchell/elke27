@@ -404,6 +404,8 @@ def test_one_statement_private_wrapper_forms_are_detected() -> None:
             "    return x + 1",
             "def public_only(k):",
             "    return k.keepalive_stats",
+            "def public_getattr(k):",
+            "    return getattr(k, 'public')",
             "def own_attribute(self):",
             "    return self._x",
         ]
@@ -789,3 +791,10 @@ def test_no_new_noqa_for_private_access_or_broad_except() -> None:
         "Use the public API instead of silencing SLF001, and catch specific exceptions "
         "instead of silencing BLE001. If you removed an escape, lower NOQA_CEILING."
     )
+
+
+def test_reaches_private_ignores_a_public_reflected_name() -> None:
+    """Probe: ``getattr`` with a public literal is not private reach; a private literal is."""
+    assert not _reaches_private(ast.parse("getattr(k, 'public')"))
+    assert not _reaches_private(ast.parse("set_private(k, 'public', 1)"))
+    assert _reaches_private(ast.parse("getattr(k, '_private')"))

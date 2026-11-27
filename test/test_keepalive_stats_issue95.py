@@ -329,3 +329,99 @@ async def test_each_probe_gets_its_own_rtt_across_a_reconnect(
     assert stats.probe_in_flight is False
     assert_keepalive_invariants(stats)
     await link.kernel.close()
+
+
+@pytest.mark.asyncio
+async def test_probe_is_in_flight_before_its_write_is_confirmed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    link = keepalive_link(monkeypatch)
+    session = await link.connect()
+    await link.check_link()
+    assert link.stats.probes_sent == 0
+    assert link.stats.probe_in_flight is True
+    session.confirm(0)
+    session.reply(0)
+    await until(lambda: link.stats.replies == 1)
+    assert link.stats.probe_in_flight is False
+    await link.kernel.close()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_with_a_written_probe_outstanding_does_not_count_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    link = keepalive_link(monkeypatch)
+    old = await link.connect()
+    await link.check_link()
+    old.confirm(0)
+    await _finished(link, "probes_sent")
+    new = await link.connect()
+    await until(lambda: link.stats.probe_in_flight is False)
+    old.reply(0)
+    await asyncio.sleep(0)
+    stats = link.stats
+    assert stats.probes_sent == 1
+    assert stats.replies == 0
+    assert stats.probe_timeouts == 0
+    assert stats.probes_failed == 0
+    assert stats.misses == 0
+    assert old.disconnects == []
+    await link.check_link()
+    new.confirm(0)
+    link.advance(0.1)
+    new.reply(0)
+    await _finished(link, "replies")
+    stats = link.stats
+    assert stats.probes_sent == 2
+    assert stats.last_round_trip_s == pytest.approx(0.1)
+    assert stats.probe_in_flight is False
+    assert new.disconnects == []
+    assert_keepalive_invariants(stats)
+    await link.kernel.close()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_with_an_unwritten_probe_outstanding_does_not_count_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    link = keepalive_link(monkeypatch)
+    old = await link.connect()
+    await link.check_link()
+    new = await link.connect()
+    await until(lambda: link.stats.probe_in_flight is False)
+    stats = link.stats
+    assert stats.probes_sent == 0
+    assert stats.probes_failed == 0
+    assert stats.misses == 0
+    await link.check_link()
+    new.confirm(0)
+    link.advance(0.05)
+    old.confirm(0)
+    link.advance(0.05)
+    new.reply(0)
+    await _finished(link, "replies")
+    stats = link.stats
+    assert stats.probes_sent == 1
+    assert stats.last_round_trip_s == pytest.approx(0.1)
+    assert stats.probe_in_flight is False
+    assert_keepalive_invariants(stats)
+    await link.kernel.close()
+
+
+@pytest.mark.asyncio
+async def test_unsent_probe_with_later_inbound_fails_but_keeps_the_link(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    link = keepalive_link(monkeypatch, send_wait_s=0.05)
+    session = await link.connect()
+    await link.check_link()
+    link.clock.advance(0.01)
+    session.receive({"seq": session.seq(0) + 99, "area": {"get_status": {"area_id": 1}}})
+    await _finished(link, "probes_failed")
+    stats = link.stats
+    assert stats.probes_sent == 0
+    assert stats.misses == 0
+    assert stats.probe_in_flight is False
+    assert session.disconnects == []
+    await link.kernel.close()
