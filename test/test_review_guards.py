@@ -671,18 +671,52 @@ def _comments(path: Path) -> list[str]:
         ]
 
 
+def _noqa_keys(rel: str, comments: list[str]) -> list[str]:
+    """``<file>:<code>[:file]`` once per watched code each comment silences."""
+    keys: list[str] = []
+    for comment in comments:
+        for match in _NOQA.finditer(comment):
+            listed = (match.group(2) or "").strip()
+            codes = set(re.split(r"[\s,]+", listed.upper()))
+            for code in WATCHED:
+                if not listed or code in codes:
+                    keys.append(f"{rel}:{code}" + (":file" if match.group(1) else ""))
+    return keys
+
+
 def _noqa_counts() -> dict[str, int]:
     counts: dict[str, int] = {}
     for path in [*_files(SRC), *_files(TEST), *_files(ROOT / "devtools")]:
-        for comment in _comments(path):
-            for match in _NOQA.finditer(comment):
-                listed = (match.group(2) or "").strip()
-                codes = set(re.split(r"[\s,]+", listed.upper()))
-                for code in WATCHED:
-                    if not listed or code in codes:
-                        key = f"{_rel(path)}:{code}" + (":file" if match.group(1) else "")
-                        counts[key] = counts.get(key, 0) + 1
+        for key in _noqa_keys(_rel(path), _comments(path)):
+            counts[key] = counts.get(key, 0) + 1
     return counts
+
+
+def test_noqa_counter_reads_every_slf001_spelling_ruff_honours() -> None:
+    """Inline, upper-case, spaced and file-level SLF001 escapes are all counted."""
+    rel = "src/elke27_lib/redact.py"
+    cases = {
+        "# noqa: SLF001": [f"{rel}:SLF001"],
+        "# NOQA: SLF001": [f"{rel}:SLF001"],
+        "# noqa:SLF001,E501": [f"{rel}:SLF001"],
+        "# noqa: E501 SLF001": [f"{rel}:SLF001"],
+        "# noqa : SLF001": [f"{rel}:SLF001", f"{rel}:BLE001"],
+        "# ruff: noqa: SLF001": [f"{rel}:SLF001:file"],
+        "# flake8: noqa: SLF001": [f"{rel}:SLF001:file"],
+        "# RUFF: NOQA: slf001": [f"{rel}:SLF001:file"],
+        "# noqa": [f"{rel}:SLF001", f"{rel}:BLE001"],
+        "# noqa: E501": [],
+    }
+    assert {c: _noqa_keys(rel, [c]) for c in cases} == cases
+
+
+def test_noqa_counter_flags_a_file_level_header_and_an_upper_case_escape(tmp_path: Path) -> None:
+    """Architect's #174 scratch: a file-level header plus ``# NOQA: SLF001`` in redact.py."""
+    module = tmp_path / "redact.py"
+    module.write_text("# ruff: noqa: SLF001\nx = 1\ny = obj._x  # NOQA: SLF001\n", encoding="utf-8")
+    keys = _noqa_keys("src/elke27_lib/redact.py", _comments(module))
+    assert keys == ["src/elke27_lib/redact.py:SLF001:file", "src/elke27_lib/redact.py:SLF001"]
+    assert not set(keys) <= NOQA_CEILING.keys()
 
 
 def test_no_new_noqa_for_private_access_or_broad_except() -> None:
