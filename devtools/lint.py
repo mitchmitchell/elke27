@@ -23,6 +23,7 @@ def main():
     errcount += run(["python", "devtools/loopcheck.py", "src"])
     errcount += run(["python", "devtools/ratchet.py"])
     errcount += run(["python", "devtools/privatecheck.py"])
+    errcount += run(["python", "devtools/catchcheck.py"])
 
     rprint()
 
