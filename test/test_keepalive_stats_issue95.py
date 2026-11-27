@@ -224,7 +224,9 @@ async def test_probe_cancelled_at_await_future_leaves_no_entry(
     await _finished(link, "probes_sent")
     assert link.stats.probe_in_flight is True
     await link.kernel.close()
-    await until(lambda: link.stats.probe_in_flight is False)
+    assert link.stats.probe_in_flight is False
+    assert link.kernel.pending_responses.pending_count() == 0
+    assert session.cancelled == [session.seq(0)]
     stats = link.stats
     assert stats.replies == 0
     assert stats.probe_timeouts == 0
@@ -442,9 +444,14 @@ async def test_reconnect_after_the_idle_interval_sends_no_probe_on_the_old_link(
     gate = threading.Event()
     link.connect_gate = gate
     connecting = asyncio.create_task(link.connect())
-    for _ in range(50):
-        await asyncio.sleep(0.001)
+    await until(lambda: len(link.links) == 2 and link.links[1].handshake_entered.is_set())
+    held = link.links[1]
+    assert held.probe_in_flight_at_creation is False
+    assert held.pending_at_creation == 0
+    assert link.stats.probe_in_flight is False
+    assert link.kernel.pending_responses.pending_count() == 0
     assert len(old.sent) == 1
+    assert old.cancelled == [old.seq(0)]
     gate.set()
     new = await asyncio.wait_for(connecting, timeout=2.0)
     assert len(old.sent) == 1
@@ -461,3 +468,30 @@ async def test_reconnect_after_the_idle_interval_sends_no_probe_on_the_old_link(
     assert old.disconnects == []
     assert new.disconnects == []
     await link.kernel.close()
+
+
+@pytest.mark.asyncio
+async def test_connect_from_inside_the_keepalive_task_fails_loudly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    holder: list[Any] = []
+    errors: list[KernelError] = []
+
+    async def _sleep(delay: float) -> None:
+        if delay < IDLE_INTERVAL_S / 2 and not errors:
+            try:
+                await holder[0].connect()
+            except KernelError as exc:
+                errors.append(exc)
+        await asyncio.Event().wait()
+
+    link = keepalive_link(monkeypatch, sleep=_sleep)
+    holder.append(link)
+    session = await link.connect()
+    session.state = session_mod.SessionState.DISCONNECTED
+    link.kernel.request_link_check()
+    await until(lambda: bool(errors))
+    assert "inside the keepalive task" in str(errors[0])
+    assert len(link.links) == 1
+    await link.kernel.close()
+    assert link.stats.probe_in_flight is False

@@ -87,14 +87,16 @@
     ``rescued`` remains a subset). New ``probe_in_flight``: ``True`` while a
     keepalive probe has started and not yet finished. ``misses`` and
     liveness policy are unchanged.
-  - Keepalive probe after a reconnect (#177): when ``connect`` replaces a
-    session while a keepalive probe is still outstanding, that probe is released:
-    it adds nothing to ``keepalive_stats``, a late write confirmation or reply
-    from the old link cannot change a newer probe's round-trip time, and the
-    keepalive loop stops before the replacement and restarts for the new session,
-    so no probe goes out on the old link during the reconnect and the new
-    session's first probe is not held behind an old one. The ``KeepaliveStats`` docstring
-    now describes every public field.
+  - Keepalive probe after a reconnect (#177): ``connect`` and ``close`` now stop
+    the keepalive loop and wait for it to finish before going on. A probe that was
+    outstanding is cancelled and releases its own transport and pending reply, so
+    it adds nothing to ``keepalive_stats`` and a late write confirmation or reply
+    from the old link cannot change a newer probe's round-trip time. No probe goes
+    out on the old link during a reconnect, and the loop restarts for the new
+    session without its first probe waiting behind an old one. Calling
+    ``connect`` or ``close`` from inside the keepalive task raises
+    ``KernelError``. The ``KeepaliveStats`` docstring now describes every public
+    field.
 
   Area Delay, Arm Night Stay Instant, Status Read Publication (0.6.0, 2026-11-17)
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -39,12 +39,16 @@ class PanelLink:
         self.clock = clock
         self.fail_sends = fail_sends
         self.connect_gate = connect_gate
+        self.handshake_entered = threading.Event()
+        self.probe_in_flight_at_creation = False
+        self.pending_at_creation = 0
         self.state = session_mod.SessionState.DISCONNECTED
         self.info = session_mod.SessionInfo(
             session_id=1, session_key_hex="00", session_hmac_hex="11"
         )
         self.sent: list[tuple[Mapping[str, Any], Callable[[float], None] | None]] = []
         self.disconnects: list[Exception | None] = []
+        self.cancelled: list[int] = []
         self.wire_log_suppress_seqs: object = None
         self.on_message: Callable[[Mapping[str, Any]], None] | None = None
         self.on_disconnected: Callable[[Exception | None], None] | None = None
@@ -52,9 +56,14 @@ class PanelLink:
         self.on_rx: Callable[[], None] | None = None
 
     def connect(self) -> session_mod.SessionInfo:
-        """Complete the handshake, first waiting on ``connect_gate`` when one is set."""
-        if self.connect_gate is not None:
-            self.connect_gate.wait(timeout=5.0)
+        """Complete the handshake, first waiting on ``connect_gate`` when one is set.
+
+        Sets ``handshake_entered`` on entry. A gate that stays closed for 5 s fails
+        the handshake instead of letting a stuck test carry on.
+        """
+        self.handshake_entered.set()
+        if self.connect_gate is not None and not self.connect_gate.wait(timeout=5.0):
+            raise session_mod.SessionIOError("connect gate never opened")
         self.state = session_mod.SessionState.ACTIVE
         return self.info
 
@@ -81,6 +90,9 @@ class PanelLink:
                 on_fail(session_mod.SessionIOError("send failed"))
             return
         self.sent.append((obj, on_sent))
+
+    def cancel_outbound_pending_seq(self, seq: int) -> None:
+        self.cancelled.append(seq)
 
     def handle_disconnect(self, err: Exception | None) -> None:
         self.disconnects.append(err)
@@ -153,8 +165,11 @@ class KeepaliveLink:
 
     def _new_link(self, **_kwargs: object) -> PanelLink:
         gate, self.connect_gate = self.connect_gate, None
-        self.links.append(PanelLink(self.clock, fail_sends=self.fail_sends, connect_gate=gate))
-        return self.links[-1]
+        link = PanelLink(self.clock, fail_sends=self.fail_sends, connect_gate=gate)
+        link.probe_in_flight_at_creation = self.kernel.keepalive_stats.probe_in_flight
+        link.pending_at_creation = self.kernel.pending_responses.pending_count()
+        self.links.append(link)
+        return link
 
     async def connect(self, *, max_missed: int = 1) -> PanelLink:
         self.monkeypatch.setattr(session_mod, "Session", self._new_link)
@@ -182,11 +197,12 @@ def keepalive_link(
     fail_sends: bool = False,
     start: float = 1000.0,
     probe_builder: Callable[[], Mapping[str, Any]] | None = None,
+    sleep: Callable[[float], Awaitable[None]] = _idle_sleep,
 ) -> KeepaliveLink:
     clock = MonotonicTestClock(start)
     link_ref: list[KeepaliveLink] = []
     hooks = KeepaliveTestHooks(
-        sleep=_idle_sleep,
+        sleep=sleep,
         schedule_reply_timeout=lambda d, cb: link_ref[0].schedule(d, cb),
         send_wait_s=send_wait_s,
     )

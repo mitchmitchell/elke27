@@ -701,8 +701,7 @@ class E27Kernel:
         self._keepalive_max_missed = int(cfg.keepalive_max_missed)
         cfg = replace(cfg, keepalive_enabled=False)
 
-        self._stop_keepalive()
-        self._detach_keepalive_probe()
+        await self._stop_keepalive_and_wait("connect")
         self._closed_explicitly = False
         s = session_mod.Session(cfg=cfg, client_identity=client_identity, link_key_hex=link_key_hex)
         s.wire_log_suppress_seqs = self._raw_passthrough_seqs
@@ -820,7 +819,7 @@ class E27Kernel:
             self._fail_all_pending_commands(close_exc)
             self._cancel_all_transport_retry_timers()
             return
-        self._stop_keepalive()
+        await self._stop_keepalive_and_wait("close")
         self._fail_all_pending_commands(close_exc)
         self._cancel_all_transport_retry_timers()
 
@@ -861,6 +860,23 @@ class E27Kernel:
             self._keepalive_max_missed,
         )
         self._keepalive_task = self._loop.create_task(self._keepalive_loop())
+
+    async def _stop_keepalive_and_wait(self, caller: str) -> None:
+        """Stop the keepalive loop and wait until its task, and any probe it was
+        running, has finished.
+
+        A probe releases its own transport and pending reply when it is cancelled,
+        so once this returns nothing from the stopped loop is left in the request
+        slot. Raises ``KernelError`` when called from inside the keepalive task,
+        which cannot wait for itself.
+        """
+        task = self._keepalive_task
+        if task is not None and task is asyncio.current_task():
+            raise KernelError(f"{caller}() cannot run inside the keepalive task.")
+        self._stop_keepalive()
+        if task is not None:
+            await asyncio.wait({task})
+            consume_outcome(task)
 
     def _stop_keepalive(self) -> None:
         if self._keepalive_task is None:
@@ -1013,23 +1029,6 @@ class E27Kernel:
                 return
             self._keepalive_probe_requested = True
 
-    def _detach_keepalive_probe(self) -> None:
-        """Release a probe sent on a session ``connect`` is about to replace.
-
-        ``connect`` stops the keepalive loop first, so the probe is cancelled and
-        adds nothing to ``keepalive_stats``. Here its transport and pending reply
-        are cancelled so the request slot frees for the new session, and its
-        record is dropped so a late write confirmation from the old link cannot
-        stamp a newer probe.
-        """
-        probe = self._keepalive_probe
-        if probe is None:
-            return
-        self._keepalive_probe = None
-        self.cancel_command_transport(
-            probe.seq, ConnectionLost("Session replaced while a keepalive probe was outstanding.")
-        )
-
     def _abandon_unsent_probe(self, seq: int) -> None:
         """Forget a probe nobody will wait for, so a queued copy can never reach the panel later.
 
@@ -1089,13 +1088,12 @@ class E27Kernel:
         self._keepalive_inflight = True
         stats = self._keepalive_stats
         future: asyncio.Future[Mapping[str, Any]] | None = None
-        probe: _KeepaliveProbe | None = None
+        seq = self._next_seq()
+        probe = _KeepaliveProbe(seq)
+        self._keepalive_probe = probe
         try:
             builder = self.requests.require(("system", "r_u_alive"))
             payload = builder()
-            seq = self._next_seq()
-            probe = _KeepaliveProbe(seq)
-            self._keepalive_probe = probe
             future = self._pending_responses.create(
                 seq,
                 command_key="system_r_u_alive",
@@ -1189,10 +1187,14 @@ class E27Kernel:
                 self._keepalive_timeout_s,
             )
             return True
+        except asyncio.CancelledError:
+            self.cancel_command_transport(
+                seq, ConnectionLost("Keepalive stopped while its probe was outstanding.")
+            )
+            raise
         finally:
-            if self._keepalive_probe is probe:
-                self._keepalive_probe = None
-                self._keepalive_inflight = False
+            self._keepalive_probe = None
+            self._keepalive_inflight = False
             if future is not None:
                 consume_outcome(future)
 
