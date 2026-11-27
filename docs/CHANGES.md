@@ -93,7 +93,9 @@
     it adds nothing to ``keepalive_stats`` and a late write confirmation or reply
     from the old link cannot change a newer probe's round-trip time. No probe goes
     out on the old link during a reconnect, and the loop restarts for the new
-    session without its first probe waiting behind an old one. Calling
+    session without its first probe waiting behind an old one. If the new
+    handshake fails or is cancelled, the old session keeps its keepalive settings
+    and its loop resumes when it had been running. Calling
     ``connect`` or ``close`` from inside the keepalive task raises
     ``KernelError``. The ``KeepaliveStats`` docstring now describes every public
     field.

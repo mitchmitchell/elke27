@@ -695,13 +695,15 @@ class E27Kernel:
             raise KernelMissingContextError("connect() requires client_identity with mn and sn.")
 
         cfg = session_config or session_mod.SessionConfig(host=host, port=port)
-        self._keepalive_enabled = bool(cfg.keepalive_enabled)
-        self._keepalive_interval_s = float(cfg.keepalive_interval_s)
-        self._keepalive_timeout_s = float(cfg.keepalive_timeout_s)
-        self._keepalive_max_missed = int(cfg.keepalive_max_missed)
+        keepalive_settings = (
+            bool(cfg.keepalive_enabled),
+            float(cfg.keepalive_interval_s),
+            float(cfg.keepalive_timeout_s),
+            int(cfg.keepalive_max_missed),
+        )
         cfg = replace(cfg, keepalive_enabled=False)
 
-        await self._stop_keepalive_and_wait("connect")
+        self._refuse_inside_keepalive_task("connect")
         self._closed_explicitly = False
         s = session_mod.Session(cfg=cfg, client_identity=client_identity, link_key_hex=link_key_hex)
         s.wire_log_suppress_seqs = self._raw_passthrough_seqs
@@ -716,31 +718,44 @@ class E27Kernel:
         def _do_connect_sync() -> session_mod.SessionInfo:
             return s.connect()
 
-        connect_cf: concurrent.futures.Future[session_mod.SessionInfo] = _CONNECT_EXECUTOR.submit(
-            _do_connect_sync
-        )
+        keepalive_was_running = self._keepalive_task is not None and not self._keepalive_task.done()
         try:
-            await asyncio.wrap_future(connect_cf, loop=loop)
-        except asyncio.CancelledError:
+            await self._stop_keepalive_and_wait()
+            connect_cf: concurrent.futures.Future[session_mod.SessionInfo] = (
+                _CONNECT_EXECUTOR.submit(_do_connect_sync)
+            )
+            try:
+                await asyncio.wrap_future(connect_cf, loop=loop)
+            except asyncio.CancelledError:
 
-            def _close_after_connect(
-                _cf: concurrent.futures.Future[session_mod.SessionInfo],
-            ) -> None:
-                def _close() -> None:
-                    with contextlib.suppress(Exception):
+                def _close_after_connect(
+                    _cf: concurrent.futures.Future[session_mod.SessionInfo],
+                ) -> None:
+                    def _close() -> None:
+                        with contextlib.suppress(Exception):
+                            s.close()
+
+                    try:
+                        loop.call_soon_threadsafe(_close)
+                    except RuntimeError:
                         s.close()
 
-                try:
-                    loop.call_soon_threadsafe(_close)
-                except RuntimeError:
-                    s.close()
-
-            connect_cf.add_done_callback(_close_after_connect)
+                connect_cf.add_done_callback(_close_after_connect)
+                raise
+            except Exception as e:
+                raise KernelError(f"Session connect failed for {host}:{port}: {e}") from e
+        except BaseException:
+            if keepalive_was_running:
+                self._start_keepalive()
             raise
-        except Exception as e:
-            raise KernelError(f"Session connect failed for {host}:{port}: {e}") from e
 
         self._session = s
+        (
+            self._keepalive_enabled,
+            self._keepalive_interval_s,
+            self._keepalive_timeout_s,
+            self._keepalive_max_missed,
+        ) = keepalive_settings
 
         if s.state != session_mod.SessionState.ACTIVE:
             raise KernelError(
@@ -809,7 +824,12 @@ class E27Kernel:
         )
 
     async def close(self) -> None:
-        """Close any active session. Idempotent."""
+        """Close any active session. Idempotent.
+
+        Stops the keepalive loop and waits for it, and any probe it was running,
+        to finish before the session is closed. Raises ``KernelError`` when called
+        from inside the keepalive task.
+        """
         close_exc = (
             KernelError("Kernel closed.")
             if self._session is not None
@@ -819,7 +839,8 @@ class E27Kernel:
             self._fail_all_pending_commands(close_exc)
             self._cancel_all_transport_retry_timers()
             return
-        await self._stop_keepalive_and_wait("close")
+        self._refuse_inside_keepalive_task("close")
+        await self._stop_keepalive_and_wait()
         self._fail_all_pending_commands(close_exc)
         self._cancel_all_transport_retry_timers()
 
@@ -861,22 +882,36 @@ class E27Kernel:
         )
         self._keepalive_task = self._loop.create_task(self._keepalive_loop())
 
-    async def _stop_keepalive_and_wait(self, caller: str) -> None:
+    def _refuse_inside_keepalive_task(self, caller: str) -> None:
+        """Raise ``KernelError`` when called from inside the keepalive task, which
+        cannot stop and wait for itself."""
+        task = self._keepalive_task
+        if task is not None and task is asyncio.current_task():
+            raise KernelError(f"{caller}() cannot run inside the keepalive task.")
+
+    async def _stop_keepalive_and_wait(self) -> None:
         """Stop the keepalive loop and wait until its task, and any probe it was
         running, has finished.
 
         A probe releases its own transport and pending reply when it is cancelled,
         so once this returns nothing from the stopped loop is left in the request
-        slot. Raises ``KernelError`` when called from inside the keepalive task,
-        which cannot wait for itself.
+        slot. A cancellation that arrives while waiting is held until the task
+        has finished and is then raised, so a caller that restarts keepalive
+        after a cancellation never runs two loops at once.
         """
         task = self._keepalive_task
-        if task is not None and task is asyncio.current_task():
-            raise KernelError(f"{caller}() cannot run inside the keepalive task.")
         self._stop_keepalive()
-        if task is not None:
-            await asyncio.wait({task})
-            consume_outcome(task)
+        if task is None:
+            return
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.wait({task})
+            except asyncio.CancelledError:
+                cancelled = True
+        consume_outcome(task)
+        if cancelled:
+            raise asyncio.CancelledError
 
     def _stop_keepalive(self) -> None:
         if self._keepalive_task is None:

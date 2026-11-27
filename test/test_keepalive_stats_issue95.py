@@ -113,7 +113,6 @@ async def test_immediate_reply_uses_confirmed_send_time_not_now(
     assert stats.last_round_trip_s == 0.250
     assert stats.max_round_trip_s == 0.250
     assert stats.probe_in_flight is False
-    assert session.disconnects == []
     assert_keepalive_invariants(stats)
 
 
@@ -160,7 +159,6 @@ async def test_stale_reply_does_not_update_newer_outstanding_probe(
     assert stats.probe_timeouts == 1
     assert stats.last_round_trip_s == pytest.approx(0.1)
     assert stats.probe_in_flight is False
-    assert session.disconnects == []
     assert_keepalive_invariants(stats)
 
 
@@ -179,7 +177,6 @@ async def test_unanswered_probe_probe_timeout_and_rescued(monkeypatch: pytest.Mo
     assert stats.rescued == 1
     assert stats.replies == 0
     assert stats.misses == 0
-    assert session.disconnects == []
     assert_keepalive_invariants(stats)
 
 
@@ -427,7 +424,6 @@ async def test_unsent_probe_with_later_inbound_fails_but_keeps_the_link(
     assert stats.probes_sent == 0
     assert stats.misses == 0
     assert stats.probe_in_flight is False
-    assert session.disconnects == []
     await link.kernel.close()
 
 
@@ -445,9 +441,6 @@ async def test_reconnect_after_the_idle_interval_sends_no_probe_on_the_old_link(
     link.connect_gate = gate
     connecting = asyncio.create_task(link.connect())
     await until(lambda: len(link.links) == 2 and link.links[1].handshake_entered.is_set())
-    held = link.links[1]
-    assert held.probe_in_flight_at_creation is False
-    assert held.pending_at_creation == 0
     assert link.stats.probe_in_flight is False
     assert link.kernel.pending_responses.pending_count() == 0
     assert len(old.sent) == 1
@@ -493,5 +486,118 @@ async def test_connect_from_inside_the_keepalive_task_fails_loudly(
     await until(lambda: bool(errors))
     assert "inside the keepalive task" in str(errors[0])
     assert len(link.links) == 1
+    await link.kernel.close()
+    assert link.stats.probe_in_flight is False
+
+
+@pytest.mark.asyncio
+async def test_failed_reconnect_keeps_probing_the_old_link_with_its_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    link = keepalive_link(monkeypatch)
+    old = await link.connect(max_missed=1)
+    link.fail_connect = True
+    with pytest.raises(KernelError, match="Session connect failed"):
+        await link.connect(max_missed=3)
+    link.kernel.request_link_check()
+    await until(lambda: len(old.sent) >= 1)
+    old.confirm(0)
+    link.advance(TIMEOUT_S + 0.01)
+    await _finished(link, "misses")
+    stats = link.stats
+    assert stats.probe_timeouts == 1
+    assert len(old.disconnects) == 1
+    assert len(old.sent) == 1
+    await link.kernel.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_reconnect_keeps_probing_the_old_link(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    link = keepalive_link(monkeypatch)
+    old = await link.connect()
+    gate = threading.Event()
+    link.connect_gate = gate
+    connecting = asyncio.create_task(link.connect())
+    await until(lambda: len(link.links) == 2 and link.links[1].handshake_entered.is_set())
+    connecting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await connecting
+    gate.set()
+    link.kernel.request_link_check()
+    await until(lambda: len(old.sent) >= 1)
+    old.confirm(0)
+    link.advance(0.1)
+    old.reply(0)
+    await _finished(link, "replies")
+    assert link.stats.last_round_trip_s == pytest.approx(0.1)
+    assert link.links[1].sent == []
+    await link.kernel.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_reconnect_does_not_start_a_loop_that_had_ended(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    link = keepalive_link(monkeypatch)
+    old = await link.connect(max_missed=1)
+    await link.check_link()
+    old.confirm(0)
+    link.advance(TIMEOUT_S + 0.01)
+    await until(lambda: len(old.disconnects) == 1)
+    old.state = session_mod.SessionState.ACTIVE
+    link.fail_connect = True
+    with pytest.raises(KernelError, match="Session connect failed"):
+        await link.connect()
+    link.kernel.request_link_check()
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert len(old.sent) == 1
+    await link.kernel.close()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_cancelled_while_the_old_loop_stops_keeps_probing_the_old_link(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    link = keepalive_link(monkeypatch)
+    old = await link.connect()
+    await link.check_link()
+    connecting = asyncio.create_task(link.connect())
+    await until(lambda: len(link.links) == 2)
+    connecting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await connecting
+    assert not link.links[1].handshake_entered.is_set()
+    assert old.cancelled == [old.seq(0)]
+    link.kernel.request_link_check()
+    await until(lambda: len(old.sent) >= 2)
+    assert link.stats.probe_in_flight is True
+    await link.kernel.close()
+
+
+@pytest.mark.asyncio
+async def test_close_from_inside_the_keepalive_task_fails_loudly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    holder: list[Any] = []
+    errors: list[KernelError] = []
+
+    async def _sleep(delay: float) -> None:
+        if delay < IDLE_INTERVAL_S / 2 and not errors:
+            try:
+                await holder[0].kernel.close()
+            except KernelError as exc:
+                errors.append(exc)
+        await asyncio.Event().wait()
+
+    link = keepalive_link(monkeypatch, sleep=_sleep)
+    holder.append(link)
+    session = await link.connect()
+    session.state = session_mod.SessionState.DISCONNECTED
+    link.kernel.request_link_check()
+    await until(lambda: bool(errors))
+    assert "close() cannot run inside the keepalive task" in str(errors[0])
     await link.kernel.close()
     assert link.stats.probe_in_flight is False

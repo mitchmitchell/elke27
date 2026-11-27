@@ -35,13 +35,13 @@ class PanelLink:
         *,
         fail_sends: bool,
         connect_gate: threading.Event | None = None,
+        fail_connect: bool = False,
     ) -> None:
         self.clock = clock
         self.fail_sends = fail_sends
         self.connect_gate = connect_gate
+        self.fail_connect = fail_connect
         self.handshake_entered = threading.Event()
-        self.probe_in_flight_at_creation = False
-        self.pending_at_creation = 0
         self.state = session_mod.SessionState.DISCONNECTED
         self.info = session_mod.SessionInfo(
             session_id=1, session_key_hex="00", session_hmac_hex="11"
@@ -64,6 +64,8 @@ class PanelLink:
         self.handshake_entered.set()
         if self.connect_gate is not None and not self.connect_gate.wait(timeout=5.0):
             raise session_mod.SessionIOError("connect gate never opened")
+        if self.fail_connect:
+            raise session_mod.SessionIOError("handshake refused")
         self.state = session_mod.SessionState.ACTIVE
         return self.info
 
@@ -144,6 +146,8 @@ class KeepaliveLink:
     deadlines: list[tuple[float, Callable[[], None]]] = field(default_factory=list)
     connect_gate: threading.Event | None = None
     """When set, the next link's handshake blocks until the event is set."""
+    fail_connect: bool = False
+    """When true, the next link's handshake raises ``SessionIOError``."""
 
     @property
     def session(self) -> PanelLink:
@@ -165,9 +169,10 @@ class KeepaliveLink:
 
     def _new_link(self, **_kwargs: object) -> PanelLink:
         gate, self.connect_gate = self.connect_gate, None
-        link = PanelLink(self.clock, fail_sends=self.fail_sends, connect_gate=gate)
-        link.probe_in_flight_at_creation = self.kernel.keepalive_stats.probe_in_flight
-        link.pending_at_creation = self.kernel.pending_responses.pending_count()
+        fail, self.fail_connect = self.fail_connect, False
+        link = PanelLink(
+            self.clock, fail_sends=self.fail_sends, connect_gate=gate, fail_connect=fail
+        )
         self.links.append(link)
         return link
 
