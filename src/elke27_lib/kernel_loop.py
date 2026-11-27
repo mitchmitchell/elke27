@@ -654,12 +654,11 @@ class E27Kernel:
         E27Kernel.connect accepts E27LinkKeys and client_identity, creates/stores a session.Session, performs HELLO,
         and returns the session state (confirming ACTIVE).
         """
+        self._refuse_inside_keepalive_task("connect")
         await asyncio.to_thread(self.load_features_blocking, None)
         self._loop = asyncio.get_running_loop()
         self._loop_thread_id = threading.get_ident()
         loop = self._loop
-        self._reset_outbound_send_tracking()
-        self._drop_fire_and_forget_pending()  # never carry correlation across sessions
         if session_config is None and panel is None:
             raise KernelMissingContextError(
                 "connect() requires panel context or session_config (HA must pass host/port)."
@@ -703,7 +702,6 @@ class E27Kernel:
         )
         cfg = replace(cfg, keepalive_enabled=False)
 
-        self._refuse_inside_keepalive_task("connect")
         self._closed_explicitly = False
         s = session_mod.Session(cfg=cfg, client_identity=client_identity, link_key_hex=link_key_hex)
         s.wire_log_suppress_seqs = self._raw_passthrough_seqs
@@ -750,6 +748,8 @@ class E27Kernel:
             raise
 
         self._session = s
+        self._reset_outbound_send_tracking()
+        self._drop_fire_and_forget_pending()
         (
             self._keepalive_enabled,
             self._keepalive_interval_s,
@@ -903,15 +903,15 @@ class E27Kernel:
         self._stop_keepalive()
         if task is None:
             return
-        cancelled = False
+        cancelled: asyncio.CancelledError | None = None
         while not task.done():
             try:
                 await asyncio.wait({task})
-            except asyncio.CancelledError:
-                cancelled = True
+            except asyncio.CancelledError as exc:
+                cancelled = exc
         consume_outcome(task)
-        if cancelled:
-            raise asyncio.CancelledError
+        if cancelled is not None:
+            raise cancelled
 
     def _stop_keepalive(self) -> None:
         if self._keepalive_task is None:
@@ -920,7 +920,6 @@ class E27Kernel:
         if not self._keepalive_task.done():
             self._keepalive_task.cancel()
         self._keepalive_task = None
-        self._keepalive_missed = 0
         self._keepalive_inflight = False
         self._keepalive_probe_requested = False
         self._keepalive_wake = None

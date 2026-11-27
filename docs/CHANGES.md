@@ -95,9 +95,11 @@
     out on the old link during a reconnect, and the loop restarts for the new
     session without its first probe waiting behind an old one. If the new
     handshake fails or is cancelled, the old session keeps its keepalive settings
-    and its loop resumes when it had been running. Calling
+    and its loop resumes when it had been running. Its send tracking,
+    fire-and-forget reply correlation and consecutive miss count are also kept;
+    they are reset only once the new session has replaced it. Calling
     ``connect`` or ``close`` from inside the keepalive task raises
-    ``KernelError``. The ``KeepaliveStats`` docstring now describes every public
+    ``KernelError`` before ``connect`` changes anything. The ``KeepaliveStats`` docstring now describes every public
     field.
 
   Area Delay, Arm Night Stay Instant, Status Read Publication (0.6.0, 2026-11-17)

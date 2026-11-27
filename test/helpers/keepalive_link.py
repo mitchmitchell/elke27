@@ -176,14 +176,20 @@ class KeepaliveLink:
         self.links.append(link)
         return link
 
-    async def connect(self, *, max_missed: int = 1) -> PanelLink:
+    async def connect(
+        self,
+        *,
+        max_missed: int = 1,
+        interval_s: float = IDLE_INTERVAL_S,
+        timeout_s: float = TIMEOUT_S,
+    ) -> PanelLink:
         self.monkeypatch.setattr(session_mod, "Session", self._new_link)
         cfg = session_mod.SessionConfig(
             host="198.51.100.1",
             port=1,
             keepalive_enabled=True,
-            keepalive_interval_s=IDLE_INTERVAL_S,
-            keepalive_timeout_s=TIMEOUT_S,
+            keepalive_interval_s=interval_s,
+            keepalive_timeout_s=timeout_s,
             keepalive_max_missed=max_missed,
         )
         await self.kernel.connect(KEYS, session_config=cfg, client_identity=IDENTITY)

@@ -18,6 +18,7 @@ from elke27_lib.kernel_loop import KernelError
 from test.helpers.keepalive_link import (
     IDLE_INTERVAL_S,
     TIMEOUT_S,
+    KeepaliveLink,
     assert_keepalive_invariants,
     keepalive_link,
     until,
@@ -498,7 +499,11 @@ async def test_failed_reconnect_keeps_probing_the_old_link_with_its_settings(
     old = await link.connect(max_missed=1)
     link.fail_connect = True
     with pytest.raises(KernelError, match="Session connect failed"):
-        await link.connect(max_missed=3)
+        await link.connect(max_missed=3, interval_s=1.0, timeout_s=TIMEOUT_S * 4)
+    link.clock.advance(2.0)
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert old.sent == []
     link.kernel.request_link_check()
     await until(lambda: len(old.sent) >= 1)
     old.confirm(0)
@@ -601,3 +606,160 @@ async def test_close_from_inside_the_keepalive_task_fails_loudly(
     assert "close() cannot run inside the keepalive task" in str(errors[0])
     await link.kernel.close()
     assert link.stats.probe_in_flight is False
+
+
+def _queue_tracked_requests(link: KeepaliveLink) -> tuple[int, int]:
+    """Queue a confirmed fire-and-forget request and one still awaiting its reply."""
+    kernel = link.kernel
+    sent_seq = kernel.next_seq()
+    kernel.register_sent_event(sent_seq, asyncio.Event())
+    kernel.send_request_with_seq(
+        sent_seq,
+        "system",
+        "r_u_alive",
+        {},
+        pending=False,
+        opaque=None,
+        expected_route=None,
+        expects_reply=False,
+    )
+    link.session.confirm(len(link.session.sent) - 1)
+    reply_seq = kernel.next_seq()
+    kernel.send_request_with_seq(
+        reply_seq,
+        "system",
+        "r_u_alive",
+        {},
+        pending=True,
+        opaque=None,
+        expected_route=("system", "r_u_alive"),
+        expects_reply=False,
+    )
+    assert kernel.was_request_sent(sent_seq)
+    assert kernel.dispatcher.pending_count() == 1
+    return sent_seq, reply_seq
+
+
+@pytest.mark.asyncio
+async def test_failed_reconnect_keeps_the_old_sessions_request_tracking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    link = keepalive_link(monkeypatch)
+    old = await link.connect()
+    sent_seq, reply_seq = _queue_tracked_requests(link)
+    link.fail_connect = True
+    with pytest.raises(KernelError, match="Session connect failed"):
+        await link.connect()
+    assert link.kernel.was_request_sent(sent_seq)
+    assert link.kernel.dispatcher.pending_count() == 1
+    old.receive({"seq": reply_seq, "system": {"r_u_alive": {}}})
+    assert link.kernel.dispatcher.pending_count() == 0
+    await link.kernel.close()
+
+
+@pytest.mark.asyncio
+async def test_successful_reconnect_drops_the_old_sessions_request_tracking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    link = keepalive_link(monkeypatch)
+    await link.connect()
+    sent_seq, _reply_seq = _queue_tracked_requests(link)
+    await link.connect()
+    assert not link.kernel.was_request_sent(sent_seq)
+    assert link.kernel.dispatcher.pending_count() == 0
+    await link.kernel.close()
+
+
+@pytest.mark.asyncio
+async def test_refused_connect_inside_the_keepalive_task_keeps_request_tracking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    holder: list[Any] = []
+    errors: list[KernelError] = []
+
+    async def _sleep(delay: float) -> None:
+        if delay < IDLE_INTERVAL_S / 2 and not errors:
+            try:
+                await holder[0].connect()
+            except KernelError as exc:
+                errors.append(exc)
+        await asyncio.Event().wait()
+
+    link = keepalive_link(monkeypatch, sleep=_sleep)
+    holder.append(link)
+    session = await link.connect()
+    sent_seq, _reply_seq = _queue_tracked_requests(link)
+    feature_loads: list[object] = []
+    monkeypatch.setattr(link.kernel, "load_features_blocking", feature_loads.append)
+    session.state = session_mod.SessionState.DISCONNECTED
+    link.kernel.request_link_check()
+    await until(lambda: bool(errors))
+    assert feature_loads == []
+    assert link.kernel.was_request_sent(sent_seq)
+    assert link.kernel.dispatcher.pending_count() == 1
+    await link.kernel.close()
+
+
+@pytest.mark.asyncio
+async def test_misses_before_a_failed_reconnect_still_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    link = keepalive_link(monkeypatch)
+    old = await link.connect(max_missed=2)
+    await link.check_link()
+    old.confirm(0)
+    link.advance(TIMEOUT_S + 0.01)
+    await until(lambda: link.stats.consecutive_missed == 1 and len(old.sent) >= 2)
+    link.fail_connect = True
+    with pytest.raises(KernelError, match="Session connect failed"):
+        await link.connect(max_missed=2)
+    assert link.stats.consecutive_missed == 1
+    assert old.disconnects == []
+    link.kernel.request_link_check()
+    await until(lambda: len(old.sent) >= 3)
+    old.confirm(2)
+    link.advance(TIMEOUT_S + 0.01)
+    await until(lambda: len(old.disconnects) == 1)
+    assert link.stats.consecutive_missed == 2
+    await link.kernel.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_reconnect_keeps_the_cancel_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    link = keepalive_link(monkeypatch)
+    await link.connect()
+    await link.check_link()
+    seen: list[str] = []
+
+    async def _reconnect() -> None:
+        try:
+            await link.connect()
+        except asyncio.CancelledError as exc:
+            seen.append(str(exc))
+            raise
+
+    connecting = asyncio.create_task(_reconnect())
+    await until(lambda: len(link.links) == 2)
+    connecting.cancel("operator stop")
+    with pytest.raises(asyncio.CancelledError):
+        await connecting
+    assert not link.links[1].handshake_entered.is_set()
+    assert seen == ["operator stop"]
+    await link.kernel.close()
+
+
+@pytest.mark.asyncio
+async def test_successful_reconnect_starts_the_miss_count_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    link = keepalive_link(monkeypatch)
+    old = await link.connect(max_missed=2)
+    await link.check_link()
+    old.confirm(0)
+    link.advance(TIMEOUT_S + 0.01)
+    await until(lambda: link.stats.consecutive_missed == 1 and len(old.sent) >= 2)
+    await link.connect(max_missed=2)
+    assert link.stats.consecutive_missed == 0
+    await link.kernel.close()
