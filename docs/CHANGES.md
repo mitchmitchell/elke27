@@ -78,6 +78,15 @@
     written, so it matches what the panel was sent. A probe failed by a
     disconnect or send error before it is written now consumes its waiter, so
     asyncio does not log "Future exception was never retrieved".
+  - Keepalive stats RTT and counters (#95): ``last_round_trip_s`` and
+    ``max_round_trip_s`` use the transport-confirmed send instant kept per probe
+    ``seq`` until stats are recorded. RTT runs from that send instant to when the
+    probe resumes, so a reply handled before the probe resumes can overstate it by
+    that scheduling delay. New ``probes_failed``
+    (probe never left) and ``probe_timeouts`` (written, reply deadline passed;
+    ``rescued`` remains a subset). New ``probe_in_flight``: ``True`` while a
+    keepalive probe has started and not yet finished. ``misses`` and
+    liveness policy are unchanged.
 
   Area Delay, Arm Night Stay Instant, Status Read Publication (0.6.0, 2026-11-17)
 
