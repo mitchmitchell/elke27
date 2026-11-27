@@ -7,6 +7,7 @@ connected through ``E27Kernel.connect``; outcomes are read from ``keepalive_stat
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -28,9 +29,16 @@ TIMEOUT_S = 5.0
 class PanelLink:
     """Stand-in for ``Session``: records frames and plays the panel on demand."""
 
-    def __init__(self, clock: MonotonicTestClock, *, fail_sends: bool) -> None:
+    def __init__(
+        self,
+        clock: MonotonicTestClock,
+        *,
+        fail_sends: bool,
+        connect_gate: threading.Event | None = None,
+    ) -> None:
         self.clock = clock
         self.fail_sends = fail_sends
+        self.connect_gate = connect_gate
         self.state = session_mod.SessionState.DISCONNECTED
         self.info = session_mod.SessionInfo(
             session_id=1, session_key_hex="00", session_hmac_hex="11"
@@ -44,6 +52,9 @@ class PanelLink:
         self.on_rx: Callable[[], None] | None = None
 
     def connect(self) -> session_mod.SessionInfo:
+        """Complete the handshake, first waiting on ``connect_gate`` when one is set."""
+        if self.connect_gate is not None:
+            self.connect_gate.wait(timeout=5.0)
         self.state = session_mod.SessionState.ACTIVE
         return self.info
 
@@ -119,6 +130,8 @@ class KeepaliveLink:
     fail_sends: bool = False
     links: list[PanelLink] = field(default_factory=list)
     deadlines: list[tuple[float, Callable[[], None]]] = field(default_factory=list)
+    connect_gate: threading.Event | None = None
+    """When set, the next link's handshake blocks until the event is set."""
 
     @property
     def session(self) -> PanelLink:
@@ -139,7 +152,8 @@ class KeepaliveLink:
             callback()
 
     def _new_link(self, **_kwargs: object) -> PanelLink:
-        self.links.append(PanelLink(self.clock, fail_sends=self.fail_sends))
+        gate, self.connect_gate = self.connect_gate, None
+        self.links.append(PanelLink(self.clock, fail_sends=self.fail_sends, connect_gate=gate))
         return self.links[-1]
 
     async def connect(self, *, max_missed: int = 1) -> PanelLink:

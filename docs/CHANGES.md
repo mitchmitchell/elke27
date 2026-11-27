@@ -90,8 +90,10 @@
   - Keepalive probe after a reconnect (#177): when ``connect`` replaces a
     session while a keepalive probe is still outstanding, that probe is released:
     it adds nothing to ``keepalive_stats``, a late write confirmation or reply
-    from the old link cannot change a newer probe's round-trip time, and the new
-    session's first probe is not held behind it. The ``KeepaliveStats`` docstring
+    from the old link cannot change a newer probe's round-trip time, and the
+    keepalive loop stops before the replacement and restarts for the new session,
+    so no probe goes out on the old link during the reconnect and the new
+    session's first probe is not held behind an old one. The ``KeepaliveStats`` docstring
     now describes every public field.
 
   Area Delay, Arm Night Stay Instant, Status Read Publication (0.6.0, 2026-11-17)

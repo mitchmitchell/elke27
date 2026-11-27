@@ -7,6 +7,7 @@ are started with ``request_link_check`` and outcomes come from ``keepalive_stats
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections.abc import Mapping
 from typing import Any
 
@@ -15,6 +16,7 @@ import pytest
 from elke27_lib import session_thread as session_mod
 from elke27_lib.kernel_loop import KernelError
 from test.helpers.keepalive_link import (
+    IDLE_INTERVAL_S,
     TIMEOUT_S,
     assert_keepalive_invariants,
     keepalive_link,
@@ -424,4 +426,38 @@ async def test_unsent_probe_with_later_inbound_fails_but_keeps_the_link(
     assert stats.misses == 0
     assert stats.probe_in_flight is False
     assert session.disconnects == []
+    await link.kernel.close()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_after_the_idle_interval_sends_no_probe_on_the_old_link(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    link = keepalive_link(monkeypatch)
+    old = await link.connect()
+    await link.check_link()
+    old.confirm(0)
+    await _finished(link, "probes_sent")
+    link.clock.advance(IDLE_INTERVAL_S + 1.0)
+    gate = threading.Event()
+    link.connect_gate = gate
+    connecting = asyncio.create_task(link.connect())
+    for _ in range(50):
+        await asyncio.sleep(0.001)
+    assert len(old.sent) == 1
+    gate.set()
+    new = await asyncio.wait_for(connecting, timeout=2.0)
+    assert len(old.sent) == 1
+    await link.check_link()
+    new.confirm(0)
+    link.advance(0.2)
+    new.reply(0)
+    await _finished(link, "replies")
+    stats = link.stats
+    assert stats.probes_sent == 2
+    assert stats.last_round_trip_s == pytest.approx(0.2)
+    assert stats.misses == 0
+    assert stats.probe_in_flight is False
+    assert old.disconnects == []
+    assert new.disconnects == []
     await link.kernel.close()

@@ -701,6 +701,7 @@ class E27Kernel:
         self._keepalive_max_missed = int(cfg.keepalive_max_missed)
         cfg = replace(cfg, keepalive_enabled=False)
 
+        self._stop_keepalive()
         self._detach_keepalive_probe()
         self._closed_explicitly = False
         s = session_mod.Session(cfg=cfg, client_identity=client_identity, link_key_hex=link_key_hex)
@@ -1015,10 +1016,11 @@ class E27Kernel:
     def _detach_keepalive_probe(self) -> None:
         """Release a probe sent on a session ``connect`` is about to replace.
 
-        Its transport and pending reply are cancelled so the request slot frees for
-        the new session, and it is no longer the current probe, so it adds nothing
-        to ``keepalive_stats`` and a late write confirmation from the old link
-        cannot stamp a newer probe.
+        ``connect`` stops the keepalive loop first, so the probe is cancelled and
+        adds nothing to ``keepalive_stats``. Here its transport and pending reply
+        are cancelled so the request slot frees for the new session, and its
+        record is dropped so a late write confirmation from the old link cannot
+        stamp a newer probe.
         """
         probe = self._keepalive_probe
         if probe is None:
@@ -1141,8 +1143,6 @@ class E27Kernel:
                     seq,
                     self.now() - queued_at,
                 )
-            if self._keepalive_probe is not probe:
-                return True
             sent_at = probe.sent_at
             if sent_at is None:
                 self._abandon_unsent_probe(seq)
@@ -1168,8 +1168,6 @@ class E27Kernel:
                     self._log.debug("E27 keepalive reply missing; later traffic kept the link")
                 return rescued
             except Exception as exc:  # noqa: BLE001 -- keepalive probe must not crash the loop
-                if self._keepalive_probe is not probe:
-                    return True
                 self._log.warning(
                     "E27 keepalive check failed: seq=%s session_id=%s error=%s",
                     seq,
@@ -1192,8 +1190,9 @@ class E27Kernel:
             )
             return True
         finally:
-            self._keepalive_inflight = False
-            self._keepalive_probe = None
+            if self._keepalive_probe is probe:
+                self._keepalive_probe = None
+                self._keepalive_inflight = False
             if future is not None:
                 consume_outcome(future)
 
