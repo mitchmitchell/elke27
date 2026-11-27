@@ -841,6 +841,7 @@ class E27Kernel:
             return
         self._refuse_inside_keepalive_task("close")
         await self._stop_keepalive_and_wait()
+        self._keepalive_missed = 0
         self._fail_all_pending_commands(close_exc)
         self._cancel_all_transport_retry_timers()
 

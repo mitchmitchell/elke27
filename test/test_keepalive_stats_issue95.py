@@ -763,3 +763,18 @@ async def test_successful_reconnect_starts_the_miss_count_again(
     await link.connect(max_missed=2)
     assert link.stats.consecutive_missed == 0
     await link.kernel.close()
+
+
+@pytest.mark.asyncio
+async def test_close_starts_the_miss_count_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    link = keepalive_link(monkeypatch)
+    old = await link.connect(max_missed=2)
+    await link.check_link()
+    old.confirm(0)
+    link.advance(TIMEOUT_S + 0.01)
+    await until(lambda: link.stats.consecutive_missed == 1 and len(old.sent) >= 2)
+    await link.kernel.close()
+    assert link.stats.consecutive_missed == 0
+    assert link.stats.misses == 1

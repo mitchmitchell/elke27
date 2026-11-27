@@ -99,8 +99,9 @@
     fire-and-forget reply correlation and consecutive miss count are also kept;
     they are reset only once the new session has replaced it. Calling
     ``connect`` or ``close`` from inside the keepalive task raises
-    ``KernelError`` before ``connect`` changes anything. The ``KeepaliveStats`` docstring now describes every public
-    field.
+    ``KernelError`` before ``connect`` changes anything. ``close`` resets the
+    miss count once the loop has stopped. The ``KeepaliveStats`` docstring now
+    describes every public field.
 
   Area Delay, Arm Night Stay Instant, Status Read Publication (0.6.0, 2026-11-17)
 
