@@ -171,7 +171,7 @@ def test_private_access_in_helpers_only_in_legacy_modules() -> None:
 
 HELPER_PRIVATE_ACCESS_CEILING: dict[str, int] = {
     "test/helpers/internal.py": 5,
-    "test/helpers/keepalive_seam.py": 51,
+    "test/helpers/keepalive_seam.py": 62,
 }
 
 
@@ -316,6 +316,104 @@ def _private_access_count(path: Path) -> int:
         )
     )
     return attributes + len(_private_access(path))
+
+
+def _reaches_private(node: ast.AST) -> bool:
+    """True when ``node`` holds a private access ``_private_access_count`` would count."""
+    for sub in ast.walk(node):
+        if (
+            isinstance(sub, ast.Attribute)
+            and _is_private(sub.attr)
+            and sub.attr not in _SLF001_IGNORED_NAMES
+            and not (isinstance(sub.value, ast.Name) and sub.value.id in _SLF001_OWNERS)
+        ):
+            return True
+        if isinstance(sub, ast.Call) and _call_name(sub) in PRIVATE_HELPERS | REFLECTION:
+            literal = _literal_name(sub)
+            if literal is not None and _is_private(literal):
+                return True
+    return False
+
+
+def _one_statement_private_wrappers(tree: ast.Module) -> list[str]:
+    """Module functions whose only statement (after a docstring) is a private access.
+
+    Such a wrapper is counted once in its body while every call site counts zero,
+    so it would move private reach out of the helper count instead of removing it.
+    """
+    found: list[str] = []
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        body = node.body
+        if (
+            body
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)
+        ):
+            body = body[1:]
+        if len(body) == 1 and _reaches_private(body[0]):
+            found.append(node.name)
+    return found
+
+
+LEGACY_PRIVATE_WRAPPERS: dict[str, list[str]] = {
+    "test/helpers/internal.py": [
+        "deliver_panel_message",
+        "trigger_session_disconnect",
+        "reply_publication_seq_active",
+    ],
+}
+"""One-statement private wrappers that predate the wrapper guard (#158). They only
+shrink; ``PRIVATE_HELPERS`` names are already counted at every call site."""
+
+
+def test_helpers_add_no_one_statement_private_wrappers() -> None:
+    """Helpers reach private state where it is used, so the helper ceiling sees every site."""
+    found = {
+        _rel(p): names
+        for p in _helper_modules()
+        if (
+            names := [
+                n for n in _one_statement_private_wrappers(_tree(p)) if n not in PRIVATE_HELPERS
+            ]
+        )
+    }
+    assert found == LEGACY_PRIVATE_WRAPPERS, (
+        "One-statement private wrappers in test/helpers changed (file: names). Reach "
+        "private state at the call site, or use the public API; drop removed names here."
+    )
+
+
+def test_one_statement_private_wrapper_forms_are_detected() -> None:
+    """Probe: helper-call, attribute and reflection wrappers are caught; public bodies are not."""
+    source = "\n".join(
+        [
+            "def via_helper(k):",
+            "    return get_private(k, '_timeout')",
+            "def via_setter(k, v):",
+            "    'Doc.'",
+            "    set_private(k, '_closing', v)",
+            "async def via_attribute(k):",
+            "    return await k._send_probe()",
+            "def via_reflection(k):",
+            "    return getattr(k, '_task')",
+            "def two_statements(k):",
+            "    x = get_private(k, '_seq')",
+            "    return x + 1",
+            "def public_only(k):",
+            "    return k.keepalive_stats",
+            "def own_attribute(self):",
+            "    return self._x",
+        ]
+    )
+    assert _one_statement_private_wrappers(ast.parse(source)) == [
+        "via_helper",
+        "via_setter",
+        "via_attribute",
+        "via_reflection",
+    ]
 
 
 # Private accesses per test file, frozen at the count when the ceiling was added.

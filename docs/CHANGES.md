@@ -84,7 +84,9 @@
     probe resumes, so a reply handled before the probe resumes can overstate it by
     that scheduling delay. New ``probes_failed``
     (probe never left) and ``probe_timeouts`` (written, reply deadline passed;
-    ``rescued`` remains a subset). ``misses`` and liveness policy are unchanged.
+    ``rescued`` remains a subset). New ``probes_in_flight``: probe seqs the
+    kernel still tracks, ``0`` once every probe has finished. ``misses`` and
+    liveness policy are unchanged.
 
   Area Delay, Arm Night Stay Instant, Status Read Publication (0.6.0, 2026-11-17)
 

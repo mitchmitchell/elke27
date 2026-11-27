@@ -182,6 +182,9 @@ class KeepaliveStats:
     consecutive_missed: int = 0
     last_round_trip_s: float | None = None
     max_round_trip_s: float | None = None
+    probes_in_flight: int = 0
+    """Probe seqs the kernel still tracks: registered and not yet released, or
+    holding a send stamp. ``0`` whenever no probe is outstanding."""
 
 
 def _queued_request_is_keepalive(item: _QueuedRequest) -> bool:
@@ -908,7 +911,13 @@ class E27Kernel:
         ``rescued`` counts probes with no reply where other traffic arrived after
         the probe, so the link was kept.
         """
-        return replace(self._keepalive_stats, consecutive_missed=self._keepalive_missed)
+        return replace(
+            self._keepalive_stats,
+            consecutive_missed=self._keepalive_missed,
+            probes_in_flight=len(
+                self._keepalive_probe_seqs | self._keepalive_probe_sent_at_by_seq.keys()
+            ),
+        )
 
     async def _keepalive_loop(self) -> None:
         if self._keepalive_wake is None:

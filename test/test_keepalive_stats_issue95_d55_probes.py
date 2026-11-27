@@ -2,33 +2,39 @@
 
 from __future__ import annotations
 
-import asyncio
-from typing import Any
-
 import pytest
 
 from elke27_lib.kernel_loop import KernelError
-from test.helpers import keepalive_seam
+from test.helpers.keepalive_link import keepalive_link, until
 
 
 @pytest.mark.asyncio
 async def test_probe_builder_error_does_not_wedge_the_next_probe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    seam, kernel, session = keepalive_seam.stats_probing_seam()
+    calls: list[int] = []
 
-    def _raise(*_a: Any, **_k: Any) -> None:
-        raise KernelError("no builder")
+    def _builder() -> dict[str, object]:
+        calls.append(1)
+        if len(calls) == 1:
+            raise KernelError("no builder")
+        return {}
 
-    monkeypatch.setattr(kernel.requests, "require", _raise)
-    with pytest.raises(KernelError, match="no builder"):
-        await keepalive_seam.send_keepalive(kernel, force=True)
+    link = keepalive_link(monkeypatch, probe_builder=_builder)
+    session = await link.connect()
+    link.kernel.request_link_check()
+    await until(lambda: len(calls) == 1)
     assert session.sent == []
-    assert kernel.keepalive_stats.probes_failed == 0
-    monkeypatch.undo()
-    task = asyncio.create_task(keepalive_seam.send_keepalive(kernel, force=True))
-    await keepalive_seam.until_probe_sent(session)
-    keepalive_seam.confirm_probe_sent_and_maybe_reply(seam, session, 0, reply_after_s=0.1)
-    assert await asyncio.wait_for(task, timeout=2.0) is True
-    assert kernel.keepalive_stats.probes_sent == 1
-    assert kernel.keepalive_stats.last_round_trip_s == pytest.approx(0.1)
+    assert link.stats.probes_failed == 0
+    assert link.stats.probes_in_flight == 0
+    second = await link.connect()
+    await link.check_link()
+    second.confirm(0)
+    link.advance(0.1)
+    second.reply(0)
+    await until(lambda: link.stats.replies == 1)
+    stats = link.stats
+    assert stats.probes_sent == 1
+    assert stats.last_round_trip_s == pytest.approx(0.1)
+    assert stats.probes_in_flight == 0
+    await link.kernel.close()
