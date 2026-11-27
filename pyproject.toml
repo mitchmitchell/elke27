@@ -273,6 +273,9 @@ loop_paths = [
     "src/elke27_lib/handlers",
     "src/elke27_lib/generators",
 ]
+comment_diff_base = "origin/main"
+comment_ceiling_file = "devtools/comment_ceiling.py"
+comment_paths = ["src", "test", "devtools", "pyproject.toml", ".github/workflows"]
 
 [tool.codespell]
 # Add here as needed:

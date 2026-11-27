@@ -1,4 +1,4 @@
-"""Report blocking calls in event-loop modules (ELK001-005, ELK101-110).
+"""Report blocking calls in event-loop modules (ELK001-005, ELK101-110) and comments (ELK006).
 
 A file is a *loop* file when its name ends in ``_loop.py``, when it is listed in
 ``loop_modules``, or when it sits under a directory in ``loop_paths``. A file is a
@@ -13,7 +13,25 @@ directory holding the config file.
 A finding on a line is suppressed only by ``# noqa: ELKnnn -- <reason>`` with a
 reason of at least three words. ELK003 and ELK005 cannot be suppressed.
 
-Usage: ``python devtools/loopcheck.py [--config pyproject.toml] PATH...``. Prints
+ELK006 is the comment rule. Python, TOML and YAML files under ``comment_paths`` (less
+the excluded paths: ``LEGACY_COMMENT_EXCLUDE`` in ``comment_ceiling_file``, or an
+inline ``comment_exclude``) may only carry these comments: license text, a comment that is
+just an upstream URL, a suppression with its reason (``# noqa: CODE -- <reason>``,
+``# type: ignore[code] -- <reason>``, ``# pragma: no cover -- <reason>``, reason of
+three or more words) and, in TOML, the reason for an ignore or exclude setting on
+or directly above it. Docstrings are not comments. Every other comment counts
+toward the ceiling (path -> count: ``COMMENT_CEILING`` in ``comment_ceiling_file``, or
+an inline ``comment_ceiling`` table); a file above its entry fails with one
+finding per comment, and a file below it fails until the entry is lowered. With
+``comment_diff_base`` (for example ``"origin/main"``) such a comment on a line the
+change adds or edits since the merge-base, or in the own-line comment block directly
+above one, is a finding even within the ceiling, so touching a line means dropping
+its comment.
+``--comment-baseline DIR`` uses the counts of another tree as the ceiling (to
+replay the rule on a past change against the tree it branched from).
+
+Usage: ``python devtools/loopcheck.py [--config pyproject.toml] [--comment-baseline
+DIR] [--comment-diff-base REV] PATH...``. Prints
 ``path:line:col ELKnnn message`` per finding and exits 1 when there is any. A file
 that does not parse is reported as one ELK000 finding. A path that does not exist is
 a usage error (exit 2).
@@ -25,12 +43,14 @@ import argparse
 import ast
 import io
 import re
+import subprocess
 import sys
 import tokenize
 import tomllib
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 LOOP_SUFFIX = "_loop.py"
 THREAD_SUFFIX = "_thread.py"
@@ -153,6 +173,42 @@ class Finding:
         return f"{self.path}:{self.line}:{self.col} {self.code} {self.message}"
 
 
+CEILING_NAME = "COMMENT_CEILING"
+EXCLUDE_NAME = "LEGACY_COMMENT_EXCLUDE"
+
+
+def _literal(path: Path, name: str) -> object:
+    """The literal value assigned to ``name`` in ``path``, which is parsed, never imported."""
+    for node in ast.parse(path.read_text(encoding="utf-8")).body:
+        if isinstance(node, ast.AnnAssign):
+            target, value = node.target, node.value
+        elif isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target, value = node.targets[0], node.value
+        else:
+            continue
+        if isinstance(target, ast.Name) and target.id == name and value is not None:
+            return ast.literal_eval(value)
+    raise ValueError(f"{path.name} has no literal {name}")
+
+
+def _comment_tables(root: Path, section: dict[str, Any]) -> tuple[dict[str, int], list[str]]:
+    """The comment ceiling and the excluded paths.
+
+    With ``comment_ceiling_file`` both come from that Python file (``COMMENT_CEILING``,
+    a ``{path: count}`` dict, and ``LEGACY_COMMENT_EXCLUDE``, a set of paths), so they
+    fall under ``devtools/ratchet.py`` and may only shrink. Otherwise they are the
+    inline ``comment_ceiling`` table and ``comment_exclude`` list.
+    """
+    name = section.get("comment_ceiling_file")
+    if name is None:
+        return dict(section.get("comment_ceiling", {})), list(section.get("comment_exclude", []))
+    ceiling = _literal(root / name, CEILING_NAME)
+    exclude = _literal(root / name, EXCLUDE_NAME)
+    if not isinstance(ceiling, dict) or not isinstance(exclude, set | frozenset | list):
+        raise ValueError(f"{name}: {CEILING_NAME} must be a dict and {EXCLUDE_NAME} a set")
+    return {str(k): int(v) for k, v in ceiling.items()}, sorted(str(p) for p in exclude)
+
+
 @dataclass
 class Config:
     """Loop scope settings; paths are absolute after loading."""
@@ -162,6 +218,10 @@ class Config:
     loop_paths: list[Path] = field(default_factory=list)
     core_modules: set[str] = field(default_factory=lambda: set(DEFAULT_CORE_MODULES))
     config_file: Path | None = None
+    comment_paths: list[Path] = field(default_factory=list)
+    comment_exclude: list[Path] = field(default_factory=list)
+    comment_ceiling: dict[str, int] = field(default_factory=dict)
+    comment_diff_base: str | None = None
 
     @classmethod
     def load(cls, config_file: Path) -> Config:
@@ -170,12 +230,17 @@ class Config:
         section = data.get("tool", {}).get("elke27", {}).get("loopcheck", {})
         root = config_file.resolve().parent
         core = section.get("core_modules")
+        ceiling, exclude = _comment_tables(root, section)
         return cls(
             root=root,
             loop_modules=[root / p for p in section.get("loop_modules", [])],
             loop_paths=[root / p for p in section.get("loop_paths", [])],
             core_modules=set(core) if core is not None else set(DEFAULT_CORE_MODULES),
             config_file=config_file,
+            comment_paths=[root / p for p in section.get("comment_paths", [])],
+            comment_exclude=[root / p for p in exclude],
+            comment_ceiling=ceiling,
+            comment_diff_base=section.get("comment_diff_base"),
         )
 
     def is_thread(self, path: Path) -> bool:
@@ -202,7 +267,12 @@ class Config:
                 "ELK005",
                 f"configured loop path does not exist: {p.relative_to(self.root).as_posix()}",
             )
-            for p in [*self.loop_modules, *self.loop_paths]
+            for p in [
+                *self.loop_modules,
+                *self.loop_paths,
+                *self.comment_paths,
+                *self.comment_exclude,
+            ]
             if not p.exists()
         ]
 
@@ -566,11 +636,323 @@ def iter_files(paths: Iterable[Path]) -> list[Path]:
     return sorted(out)
 
 
-def check_paths(paths: Iterable[Path], config: Config) -> list[Finding]:
-    """Check every ``.py`` file under ``paths`` plus the config itself."""
+COMMENT_SUFFIXES = {".py", ".toml", ".yml", ".yaml"}
+URL_ONLY_RE = re.compile(r"^#\s*<?https?://\S+>?\s*$")
+LICENSE_RE = re.compile(r"^#\s*(?:SPDX-License-Identifier:|Copyright\b|Licensed under\b)")
+SUPPRESSION_RE = re.compile(
+    r"#\s*(?:(?:ruff|flake8):\s*)?noqa:\s*[A-Z]+\d+(?:\s*,\s*[A-Z]+\d+)*"
+    r"|#\s*(?:type|pyright):\s*ignore\[[^\]]+\]"
+    r"|#\s*pragma:\s*no\s*(?:cover|branch)\b",
+    re.IGNORECASE,
+)
+TOML_REASON_KEYS = frozenset(
+    {
+        "ignore",
+        "extend-ignore",
+        "per-file-ignores",
+        "extend-per-file-ignores",
+        "exclude",
+        "extend-exclude",
+        "comment_exclude",
+        "external",
+        "omit",
+        "norecursedirs",
+        "filterwarnings",
+        "ignore-words-list",
+        "skip",
+    }
+)
+TOML_KEY_RE = re.compile(r"""^\s*(?P<key>"[^"]*"|'[^']*'|[\w.\-]+)\s*=""")
+_YAML_SCALAR_START = set(":-[{,")
+
+
+def comment_allowed(text: str, line: int) -> bool:
+    """True for license text, a lone upstream URL or a suppression with its reason.
+
+    A shebang counts only on line 1 and a coding cookie only on lines 1-2. A
+    suppression must name its codes (no blanket ``noqa`` or bare ``type: ignore``) and
+    give a reason of three or more words after ``--``.
+    """
+    if line == 1 and text.startswith("#!"):
+        return True
+    if line <= 2 and re.match(r"^#.*coding[:=]", text):
+        return True
+    if LICENSE_RE.match(text) or URL_ONLY_RE.match(text.strip()):
+        return True
+    match = SUPPRESSION_RE.match(text.strip())
+    return match is not None and _reason_words(text.strip()[match.end() :]) >= 3
+
+
+def _reason_key(key: str) -> bool:
+    """True for a TOML key (or table name) that turns a check off for some paths or codes."""
+    return key.strip("\"'").rsplit(".", 1)[-1].lower() in TOML_REASON_KEYS
+
+
+def _config_reason(comment: str) -> bool:
+    """A setting's stated reason: three or more words, with or without a leading ``--``."""
+    body = comment.lstrip("#").strip()
+    return len(body.removeprefix("--").split()) >= 3
+
+
+def _python_comments(source: str) -> list[tuple[int, str]]:
+    tokens = tokenize.generate_tokens(io.StringIO(source).readline)
+    return [(tok.start[0], tok.string) for tok in tokens if tok.type == tokenize.COMMENT]
+
+
+def _split_toml(line: str, multi: str | None) -> tuple[str, str | None, str | None]:
+    """``(code, comment, open multi-line delimiter)`` for one TOML line.
+
+    ``multi`` is the ``\"\"\"`` or ``'''`` delimiter of a multi-line string still open
+    from an earlier line. Any ``#`` outside a string starts a comment, with or without
+    whitespace before it.
+    """
+    index = 0
+    quote: str | None = None
+    while index < len(line):
+        if multi is not None:
+            end = line.find(multi, index)
+            if end < 0:
+                return line, None, multi
+            index, multi = end + 3, None
+            continue
+        char = line[index]
+        if quote is not None:
+            if char == "\\" and quote == '"':
+                index += 2
+                continue
+            if char == quote:
+                quote = None
+        elif line.startswith(('"""', "'''"), index):
+            multi = line[index : index + 3]
+            index += 3
+            continue
+        elif char in "\"'":
+            quote = char
+        elif char == "#":
+            return line[:index], line[index:], None
+        index += 1
+    return line, None, multi
+
+
+def _split_yaml(line: str) -> tuple[str, str | None]:
+    """``(code, comment)`` for one YAML line.
+
+    A quote opens a quoted scalar only where a scalar can start (line start or after
+    ``:``, ``-``, ``[``, ``{`` or ``,``), so an apostrophe in a plain scalar such as
+    ``Mitch's job`` does not hide the comment after it. ``#`` starts a comment only at
+    line start or after whitespace.
+    """
+    quote: str | None = None
+    index = 0
+    while index < len(line):
+        char = line[index]
+        if quote is not None:
+            if char == quote and quote == "'" and line.startswith("''", index):
+                index += 2
+                continue
+            if char == quote:
+                quote = None
+        elif char in "\"'":
+            before = line[:index].rstrip()
+            if not before or before[-1] in _YAML_SCALAR_START:
+                quote = char
+        elif char == "#" and (index == 0 or line[index - 1].isspace()):
+            return line[:index], line[index:]
+        index += 1
+    return line, None
+
+
+def _config_comments(source: str, toml: bool) -> list[tuple[int, str]]:
+    """Comments in a TOML or YAML file that are not allowed forms.
+
+    In TOML a comment may also give the reason (three or more words) for an ignore or
+    exclude setting: trailing on the setting or one of its entries (for example a path
+    inside an ``exclude``/``extend-exclude`` array), or in an own-line block directly
+    above it.
+    """
+    rows: list[tuple[int, str, str | None, bool]] = []
+    header = ""
+    array_key: str | None = None
+    multi: str | None = None
+    for number, raw in enumerate(source.splitlines(), start=1):
+        if toml:
+            was_multi = multi is not None
+            code, comment, multi = _split_toml(raw, multi)
+            if was_multi and multi is not None:
+                rows.append((number, raw.strip() or '"', None, False))
+                continue
+        else:
+            code, comment = _split_yaml(raw)
+        stripped = code.strip()
+        context = False
+        if toml:
+            if stripped.startswith("[") and array_key is None:
+                header = stripped
+            key_match = TOML_KEY_RE.match(code)
+            key = key_match.group("key") if key_match else None
+            context = (
+                _reason_key(header.strip("[]"))
+                or (key is not None and _reason_key(key))
+                or (array_key is not None and _reason_key(array_key))
+            )
+            if key and stripped.endswith("[") and array_key is None:
+                array_key = key
+            elif array_key is not None and stripped.startswith("]"):
+                array_key = None
+        rows.append((number, stripped, comment, context))
+    found: list[tuple[int, str]] = []
+    for index, (number, stripped, comment, context) in enumerate(rows):
+        if comment is None or comment_allowed(comment, number):
+            continue
+        if _config_reason(comment):
+            if stripped and context:
+                continue
+            if not stripped:
+                following = next(
+                    (row for row in rows[index + 1 :] if row[1] or row[2] is None), None
+                )
+                if following is not None and following[1] and following[3]:
+                    continue
+        found.append((number, comment))
+    return found
+
+
+def disallowed_comments(path: Path, source: str) -> list[tuple[int, str]]:
+    """``(line, comment)`` for each ELK006 comment in one file."""
+    if path.suffix == ".py":
+        try:
+            comments = _python_comments(source)
+        except (tokenize.TokenError, SyntaxError):
+            return []
+        return [(line, text) for line, text in comments if not comment_allowed(text, line)]
+    return _config_comments(source, toml=path.suffix == ".toml")
+
+
+def comment_counts(config: Config, root: Path | None = None) -> dict[str, list[tuple[int, str]]]:
+    """ELK006 comments per file under the configured comment paths of ``root``."""
+    base = root or config.root
+    excluded = [base / p.relative_to(config.root) for p in config.comment_exclude]
+    found: dict[str, list[tuple[int, str]]] = {}
+    for scope in config.comment_paths:
+        target = base / scope.relative_to(config.root)
+        files = sorted(target.rglob("*")) if target.is_dir() else [target]
+        for path in files:
+            if path.suffix not in COMMENT_SUFFIXES or not path.is_file():
+                continue
+            if any(path == e or path.is_relative_to(e) for e in excluded):
+                continue
+            hits = disallowed_comments(path, path.read_text(encoding="utf-8"))
+            if hits:
+                found[path.relative_to(base).as_posix()] = hits
+    return found
+
+
+_HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+
+
+def changed_lines(root: Path, base: str) -> dict[str, set[int]] | str:
+    """Lines added or edited since the merge-base with ``base``, or an error message."""
+
+    def git(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, check=False)
+
+    merge_base = git("merge-base", base, "HEAD")
+    if merge_base.returncode != 0:
+        return f"cannot find the merge-base with {base}: {merge_base.stderr.strip()}"
+    diff = git("diff", "-U0", "--no-color", merge_base.stdout.strip())
+    if diff.returncode != 0:
+        return f"git diff failed: {diff.stderr.strip()}"
+    changed: dict[str, set[int]] = {}
+    current: str | None = None
+    for line in diff.stdout.splitlines():
+        if line.startswith("+++ "):
+            name = line[4:].strip()
+            current = name[2:] if name.startswith("b/") else None
+        elif current is not None and (match := _HUNK_RE.match(line)):
+            start, count = int(match.group(1)), int(match.group(2) or "1")
+            changed.setdefault(current, set()).update(range(start, start + count))
+    return changed
+
+
+def _touches(source: list[str], line: int, changed: set[int]) -> bool:
+    """True when the comment's line changed, or its own-line comment block sits directly
+    above a changed line."""
+    if line in changed:
+        return True
+    if not source[line - 1].lstrip().startswith("#"):
+        return False
+    below = line + 1
+    while below <= len(source) and source[below - 1].lstrip().startswith("#"):
+        below += 1
+    return below <= len(source) and bool(source[below - 1].strip()) and below in changed
+
+
+def check_comments(config: Config, baseline: Path | None = None) -> list[Finding]:
+    """ELK006 findings: counts off their ceiling, and any such comment on a changed line."""
+    if not config.comment_paths:
+        return []
+    found = comment_counts(config)
+    touched: list[Finding] = []
+    if config.comment_diff_base:
+        changed = changed_lines(config.root, config.comment_diff_base)
+        if isinstance(changed, str):
+            return [Finding(config.display(config.root / "."), 1, 1, "ELK006", changed)]
+        for rel, hits in found.items():
+            lines_changed = changed.get(rel, set())
+            if not lines_changed:
+                continue
+            source = (config.root / rel).read_text(encoding="utf-8").splitlines()
+            touched += [
+                Finding(
+                    rel,
+                    line,
+                    1,
+                    "ELK006",
+                    f"comment on or above a changed line; drop it: {text[:60]}",
+                )
+                for line, text in hits
+                if _touches(source, line, lines_changed)
+            ]
+    ceiling = config.comment_ceiling
+    if baseline is not None:
+        ceiling = {rel: len(hits) for rel, hits in comment_counts(config, baseline).items()}
+    out: list[Finding] = []
+    for rel in sorted(found.keys() | ceiling.keys()):
+        hits = found.get(rel, [])
+        limit = ceiling.get(rel, 0)
+        if len(hits) > limit:
+            out += [
+                Finding(
+                    rel,
+                    line,
+                    1,
+                    "ELK006",
+                    f"comment ({len(hits)} in file, ceiling {limit}): {text[:60]}",
+                )
+                for line, text in hits
+            ]
+        elif len(hits) < limit:
+            out.append(
+                Finding(
+                    rel,
+                    1,
+                    1,
+                    "ELK006",
+                    f"comments fell to {len(hits)}; lower the comment ceiling from {limit}",
+                )
+            )
+    seen = {(f.path, f.line) for f in out}
+    return out + [f for f in touched if (f.path, f.line) not in seen]
+
+
+def check_paths(
+    paths: Iterable[Path], config: Config, comment_baseline: Path | None = None
+) -> list[Finding]:
+    """Check every ``.py`` file under ``paths`` plus the config itself and the comment rule."""
     findings = config.stale_entries()
     for path in iter_files(paths):
         findings += check_source(path.read_text(encoding="utf-8"), path, config)
+    findings += check_comments(config, comment_baseline)
     return sorted(findings)
 
 
@@ -578,13 +960,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     """CLI entry point; returns 1 when there are findings."""
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     parser.add_argument("--config", type=Path, default=Path("pyproject.toml"))
+    parser.add_argument("--comment-baseline", type=Path)
+    parser.add_argument("--comment-diff-base")
+    parser.add_argument("--comment-counts", action="store_true")
     parser.add_argument("paths", nargs="+", type=Path)
     args = parser.parse_args(argv)
     missing = [str(p) for p in args.paths if not p.exists()]
     if missing:
         parser.error(f"no such path: {', '.join(missing)}")
     config = Config.load(args.config)
-    findings = check_paths(args.paths, config)
+    if args.comment_diff_base:
+        config.comment_diff_base = args.comment_diff_base
+    if args.comment_counts:
+        for rel, hits in sorted(comment_counts(config).items()):
+            print(f'    "{rel}": {len(hits)},')
+        return 0
+    findings = check_paths(args.paths, config, args.comment_baseline)
     for f in findings:
         print(f.render())
     return 1 if findings else 0

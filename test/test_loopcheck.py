@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -217,3 +218,219 @@ def test_single_positional_blocking_true_is_still_blocking(tmp_path: Path) -> No
 def test_positional_timeout_makes_acquire_nonblocking(tmp_path: Path) -> None:
     body = "    lock.acquire(True, 1)\n    q.get(True, 1)\n    q.put(1, True, 1)\n"
     assert _lock_and_queue_findings(tmp_path, body) == []
+
+
+@pytest.mark.parametrize(
+    ("text", "allowed"),
+    [
+        ("# Copyright (c) 2026 Example", True),
+        ("# SPDX-License-Identifier: MIT", True),
+        ("# https://docs.astral.sh/ruff/rules/", True),
+        ("# https://docs.astral.sh/ruff/rules/ (tests use the public API)", False),
+        ("# noqa: BLE001 -- the callback may raise anything", True),
+        ("# noqa: BLE001", False),
+        ("# type: ignore[assignment] -- stub lacks the overload", True),
+        ("# type: ignore[assignment]", False),
+        ("# pragma: no cover -- only reached on Windows hosts", True),
+        ("# pragma: no cover", False),
+        ("# Max wait for a probe to leave the queue.", False),
+    ],
+)
+def test_comment_rule_allows_only_license_urls_and_reasoned_suppressions(
+    text: str, allowed: bool
+) -> None:
+    assert loopcheck.comment_allowed(text, 5) is allowed
+
+
+def test_comment_rule_reads_python_toml_and_yaml(tmp_path: Path) -> None:
+    py = tmp_path / "m.py"
+    py.write_text(
+        '#!/usr/bin/env python\n"""Doc # not a comment."""\nx = "#"  # why\n', encoding="utf-8"
+    )
+    toml = tmp_path / "c.toml"
+    toml.write_text(
+        "# Section banner\n"
+        "[tool.ruff.lint]\n"
+        "select = [\n"
+        '    "E", # https://docs.astral.sh/ruff/rules/#error-e\n'
+        '    "B", # bugbear is great\n'
+        "]\n"
+        "# Long lines are fine in tables.\n"
+        "ignore = [\n"
+        '    "E501",\n'
+        "]\n"
+        "[tool.ruff.lint.per-file-ignores]\n"
+        '"x/*" = ["ASYNC"]  # thread modules block by design\n'
+        'url = "http://a#b"\n',
+        encoding="utf-8",
+    )
+    yml = tmp_path / "w.yml"
+    yml.write_text(
+        "on:\n  push: # trigger\n    branches: ['a#b']\n# https://example.com/x\n", encoding="utf-8"
+    )
+    assert loopcheck.disallowed_comments(py, py.read_text(encoding="utf-8")) == [(3, "# why")]
+    assert loopcheck.disallowed_comments(toml, toml.read_text(encoding="utf-8")) == [
+        (1, "# Section banner"),
+        (5, "# bugbear is great"),
+    ]
+    assert loopcheck.disallowed_comments(yml, yml.read_text(encoding="utf-8")) == [(2, "# trigger")]
+
+
+def _comment_repo(tmp_path: Path, ceiling: str) -> Path:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.py").write_text("# old note\nx = 1\ny = 2\n", encoding="utf-8")
+    cfg = tmp_path / "pyproject.toml"
+    cfg.write_text(
+        "[tool.elke27.loopcheck]\n"
+        'comment_paths = ["src"]\n'
+        'comment_diff_base = "HEAD"\n'
+        f"[tool.elke27.loopcheck.comment_ceiling]\n{ceiling}\n",
+        encoding="utf-8",
+    )
+    for args in (
+        ["init", "-q"],
+        ["add", "."],
+        [
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "base",
+        ],
+    ):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True)
+    return cfg
+
+
+def test_comment_ceiling_fails_above_and_below(tmp_path: Path) -> None:
+    cfg = _comment_repo(tmp_path, '"src/a.py" = 1')
+    assert loopcheck.check_comments(loopcheck.Config.load(cfg)) == []
+    (tmp_path / "src" / "a.py").write_text(
+        "# old note\nx = 1\n# new note\ny = 2\n", encoding="utf-8"
+    )
+    found = loopcheck.check_comments(loopcheck.Config.load(cfg))
+    assert {(f.line, f.code) for f in found} == {(1, "ELK006"), (3, "ELK006")}
+    (tmp_path / "src" / "a.py").write_text("x = 1\ny = 2\n", encoding="utf-8")
+    found = loopcheck.check_comments(loopcheck.Config.load(cfg))
+    assert [f.message for f in found] == ["comments fell to 0; lower the comment ceiling from 1"]
+
+
+def test_comment_above_a_changed_line_must_go_even_within_the_ceiling(tmp_path: Path) -> None:
+    cfg = _comment_repo(tmp_path, '"src/a.py" = 1')
+    (tmp_path / "src" / "a.py").write_text("# old note\nx = 3\ny = 2\n", encoding="utf-8")
+    found = loopcheck.check_comments(loopcheck.Config.load(cfg))
+    assert [(f.line, f.message[:39]) for f in found] == [
+        (1, "comment on or above a changed line; dro")
+    ]
+    (tmp_path / "src" / "a.py").write_text("# old note\nx = 1\ny = 3\n", encoding="utf-8")
+    assert loopcheck.check_comments(loopcheck.Config.load(cfg)) == []
+
+
+def test_comment_rule_is_configured_for_this_repo() -> None:
+    config = loopcheck.Config.load(ROOT / "pyproject.toml")
+    assert config.comment_diff_base == "origin/main"
+    assert {p.relative_to(ROOT).as_posix() for p in config.comment_paths} == {
+        "src",
+        "test",
+        "devtools",
+        "pyproject.toml",
+        ".github/workflows",
+    }
+    counts = {rel: len(hits) for rel, hits in loopcheck.comment_counts(config).items()}
+    assert counts == config.comment_ceiling
+
+
+@pytest.mark.parametrize(
+    ("text", "line", "allowed"),
+    [
+        ("#!/usr/bin/env python3", 1, True),
+        ("#!/usr/bin/env python3", 3, False),
+        ("# noqa -- blanket without any codes", 5, False),
+        ("# noqa: BLE001,SLF001 -- both reach the legacy seam", 5, True),
+        ("# type: ignore -- no error code given", 5, False),
+        ("# pyright: ignore[reportPrivateUsage] -- legacy seam until #90", 5, True),
+        ("# fmt: skip -- keeps the aligned table", 5, False),
+        ("# isort: skip -- keeps the import order", 5, False),
+        ("# fmt: skip", 5, False),
+        ("# SPDX-License-Identifier: MIT", 5, True),
+        ("# see SPDX-License-Identifier: anything I like", 5, False),
+        ("# explains it -- noqa: E501 -- with words after", 5, False),
+    ],
+)
+def test_comment_rule_suppression_and_header_edges(text: str, line: int, allowed: bool) -> None:
+    assert loopcheck.comment_allowed(text, line) is allowed
+
+
+def test_toml_exclusion_entries_may_carry_a_reason(tmp_path: Path) -> None:
+    toml = tmp_path / "c.toml"
+    toml.write_text(
+        "[tool.ruff]\n"
+        "extend-exclude = [\n"
+        '    "vendored.py", # vendored upstream; do not edit\n'
+        '    "gen.py", # generated\n'
+        "]\n"
+        "[tool.ruff.lint]\n"
+        "select = [\n"
+        '    "E", # vendored upstream; do not edit\n'
+        "]\n"
+        "[tool.basedpyright]\n"
+        "# turn off warnings about how you ignore warnings\n"
+        "reportIgnoreCommentWithoutRule = false\n",
+        encoding="utf-8",
+    )
+    assert loopcheck.disallowed_comments(toml, toml.read_text(encoding="utf-8")) == [
+        (4, "# generated"),
+        (8, "# vendored upstream; do not edit"),
+        (11, "# turn off warnings about how you ignore warnings"),
+    ]
+
+
+def test_toml_and_yaml_comment_edges(tmp_path: Path) -> None:
+    toml = tmp_path / "c.toml"
+    toml.write_text(
+        "answer = 42# note\n"
+        'doc = """\n'
+        "# not a comment, inside a string\n"
+        '"""\n'
+        "lit = '''a # b'''  # after\n",
+        encoding="utf-8",
+    )
+    assert loopcheck.disallowed_comments(toml, toml.read_text(encoding="utf-8")) == [
+        (1, "# note"),
+        (5, "# after"),
+    ]
+    yml = tmp_path / "w.yml"
+    yml.write_text(
+        "name: Mitch's job  # explanation\nq: 'it''s # x'\nr: \"a # b\"  # trailing\n",
+        encoding="utf-8",
+    )
+    assert loopcheck.disallowed_comments(yml, yml.read_text(encoding="utf-8")) == [
+        (1, "# explanation"),
+        (3, "# trailing"),
+    ]
+
+
+def test_comment_tables_come_from_a_python_file(tmp_path: Path) -> None:
+    (tmp_path / "src" / "skip").mkdir(parents=True)
+    (tmp_path / "src" / "a.py").write_text("# note\nx = 1\n", encoding="utf-8")
+    (tmp_path / "src" / "skip" / "b.py").write_text("# other\n", encoding="utf-8")
+    (tmp_path / "ceiling.py").write_text(
+        'COMMENT_CEILING: dict[str, int] = {"src/a.py": 1}\nLEGACY_COMMENT_EXCLUDE = {"src/skip"}\n',
+        encoding="utf-8",
+    )
+    cfg = tmp_path / "pyproject.toml"
+    cfg.write_text(
+        '[tool.elke27.loopcheck]\ncomment_paths = ["src"]\ncomment_ceiling_file = "ceiling.py"\n',
+        encoding="utf-8",
+    )
+    config = loopcheck.Config.load(cfg)
+    assert config.comment_ceiling == {"src/a.py": 1}
+    assert config.comment_exclude == [tmp_path / "src/skip"]
+    assert loopcheck.check_comments(config) == []
+    (tmp_path / "ceiling.py").write_text("COMMENT_CEILING = dict(a=1)\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="malformed node"):
+        loopcheck.Config.load(cfg)
