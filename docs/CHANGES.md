@@ -105,6 +105,11 @@
     drop a cancellation that arrives just after the write is confirmed; that
     made ``close`` or ``connect`` wait forever. The ``KeepaliveStats`` docstring
     now describes every public field.
+  - Write confirmations after a reconnect (#179): a write confirmation now arms
+    a reply deadline only for the request that is active. A late confirmation
+    from a replaced session's link, or for a request that was already answered,
+    no longer cancels the reply deadline of the command that is in flight, so
+    that command times out instead of waiting forever.
 
   Area Delay, Arm Night Stay Instant, Status Read Publication (0.6.0, 2026-11-17)
 

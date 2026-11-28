@@ -212,6 +212,7 @@ def keepalive_link(
     start: float = 1000.0,
     probe_builder: Callable[[], Mapping[str, Any]] | None = None,
     sleep: Callable[[float], Awaitable[None]] = _idle_sleep,
+    kernel_options: Mapping[str, Any] | None = None,
 ) -> KeepaliveLink:
     clock = MonotonicTestClock(start)
     link_ref: list[KeepaliveLink] = []
@@ -221,7 +222,10 @@ def keepalive_link(
         send_wait_s=send_wait_s,
     )
     kernel = E27Kernel(
-        now_monotonic=clock.now, keepalive_test_hooks=hooks, skip_connect_bootstrap=True
+        now_monotonic=clock.now,
+        keepalive_test_hooks=hooks,
+        skip_connect_bootstrap=True,
+        **(kernel_options or {}),
     )
     monkeypatch.setattr(kernel, "load_features_blocking", lambda _modules=None: None)
     kernel.requests.register(("system", "r_u_alive"), probe_builder or dict)
