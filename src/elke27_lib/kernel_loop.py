@@ -1770,9 +1770,11 @@ class E27Kernel:
     def _on_request_sent(self, seq: int, timeout_s: float) -> None:
         """Record a write confirmation; only the active request may arm its reply deadline.
 
-        A confirmation for any other seq (a replaced session's frame, or a request
-        already answered or failed) must not cancel or replace the deadline of the
-        request that is active now.
+        A confirmation for any other seq (a replaced session's frame, a request
+        already answered or failed, or this request's own write after its reply
+        arrived first) must not cancel or replace the deadline of the request
+        that is active now. It still records the write, so a caller waiting on
+        the sent event, such as ``Elke27Client``, is released.
         """
         if self._active_seq != seq:
             self._mark_request_sent(seq)

@@ -8,6 +8,7 @@ from ``dispatcher.pending_count()``.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 
 import pytest
@@ -130,4 +131,32 @@ async def test_unanswered_written_command_triggers_a_link_check(
     assert await _settles(lambda: len(session.sent) >= 2)
     probe = session.sent[1][0]
     assert "r_u_alive" in str(probe)
+    await link.kernel.close()
+
+
+@pytest.mark.asyncio
+async def test_late_write_confirmation_after_the_reply_still_records_the_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A command's own write confirmation can arrive after its reply has already cleared the active seq.
+
+    The outbound loop confirms a write only after the worker thread returns, so
+    the reply can be processed first. That confirmation must still set the sent
+    event and ``was_request_sent``: a caller waiting on the event, such as
+    ``Elke27Client``, would otherwise wait out the whole transport budget even
+    though the reply is already in.
+    """
+    link = _command_link(monkeypatch)
+    session = await link.connect()
+    seq = link.kernel.request(ROUTE)
+    sent = asyncio.Event()
+    link.kernel.register_sent_event(seq, sent)
+    await until(lambda: len(session.sent) >= 1)
+    session.receive({"seq": seq, "area": {"get_status": {}}})
+    assert link.kernel.dispatcher.pending_count() == 0
+    assert not sent.is_set()
+    assert not link.kernel.was_request_sent(seq)
+    session.confirm(0)
+    assert sent.is_set()
+    assert link.kernel.was_request_sent(seq)
     await link.kernel.close()
