@@ -4,13 +4,16 @@ Runs the real ``Session`` and ``E27Kernel`` against
 ``test.helpers.panel_simulator`` and checks public results only: connection
 events, ``keepalive_stats``, and when the panel actually received each probe.
 The one documented exception, a probe stuck in the queue past the send wait, is
-exercised with a short ``KeepaliveTestHooks.send_wait_s``.
+exercised with a short ``KeepaliveTestHooks.send_wait_s``. The two tests on a
+write that lands right at the send-wait deadline use ``keepalive_link`` instead,
+so their loop-pass order does not depend on real time.
 """
 
 from __future__ import annotations
 
 import asyncio
 import gc
+import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -20,6 +23,7 @@ import pytest
 
 from elke27_lib.events import ConnectionStateChanged, Event
 from elke27_lib.kernel_loop import E27Kernel, KeepaliveTestHooks
+from test.helpers.keepalive_link import keepalive_link, until
 from test.helpers.panel_simulator import IDENTITY, LINK_KEYS, PanelSimulator
 
 PROBE_TIMEOUT_S = 0.25
@@ -385,60 +389,55 @@ async def test_queued_probe_failed_by_disconnect_is_not_counted_as_sent() -> Non
             await kernel.close()
 
 
-async def _write_on_loop(func: Callable[..., object], /, *args: object) -> object:
-    """Stand-in for ``asyncio.to_thread`` that writes in the caller's loop pass."""
-    return func(*args)
-
-
 @pytest.mark.asyncio
 async def test_probe_written_in_same_pass_as_send_wait_timeout_counts_as_sent(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A probe the transport writes in the loop pass where its send wait expires is sent.
 
-    ``outbound_min_interval_s=1.0`` holds the second probe's write until about
-    1.0 s after the first probe was written; its 1.2 s send wait ends just after.
-    Blocking the loop for 1.5 s makes both timers due in one pass, and the
-    throttle timer, due first, runs first. With writes done on the loop
-    (``asyncio.to_thread`` replaced), the transport confirms the write before the
-    send-wait timeout reaches the probe, while the probe's sent event is only set
-    on a later pass. That probe must be counted as sent and its reply accepted:
-    no miss, ``probes_sent`` equal to what the panel received, and both replies.
+    With a zero send wait the timeout fires on the first pass after the probe is
+    queued. ``confirm_soon`` makes the link report the write in a callback
+    queued when the probe is sent, so the confirmation runs before that timeout
+    reaches the probe. The probe must read its own write stamp, count as sent,
+    and accept its reply: no miss, no failed probe, nothing cancelled.
     """
-    with PanelSimulator() as panel:
-        kernel = E27Kernel(
-            skip_connect_bootstrap=True,
-            outbound_min_interval_s=1.0,
-            keepalive_test_hooks=KeepaliveTestHooks(send_wait_s=1.2),
-        )
-        drops: list[str | None] = []
+    caplog.set_level(logging.DEBUG, logger="elke27_lib.kernel_loop")
+    link = keepalive_link(monkeypatch, send_wait_s=0.0)
+    old = await link.connect(max_missed=1)
+    old.confirm_soon = True
+    link.kernel.request_link_check()
+    await until(lambda: link.stats.probes_sent == 1)
+    assert "write confirmed as its 0.0s send wait ended" in caplog.text
+    old.reply(0)
+    await until(lambda: link.stats.replies == 1)
+    stats = link.stats
+    assert stats.misses == 0
+    assert stats.probes_failed == 0
+    assert stats.probe_timeouts == 0
+    assert old.cancelled == []
+    assert old.disconnects == []
+    assert not link.kernel.was_request_sent(old.seq(0))
+    await link.kernel.close()
 
-        def _on_event(evt: Event) -> None:
-            if isinstance(evt, ConnectionStateChanged) and not evt.connected:
-                drops.append(evt.err_msg)
 
-        kernel.subscribe(_on_event, kinds=[ConnectionStateChanged.KIND])
-        await kernel.connect(
-            LINK_KEYS,
-            client_identity=IDENTITY,
-            session_config=panel.session_config(interval_s=30.0, timeout_s=COMMAND_TIMEOUT_S),
-        )
-        try:
-            kernel.request_link_check()
-            await _wait_for(lambda: kernel.keepalive_stats.replies == 1, timeout_s=5.0)
-            with monkeypatch.context() as patch:
-                patch.setattr(asyncio, "to_thread", _write_on_loop)
-                kernel.request_link_check()
-                await asyncio.sleep(0.05)
-                assert panel.probes == 1
-                time.sleep(1.5)
-                await _wait_for(lambda: kernel.keepalive_stats.replies == 2, timeout_s=5.0)
-            await asyncio.sleep(0.3)
-            assert drops == []
-            assert panel.probes == 2
-            assert kernel.keepalive_stats.misses == 0
-            assert kernel.keepalive_stats.replies == 2
-            assert kernel.keepalive_stats.probes_sent == panel.probes
-            _assert_no_probe_left_marked_sent(kernel, panel)
-        finally:
-            await kernel.close()
+@pytest.mark.asyncio
+async def test_probe_written_one_pass_after_send_wait_timeout_is_abandoned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A write reported only after the send-wait timeout reached the probe is too late.
+
+    The probe is abandoned: its queued frame is cancelled on the link, it counts
+    as a failed probe and a miss, and the late confirmation changes nothing.
+    """
+    link = keepalive_link(monkeypatch, send_wait_s=0.0)
+    old = await link.connect(max_missed=1)
+    link.kernel.request_link_check()
+    await until(lambda: link.stats.probes_failed == 1)
+    old.confirm(0)
+    stats = link.stats
+    assert stats.probes_sent == 0
+    assert stats.misses == 1
+    assert stats.probes_failed == 1
+    assert old.cancelled == [old.seq(0)]
+    assert len(old.disconnects) == 1
+    await link.kernel.close()

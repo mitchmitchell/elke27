@@ -283,7 +283,7 @@ def test_fire_and_forget_correlation_is_dropped_on_close_and_connect() -> None:
 
 
 @pytest.mark.asyncio
-async def test_connect_drops_stale_fire_and_forget_correlation(
+async def test_connect_that_fails_validation_keeps_fire_and_forget_correlation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from elke27_lib.dispatcher_loop import PendingRequest
@@ -294,5 +294,5 @@ async def test_connect_drops_stale_fire_and_forget_correlation(
     cast(Any, kernel)._fire_and_forget_pending_seqs.add(5)
     monkeypatch.setattr(kernel, "load_features_blocking", lambda *_a: None)
     with pytest.raises(KernelMissingContextError):
-        await kernel.connect(cast(Any, None))  # fails after the cleanup step
-    assert kernel.dispatcher.pending_count() == 0
+        await kernel.connect(cast(Any, None))
+    assert kernel.dispatcher.pending_count() == 1

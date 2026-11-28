@@ -87,6 +87,24 @@
     ``rescued`` remains a subset). New ``probe_in_flight``: ``True`` while a
     keepalive probe has started and not yet finished. ``misses`` and
     liveness policy are unchanged.
+  - Keepalive probe after a reconnect (#177): ``connect`` and ``close`` now stop
+    the keepalive loop and wait for it to finish before going on. A probe that was
+    outstanding is cancelled and releases its own transport and pending reply, so
+    it adds nothing to ``keepalive_stats`` and a late write confirmation or reply
+    from the old link cannot change a newer probe's round-trip time. No probe goes
+    out on the old link during a reconnect, and the loop restarts for the new
+    session without its first probe waiting behind an old one. If the new
+    handshake fails or is cancelled, the old session keeps its keepalive settings
+    and its loop resumes when it had been running. Its send tracking,
+    fire-and-forget reply correlation and consecutive miss count are also kept;
+    they are reset only once the new session has replaced it. Calling
+    ``connect`` or ``close`` from inside the keepalive task raises
+    ``KernelError`` before ``connect`` changes anything. ``close`` resets the
+    miss count once the loop has stopped. The probe's write wait uses
+    ``asyncio.timeout`` instead of ``asyncio.wait_for``, which on Python 3.11 can
+    drop a cancellation that arrives just after the write is confirmed; that
+    made ``close`` or ``connect`` wait forever. The ``KeepaliveStats`` docstring
+    now describes every public field.
 
   Area Delay, Arm Night Stay Instant, Status Read Publication (0.6.0, 2026-11-17)
 
