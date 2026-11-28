@@ -41,6 +41,7 @@ class PanelLink:
         self.fail_sends = fail_sends
         self.connect_gate = connect_gate
         self.fail_connect = fail_connect
+        self.confirm_soon = False
         self.handshake_entered = threading.Event()
         self.state = session_mod.SessionState.DISCONNECTED
         self.info = session_mod.SessionInfo(
@@ -92,6 +93,8 @@ class PanelLink:
                 on_fail(session_mod.SessionIOError("send failed"))
             return
         self.sent.append((obj, on_sent))
+        if self.confirm_soon and on_sent is not None:
+            asyncio.get_running_loop().call_soon(on_sent, 0.0)
 
     def cancel_outbound_pending_seq(self, seq: int) -> None:
         self.cancelled.append(seq)

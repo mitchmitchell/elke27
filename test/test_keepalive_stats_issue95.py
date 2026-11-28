@@ -779,6 +779,19 @@ async def test_close_starts_the_miss_count_again(
     assert link.stats.misses == 1
 
 
+async def _finishes_within(task: asyncio.Task[Any], timeout_s: float = 2.0) -> bool:
+    """Wait for ``task``; on timeout cancel every other task so the test fails instead of hanging."""
+    await asyncio.wait({task}, timeout=timeout_s)
+    if task.done():
+        return True
+    for other in asyncio.all_tasks():
+        if other is not asyncio.current_task() and other is not task:
+            other.cancel()
+    await asyncio.wait({task}, timeout=timeout_s)
+    task.cancel()
+    return False
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("yields", [0, 1, 2, 3])
 async def test_close_right_after_a_write_confirmation_returns(
@@ -791,14 +804,7 @@ async def test_close_right_after_a_write_confirmation_returns(
     for _ in range(yields):
         await asyncio.sleep(0)
     closing = asyncio.create_task(link.kernel.close())
-    await asyncio.wait({closing}, timeout=2.0)
-    returned = closing.done()
-    if not returned:
-        for task in asyncio.all_tasks():
-            if task is not asyncio.current_task() and task is not closing:
-                task.cancel()
-        await asyncio.wait({closing}, timeout=2.0)
-    assert returned
+    assert await _finishes_within(closing)
     assert link.stats.probe_in_flight is False
     assert old.cancelled == [old.seq(0)]
     link.advance(TIMEOUT_S + 0.01)
@@ -833,17 +839,27 @@ async def test_cancelled_reconnect_waits_for_a_slow_stopping_loop_before_restart
     await until(lambda: active[0] == 1)
     release.clear()
     peak[0] = 1
-    connecting = asyncio.create_task(link.connect())
-    await until(lambda: len(link.links) == 2)
-    connecting.cancel()
-    for _ in range(20):
-        await asyncio.sleep(0)
-    assert peak[0] == 1
-    assert not connecting.done()
+
+    async def _reconnect_cancelled_while_stopping() -> None:
+        connecting = asyncio.create_task(link.connect())
+        try:
+            await until(lambda: len(link.links) == 2)
+            connecting.cancel()
+            for _ in range(20):
+                await asyncio.sleep(0)
+            assert peak[0] == 1
+            assert not connecting.done()
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await connecting
+        assert not link.links[1].handshake_entered.is_set()
+        await until(lambda: active[0] == 1)
+        assert peak[0] == 1
+        await link.kernel.close()
+
+    scenario = asyncio.create_task(_reconnect_cancelled_while_stopping())
+    finished = await _finishes_within(scenario)
     release.set()
-    with pytest.raises(asyncio.CancelledError):
-        await connecting
-    assert not link.links[1].handshake_entered.is_set()
-    await until(lambda: active[0] == 1)
-    assert peak[0] == 1
-    await link.kernel.close()
+    assert finished
+    scenario.result()
