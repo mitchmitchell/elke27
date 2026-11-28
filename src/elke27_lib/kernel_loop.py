@@ -1768,8 +1768,16 @@ class E27Kernel:
             self._handle_send_failure(item.seq, exc)
 
     def _on_request_sent(self, seq: int, timeout_s: float) -> None:
-        if self._active_seq == seq:
-            self._active_sent_at = self.now()
+        """Record a write confirmation; only the active request may arm its reply deadline.
+
+        A confirmation for any other seq (a replaced session's frame, or a request
+        already answered or failed) must not cancel or replace the deadline of the
+        request that is active now.
+        """
+        if self._active_seq != seq:
+            self._mark_request_sent(seq)
+            return
+        self._active_sent_at = self.now()
         self._mark_request_sent(seq)
         self._arm_reply_timeout(seq, timeout_s)
 
